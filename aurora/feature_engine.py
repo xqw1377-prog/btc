@@ -36,10 +36,18 @@ class FeatureEngine:
         
         return adx
     
-    def compute_vwap(self, df: pd.DataFrame) -> pd.Series:
-        cum_vol = df['volume'].cumsum()
-        cum_vol_price = (df['close'] * df['volume']).cumsum()
-        return cum_vol_price / cum_vol
+    def compute_rsi(self, series: pd.Series, period: int = 14) -> pd.Series:
+        delta = series.diff()
+        gain = (delta.where(delta > 0, 0)).rolling(window=period).mean()
+        loss = (-delta.where(delta < 0, 0)).rolling(window=period).mean()
+        rs = gain / loss
+        rsi = 100 - (100 / (1 + rs))
+        return rsi
+    
+    def compute_vwap_rolling(self, df: pd.DataFrame, window: int = 20) -> pd.Series:
+        vol = df['volume'].rolling(window).sum()
+        vol_price = (df['close'] * df['volume']).rolling(window).sum()
+        return vol_price / vol
     
     def compute_all(self, df: pd.DataFrame) -> pd.DataFrame:
         df = df.copy()
@@ -54,12 +62,14 @@ class FeatureEngine:
         
         df['adx'] = self.compute_adx(df['high'], df['low'], df['close'], self.adx_period)
         
+        df['rsi'] = self.compute_rsi(df['close'], 14)
+        
         df['momentum'] = df['close'] - df['close'].shift(5)
         df['momentum_pct'] = df['momentum'] / df['close'].shift(5)
         
         df['volatility'] = df['log_ret'].rolling(20).std() * np.sqrt(24 * 365)
         
-        df['vwap'] = self.compute_vwap(df)
+        df['vwap'] = self.compute_vwap_rolling(df, 20)
         
         df['ema_slope'] = df['ema20'] - df['ema20'].shift(5)
         
@@ -78,6 +88,7 @@ class FeatureEngine:
             'ema60': float(latest['ema60']),
             'atr': float(latest['atr']),
             'adx': float(latest['adx']),
+            'rsi': float(latest['rsi']),
             'momentum': float(latest['momentum']),
             'momentum_pct': float(latest['momentum_pct']),
             'volatility': float(latest['volatility']),

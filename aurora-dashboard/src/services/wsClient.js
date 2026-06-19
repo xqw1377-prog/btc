@@ -4,7 +4,8 @@ class WSClient {
     this.ws = null;
     this.callbacks = {};
     this.reconnectAttempts = 0;
-    this.maxReconnectAttempts = 5;
+    this.maxReconnectAttempts = 10;
+    this.reconnectDelay = 1000;
   }
 
   connect() {
@@ -12,11 +13,13 @@ class WSClient {
       return;
     }
 
+    console.log('Connecting to WebSocket:', this.url);
     this.ws = new WebSocket(this.url);
 
     this.ws.onopen = () => {
-      console.log('WebSocket connected');
+      console.log('WebSocket connected successfully');
       this.reconnectAttempts = 0;
+      this._trigger('open', {});
     };
 
     this.ws.onmessage = (event) => {
@@ -34,6 +37,7 @@ class WSClient {
 
     this.ws.onclose = () => {
       console.log('WebSocket disconnected');
+      this._trigger('close', {});
       this.tryReconnect();
     };
   }
@@ -41,7 +45,7 @@ class WSClient {
   tryReconnect() {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
       this.reconnectAttempts++;
-      const delay = Math.pow(2, this.reconnectAttempts) * 1000;
+      const delay = Math.min(this.reconnectDelay * Math.pow(2, this.reconnectAttempts - 1), 30000);
       console.log(`Reconnecting in ${delay}ms (attempt ${this.reconnectAttempts})`);
       setTimeout(() => this.connect(), delay);
     } else {
@@ -51,10 +55,25 @@ class WSClient {
 
   handleMessage(data) {
     if (data.type && this.callbacks[data.type]) {
-      this.callbacks[data.type](data.payload);
+      this.callbacks[data.type].forEach(cb => {
+        try {
+          cb(data.payload);
+        } catch (e) {
+          console.error('Callback error:', e);
+        }
+      });
     }
-    if (this.callbacks['*']) {
-      this.callbacks['*'](data);
+  }
+
+  _trigger(type, data) {
+    if (this.callbacks[type]) {
+      this.callbacks[type].forEach(cb => {
+        try {
+          cb(data);
+        } catch (e) {
+          console.error('Callback error:', e);
+        }
+      });
     }
   }
 
@@ -84,7 +103,7 @@ class WSClient {
   }
 }
 
-const WS_URL = import.meta.env.REACT_APP_WS_URL || 'ws://localhost:8000';
+const WS_URL = 'ws://localhost:8000';
 
 export const wsClient = new WSClient(WS_URL);
 

@@ -1,109 +1,77 @@
 export default function RiskPanel({ risk }) {
-  const statusColors = {
-    SAFE: 'text-green-400',
-    WARNING: 'text-yellow-400',
-    CRITICAL: 'text-red-400'
+  const getStatusConfig = (status) => {
+    switch (status) {
+      case 'SAFE':
+        return { color: 'text-green-400', bg: 'bg-green-500/20', label: '安全' };
+      case 'WARNING':
+        return { color: 'text-yellow-400', bg: 'bg-yellow-500/20', label: '警告' };
+      case 'DANGER':
+        return { color: 'text-red-400', bg: 'bg-red-500/20', label: '危险' };
+      default:
+        return { color: 'text-gray-400', bg: 'bg-gray-500/20', label: '未知' };
+    }
   };
 
-  const statusLabels = {
-    SAFE: '风险可控',
-    WARNING: '警告',
-    CRITICAL: '危险'
+  const statusConfig = getStatusConfig(risk.status);
+
+  const formatValue = (value) => {
+    return (value || 0).toFixed(2);
   };
-
-  const drawdownColor = risk.currentDrawdown > 5 ? 'text-red-400' : risk.currentDrawdown > 3 ? 'text-yellow-400' : 'text-green-400';
-  const maxDrawdownColor = risk.maxDrawdown > 5 ? 'text-red-400' : risk.maxDrawdown > 3 ? 'text-yellow-400' : 'text-green-400';
-
-  const dailyColor = risk.dailyPnl >= 0 ? 'text-green-400' : 'text-red-400';
-  const weeklyColor = risk.weeklyPnl >= 0 ? 'text-green-400' : 'text-red-400';
-  const totalColor = risk.totalPnl >= 0 ? 'text-green-400' : 'text-red-400';
 
   return (
-    <div className="p-6 bg-gray-900 rounded-xl border border-gray-800">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold text-gray-300">风险概览</h2>
-        <span className={`font-bold ${statusColors[risk.status]}`}>
-          {statusLabels[risk.status]}
+    <div className="space-y-3">
+      <div className="flex items-center justify-between">
+        <span className="text-xs text-gray-500">风险状态</span>
+        <span className={`px-2 py-0.5 rounded text-xs font-medium ${statusConfig.bg} ${statusConfig.color}`}>
+          {statusConfig.label}
         </span>
       </div>
 
-      <div className="flex items-center justify-center mb-4">
-        <div className="relative w-24 h-24">
-          <svg className="w-full h-full transform -rotate-90">
-            <circle
-              cx="48"
-              cy="48"
-              r="40"
-              stroke="#2a2a3e"
-              strokeWidth="8"
-              fill="none"
-            />
-            <circle
-              cx="48"
-              cy="48"
-              r="40"
-              stroke={risk.status === 'SAFE' ? '#22c55e' : risk.status === 'WARNING' ? '#eab308' : '#ef4444'}
-              strokeWidth="8"
-              fill="none"
-              strokeLinecap="round"
-              strokeDasharray={`${risk.currentDrawdown * 10} 251`}
-              className="transition-all duration-500"
-            />
-          </svg>
-          <div className="absolute inset-0 flex flex-col items-center justify-center">
-            <span className="text-2xl font-bold text-white">
-              {risk.currentDrawdown.toFixed(1)}%
-            </span>
-            <span className="text-xs text-gray-400">当前回撤</span>
-          </div>
-        </div>
-      </div>
-
-      <div className="space-y-3">
-        <div className="flex justify-between items-center">
-          <span className="text-sm text-gray-400">当前回撤</span>
-          <span className={`font-semibold ${drawdownColor}`}>
-            {risk.currentDrawdown.toFixed(2)}%
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-gray-500">今日盈亏</span>
+          <span className={`text-sm font-medium ${(risk.dailyPnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            {(risk.dailyPnl || 0) >= 0 ? '+' : ''}{formatValue(risk.dailyPnl)} USDT
           </span>
         </div>
 
-        <div className="flex justify-between items-center">
-          <span className="text-sm text-gray-400">最大回撤</span>
-          <span className={`font-semibold ${maxDrawdownColor}`}>
-            {risk.maxDrawdown.toFixed(2)}%
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-gray-500">总盈亏</span>
+          <span className={`text-sm font-medium ${(risk.totalPnl || 0) >= 0 ? 'text-green-400' : 'text-red-400'}`}>
+            {(risk.totalPnl || 0) >= 0 ? '+' : ''}{formatValue(risk.totalPnl)} USDT
           </span>
         </div>
 
-        <div className="h-px bg-gray-800 my-2" />
-
-        <div className="flex justify-between items-center">
-          <span className="text-sm text-gray-400">今日盈亏</span>
-          <span className={`font-semibold ${dailyColor}`}>
-            {risk.dailyPnl >= 0 ? '+' : ''}${risk.dailyPnl.toLocaleString()}
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-gray-500">当前回撤</span>
+          <span className={`text-sm font-medium ${(risk.currentDrawdown || 0) > 5 ? 'text-red-400' : (risk.currentDrawdown || 0) > 2 ? 'text-yellow-400' : 'text-green-400'}`}>
+            {formatValue(risk.currentDrawdown)}%
           </span>
         </div>
 
-        <div className="flex justify-between items-center">
-          <span className="text-sm text-gray-400">本周盈亏</span>
-          <span className={`font-semibold ${weeklyColor}`}>
-            {risk.weeklyPnl >= 0 ? '+' : ''}${risk.weeklyPnl.toLocaleString()}
-          </span>
-        </div>
-
-        <div className="flex justify-between items-center">
-          <span className="text-sm text-gray-400">总盈亏</span>
-          <span className={`font-semibold ${totalColor}`}>
-            {risk.totalPnl >= 0 ? '+' : ''}${risk.totalPnl.toLocaleString()}
+        <div className="flex items-center justify-between">
+          <span className="text-xs text-gray-500">最大回撤</span>
+          <span className="text-sm font-medium text-gray-400">
+            {formatValue(risk.maxDrawdown)}%
           </span>
         </div>
       </div>
 
-      <button
-        className="mt-4 w-full py-3 rounded-lg font-bold text-white bg-red-600 hover:bg-red-700 transition-colors"
-        onClick={() => console.log('Kill switch activated')}
-      >
-        🔴 紧急停止
-      </button>
+      <div className="pt-2">
+        <div className="flex items-center justify-between mb-1">
+          <span className="text-xs text-gray-500">回撤水平</span>
+          <span className="text-xs text-gray-400">{formatValue(risk.currentDrawdown)}% / 10%</span>
+        </div>
+        <div className="h-1.5 bg-gray-800 rounded-full overflow-hidden">
+          <div 
+            className={`h-full transition-all duration-500 ${
+              risk.currentDrawdown > 5 ? 'bg-red-500' : 
+              risk.currentDrawdown > 2 ? 'bg-yellow-500' : 'bg-green-500'
+            }`}
+            style={{ width: `${Math.min((risk.currentDrawdown || 0) * 10, 100)}%` }}
+          />
+        </div>
+      </div>
     </div>
   );
 }
