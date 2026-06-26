@@ -37,6 +37,8 @@ class AuroraFinal:
             'wins': 0, 'losses': 0, 'total_pnl': 0.0
         }
         self.running = False
+        self.last_open_time = 0
+        self.min_hold_seconds = 300
 
         sig.signal(sig.SIGINT, lambda s, f: setattr(self, 'running', False))
         sig.signal(sig.SIGTERM, lambda s, f: setattr(self, 'running', False))
@@ -103,6 +105,7 @@ class AuroraFinal:
 
             if result.success:
                 self.stats['trades'] += 1
+                self.last_open_time = time.time()
                 print(f"\n📈 {decision.action.value} {size_btc:.3f} BTC @ ${price:,.2f}")
                 print(f"   SL=${sl_price:,.2f} TP=${tp_price:,.2f} | {decision.reason}")
 
@@ -115,10 +118,14 @@ class AuroraFinal:
         if entry == 0:
             return
 
-        if abs(alpha.direction) > 0.3:
+        elapsed = time.time() - self.last_open_time
+        if elapsed < self.min_hold_seconds:
+            return
+
+        if abs(alpha.direction) > 0.6:
             pos_is_long = pos['side'] == 'LONG'
-            signal_against = (pos_is_long and alpha.direction < -0.3) or \
-                             (not pos_is_long and alpha.direction > 0.3)
+            signal_against = (pos_is_long and alpha.direction < -0.6) or \
+                             (not pos_is_long and alpha.direction > 0.6)
             if signal_against:
                 result = self.execution.close_position(pos['size'], pos['side'])
                 if result.success:

@@ -387,7 +387,7 @@ function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {trades.slice(0, 10).map((trade, i) => (
+                    {[...trades].reverse().slice(0, 10).map((trade, i) => (
                       <tr key={i} style={{ borderBottom: '1px solid #1f2937' }}>
                         <td style={{ padding: '8px 4px', color: '#9ca3af' }}>
                           {trade.timestamp ? new Date(trade.timestamp).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '-'}

@@ -31,8 +31,8 @@ class CapitalController:
         self.risk = InstitutionalRiskKernel(capital)
 
         self.thresholds = {
-            'direction': 0.15,
-            'confidence': 0.25,
+            'direction': 0.30,
+            'confidence': 0.50,
             'max_size': 0.35,
             'min_size': 0.02,
         }
@@ -70,6 +70,13 @@ class CapitalController:
                 action=Action.FLAT, size=0, risk_state=risk_state,
                 stop_loss_pct=0, take_profit_pct=0, confidence=0,
                 reason="Risk state BLOCK"
+            )
+
+        if regime == "TRANSITION" and confidence < 0.7:
+            return CapitalDecision(
+                action=Action.FLAT, size=0, risk_state=risk_state,
+                stop_loss_pct=0, take_profit_pct=0, confidence=confidence,
+                reason=f"TRANSITION regime too weak (conf={confidence:.2f})"
             )
 
         if abs(direction) < self.thresholds['direction'] or confidence < self.thresholds['confidence']:

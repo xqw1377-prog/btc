@@ -78,6 +78,7 @@ class WebSocketServer:
         await websocket.send(json.dumps({'type': 'risk', 'payload': self.risk_data}))
         await websocket.send(json.dumps({'type': 'pnl', 'payload': self.pnl_data}))
         await websocket.send(json.dumps({'type': 'score', 'payload': 50}))
+        await websocket.send(json.dumps({'type': 'trades', 'payload': self.trade_data}))
     
     async def broadcast(self, message: str):
         if self.clients:

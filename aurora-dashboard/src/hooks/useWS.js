@@ -76,6 +76,7 @@ export default function useWS() {
   }, []);
 
   const handleTradesUpdate = useCallback((data) => {
+    console.log('Trades update received:', Array.isArray(data) ? data.length : typeof data);
     if (Array.isArray(data)) {
       setTrades(data);
     }
