@@ -1,0 +1,21 @@
+"""P0-B1: Durable Execution Truth（离线安全执行内核）。
+
+分层真源：交易所=事实，SQLite 账本=持久化事实与意图，上层组合状态仅为投影。
+本包不连接任何真实交易所；真实适配器属 P0-B2+。
+"""
+from .state_machine import IntentState, InvalidTransition, assert_transition  # noqa: F401
+from .port import (  # noqa: F401
+    ExchangePort,
+    ExchangePosition,
+    Fill,
+    OrderAck,
+    OrderFact,
+    OrderKind,
+    OrderRequest,
+    SubmitUnknownError,
+    OrderRejectedError,
+    DuplicateClientOrderIdError,
+)
+from .fake_exchange import FakeExchange  # noqa: F401
+from .ledger import Ledger, PositionFactState  # noqa: F401
+from .orchestrator import Orchestrator  # noqa: F401

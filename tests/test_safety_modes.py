@@ -19,7 +19,10 @@ from aurora.p0_boundary import (  # noqa: E402
     resolve_mode,
 )
 
-from test_p0_safety import FakeBroker  # noqa: E402
+try:
+    from test_p0_safety import FakeBroker  # noqa: E402
+except ImportError:  # tests/ 存在 __init__.py 时按包导入
+    from tests.test_p0_safety import FakeBroker  # noqa: E402
 
 
 SAFETY_KEYS = (
