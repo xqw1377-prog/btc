@@ -13,6 +13,7 @@
 from typing import Dict, List, Optional
 
 from .port import (
+    CancelUnknownError,
     DuplicateClientOrderIdError,
     ExchangePort,
     ExchangePosition,
@@ -45,6 +46,7 @@ class FakeExchange(ExchangePort):
         self.entry_behavior = entry_behavior
         self.protection_behavior = protection_behavior
         self.close_behavior = close_behavior
+        self.cancel_behavior = "ok"  # "ok" | "unknown"（撤单结果未知）
         self.price = price
 
         self.submit_log: List[OrderRequest] = []
@@ -130,6 +132,8 @@ class FakeExchange(ExchangePort):
         return OrderFact(client_order_id, order["status"], order["filled_qty"], order["avg_price"])
 
     def cancel_order(self, client_order_id: str) -> bool:
+        if self.cancel_behavior == "unknown":
+            raise CancelUnknownError(f"cancel result unknown: {client_order_id}")
         order = self._orders.get(client_order_id)
         if order is None or order["status"] != "NEW":
             return False
@@ -166,16 +170,23 @@ class FakeExchange(ExchangePort):
             self._emit_fill(order["req"], remaining)
         order["status"] = "FILLED"
 
-    def fire_protection(self, client_order_id: str, price: Optional[float] = None) -> None:
-        """模拟交易所侧 SL/TP 触发：保护单成交，仓位相应归零/转向。"""
+    def fire_protection(
+        self, client_order_id: str, price: Optional[float] = None,
+        qty: Optional[float] = None,
+    ) -> None:
+        """模拟交易所侧 SL/TP 触发；qty 省略为整腿成交（部分触发可指定 qty）。"""
         order = self._orders[client_order_id]
         if order["status"] == "FILLED":
             return
+        fill_qty = order["req"].quantity if qty is None else qty
         if price is not None:
-            self._emit_fill_at(order["req"], order["req"].quantity, price)
+            self._emit_fill_at(order["req"], fill_qty, price)
         else:
-            self._emit_fill(order["req"], order["req"].quantity)
-        order["status"] = "FILLED"
+            self._emit_fill(order["req"], fill_qty)
+        if order["filled_qty"] >= order["req"].quantity - 1e-12:
+            order["status"] = "FILLED"
+        else:
+            order["status"] = "PARTIALLY_FILLED"
 
     def _emit_fill_at(self, req: OrderRequest, qty: float, price: float) -> None:
         saved = self.price

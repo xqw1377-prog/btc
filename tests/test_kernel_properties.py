@@ -23,6 +23,11 @@ from aurora.kernel.orchestrator import Orchestrator  # noqa: E402
 from aurora.kernel.port import OrderKind  # noqa: E402
 from aurora.kernel.state_machine import IntentState  # noqa: E402
 
+try:
+    from test_protection_semantics import oracle_coverage  # noqa: E402
+except ImportError:  # tests/ 存在 __init__.py 时按包导入
+    from tests.test_protection_semantics import oracle_coverage  # noqa: E402
+
 BEHAVIORS = st.sampled_from(
     ["ok", "reject", "timeout_then_filled", "timeout_then_gone", "partial"])
 OPS = st.sampled_from(
@@ -64,6 +69,25 @@ class KernelPropertyTests(unittest.TestCase):
         else:
             self.assertEqual(fact_row["state"], PositionFactState.KNOWN_OPEN.value)
             self.assertAlmostEqual(fact_row["qty"], abs(pos.signed_qty), places=10)
+        # I6 保护覆盖一致：独立 oracle（不复用生产覆盖计算）。
+        # 仅对仍持仓且意图 PROTECTED 的场景断言；DEGRADED/恢复态由确定性套件覆盖。
+        oracle = oracle_coverage(exchange, "BTCUSDT")
+        if oracle["position"] > 1e-9:
+            for intent in ledger.list_intents(
+                    states=[IntentState.PROTECTED.value]):
+                from aurora.kernel.coverage import compute_protection_status
+                status = compute_protection_status(
+                    ledger.orders_for_intent(intent["intent_id"]),
+                    oracle["position"])
+                self.assertAlmostEqual(
+                    status.sl_coverage, oracle["sl"], places=9,
+                    msg="ledger SL coverage diverges from independent oracle")
+                self.assertAlmostEqual(
+                    status.tp_coverage, oracle["tp"], places=9,
+                    msg="ledger TP coverage diverges from independent oracle")
+                self.assertTrue(
+                    status.mandatory_ok,
+                    msg="PROTECTED intent without mandatory SL coverage")
         return report
 
     @settings(

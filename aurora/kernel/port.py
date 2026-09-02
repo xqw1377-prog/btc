@@ -23,6 +23,10 @@ class SubmitUnknownError(Exception):
     """下单结果未知（超时/断连）。禁止自动重提，必须先 query_order。"""
 
 
+class CancelUnknownError(Exception):
+    """撤单结果未知。禁止当作已撤或未撤处理，必须进入恢复流程。"""
+
+
 class OrderRejectedError(Exception):
     """交易所明确拒单。"""
 

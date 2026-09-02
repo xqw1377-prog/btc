@@ -6,13 +6,31 @@
 
 ```text
 分支:   safety/p0a-mainnet-isolation
-P0-A   = PASS  (b037e8e  fail-closed 主网隔离, 44 tests)
-P0-B1  = PASS  (cda0f83  durable execution truth, 47 tests)
-P0-B2  = 部分完成（离线语义加固: OCO/OUO/迟到成交 + Hypothesis 性质测试）
-BINANCE ADAPTER = NOT-CONNECTED
+P0-A    = PASS  (b037e8e  fail-closed 主网隔离, 44 tests)
+P0-B1   = PASS  (cda0f83  durable execution truth, kernel 基线)
+P0-B2.0 = PASS-WITH-FIXES (5c095a7  OCO/OUO/迟到成交 + Hypothesis，
+                            覆盖口径与迟到语义由 B2.1 修正)
+P0-B2.1 = 本提交：保护覆盖口径（角色分片求和/禁相加/禁取 max/SL 强制腿）、
+          迟到成交三分类（DUPLICATE/COVERED_BY_FACT/LATE_NEW_FILL）、
+          OCO 部分成交 → PROTECTION_DEGRADED 修复流程
+execution_truth.py = FROZEN / NOT-BASELINE（仅允许经迁移测试的
+                     Decimal 精度与费用账本选择性移植）
+P0-B3（含离线 Adapter 开发）= HOLD（待密钥轮换 + 人工对账完成）
 TESTNET = NOT-RUN
 LIVE    = NO-GO（无论配置；production_main 拒绝实盘循环）
 ```
+
+### B2.1 关键口径（reviewer 裁定，实现于 aurora/kernel/coverage.py）
+
+- `sl_coverage / tp_coverage`：按角色对**去重后活动订单**的剩余数量求和；
+- 禁止 SL+TP 相加、禁止全订单取 max（分片场景 0.003+0.003 覆盖 0.006）；
+- 强制保护 = `sl_coverage >= exchange_position_qty`；SL 足额而 TP 不足 =
+  safe_but_incomplete（单独表达，不并入"已保护"）；
+- 迟到 Fill 三分类：DUPLICATE（无经济影响）/ COVERED_BY_FACT（仅关联审计）/
+  LATE_NEW_FILL（修正订单累计成交、费用、已实现 PnL，拉取仓位，重算保护，
+  终态意图经唯一逃逸边进入 RECOVERY_REQUIRED 并熔断）；
+- 保护腿部分成交 → PROTECTION_DEGRADED：按交易所实际剩余仓位精确撤旧腿
+  （撤单未知 → RECOVERY_REQUIRED + Kill）并重建，修复期间禁止新开仓。
 
 ## 已确立的架构原则
 
@@ -54,9 +72,11 @@ LIVE    = NO-GO（无论配置；production_main 拒绝实盘循环）
 
 ## 未决事项（需用户输入）
 
-1. **B1 归属裁决**：`aurora/kernel/`（已提交，106 项测试全绿）vs `aurora/execution_truth.py`（未提交，其评审套件 3 项失败：并发审批互斥失效/订单状态可回滚/仓位重建错误）。建议 kernel/ 为基线，仅移植其 Decimal 与费用设计。
-2. **密钥轮换 + 人工对账**（走代理核对持仓/孤儿挂单）完成前，P0-B3 不启动。
-3. **并行写入冻结**：多会话同时写本仓库已两次产生同任务双实现，裁决前请暂停其他写入者。
+1. **B1 归属**：已裁定 kernel/ 为基线，execution_truth.py 冻结。其 Decimal
+   精度与费用账本移植须先写迁移测试再动代码。
+2. **密钥轮换 + 人工对账**（走代理核对持仓/孤儿挂单）完成前，P0-B3 保持
+   HOLD（含离线 Adapter 开发）。
+3. 并行写入冻结维持。
 
 ## 运行
 

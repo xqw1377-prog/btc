@@ -64,12 +64,38 @@ class StateMachineTests(unittest.TestCase):
             assert_transition(
                 "intent", "T", IntentState.SUBMIT_UNKNOWN, IntentState.SUBMITTING, "x", "T")
 
-    def test_terminal_states_frozen(self):
-        for terminal in (IntentState.REJECTED, IntentState.RECONCILED):
-            self.assertEqual(ALLOWED_TRANSITIONS[terminal], frozenset())
+    def test_terminal_states_frozen_except_late_fact_escape(self):
+        """终态封闭，唯一例外：迟到交易所事实 → RECOVERY_REQUIRED 逃逸边。"""
+        for terminal, allowed_expected in (
+            (IntentState.REJECTED, {IntentState.RECOVERY_REQUIRED}),
+            (IntentState.RECONCILED, {IntentState.RECOVERY_REQUIRED}),
+            (IntentState.CLOSED,
+             {IntentState.RECONCILED, IntentState.RECOVERY_REQUIRED}),
+        ):
+            allowed = ALLOWED_TRANSITIONS[terminal]
+            self.assertTrue(allowed <= allowed_expected, f"{terminal}: {allowed}")
             for target in IntentState:
+                if target in allowed:
+                    continue
                 with self.assertRaises(InvalidTransition):
                     assert_transition("intent", "T", terminal, target, "x", "T")
+
+    def test_protection_degraded_chain_is_legal(self):
+        chain = [
+            IntentState.PROTECTED,
+            IntentState.PROTECTION_DEGRADED,
+            IntentState.PROTECTION_SUBMITTING,
+            IntentState.PROTECTED,
+        ]
+        for frm, to in zip(chain, chain[1:]):
+            assert_transition("intent", "T", frm, to, "degraded repair", "T")
+        # 降级态可直接进入恢复或紧急平仓
+        assert_transition(
+            "intent", "T", IntentState.PROTECTION_DEGRADED,
+            IntentState.RECOVERY_REQUIRED, "cancel unknown", "T")
+        assert_transition(
+            "intent", "T", IntentState.PROTECTION_DEGRADED,
+            IntentState.CLOSING, "repair failed", "T")
 
     def test_illegal_jump_rejected(self):
         illegal = [

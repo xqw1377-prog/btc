@@ -24,6 +24,7 @@ class IntentState(str, Enum):
     FILLED_UNPROTECTED = "FILLED_UNPROTECTED"
     PROTECTION_SUBMITTING = "PROTECTION_SUBMITTING"
     PROTECTED = "PROTECTED"
+    PROTECTION_DEGRADED = "PROTECTION_DEGRADED"
     CLOSING = "CLOSING"
     CLOSED = "CLOSED"
     RECONCILED = "RECONCILED"
@@ -68,14 +69,28 @@ ALLOWED_TRANSITIONS: Dict[IntentState, FrozenSet[IntentState]] = {
         IntentState.PROTECTED,
         IntentState.PROTECTION_FAILED,
     }),
-    IntentState.PROTECTED: frozenset({IntentState.CLOSING}),
+    IntentState.PROTECTED: frozenset({
+        IntentState.CLOSING,
+        IntentState.PROTECTION_DEGRADED,
+    }),
+    # 保护腿部分成交：仓位有剩余且保护覆盖不足，进入修复流程
+    IntentState.PROTECTION_DEGRADED: frozenset({
+        IntentState.PROTECTION_SUBMITTING,
+        IntentState.RECOVERY_REQUIRED,
+        IntentState.CLOSING,
+    }),
     IntentState.PROTECTION_FAILED: frozenset({IntentState.CLOSING}),
     IntentState.CLOSING: frozenset({IntentState.CLOSED, IntentState.CLOSE_UNKNOWN}),
     IntentState.CLOSE_UNKNOWN: frozenset({IntentState.CLOSED, IntentState.RECOVERY_REQUIRED}),
-    IntentState.CLOSED: frozenset({IntentState.RECONCILED}),
+    IntentState.CLOSED: frozenset({
+        IntentState.RECONCILED,
+        # 终态逃逸边：仅"迟到交易所事实"路径可用
+        IntentState.RECOVERY_REQUIRED,
+    }),
     IntentState.RECOVERY_REQUIRED: frozenset({IntentState.CLOSING, IntentState.RECONCILED}),
-    IntentState.REJECTED: frozenset(),
-    IntentState.RECONCILED: frozenset(),
+    # 终态逃逸边：仅允许"迟到交易所事实推翻本地终态"这一种路径使用
+    IntentState.REJECTED: frozenset({IntentState.RECOVERY_REQUIRED}),
+    IntentState.RECONCILED: frozenset({IntentState.RECOVERY_REQUIRED}),
 }
 
 

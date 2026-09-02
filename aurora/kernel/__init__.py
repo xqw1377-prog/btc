@@ -4,6 +4,7 @@
 本包不连接任何真实交易所；真实适配器属 P0-B2+。
 """
 from .state_machine import IntentState, InvalidTransition, assert_transition  # noqa: F401
+from .coverage import ProtectionStatus, compute_protection_status  # noqa: F401
 from .port import (  # noqa: F401
     ExchangePort,
     ExchangePosition,
@@ -13,6 +14,7 @@ from .port import (  # noqa: F401
     OrderKind,
     OrderRequest,
     SubmitUnknownError,
+    CancelUnknownError,
     OrderRejectedError,
     DuplicateClientOrderIdError,
 )

@@ -51,6 +51,7 @@ CREATE TABLE IF NOT EXISTS fills (
     qty             REAL NOT NULL,
     price           REAL NOT NULL,
     fee             REAL NOT NULL DEFAULT 0,
+    realized_pnl    REAL NOT NULL DEFAULT 0,
     side            TEXT NOT NULL,
     filled_at       TEXT NOT NULL
 );
@@ -263,19 +264,31 @@ class Ledger:
 
     def insert_fill(
         self, fill_id: str, client_order_id: str, qty: float, price: float,
-        fee: float, side: str, filled_at: str,
+        fee: float, side: str, filled_at: str, realized_pnl: float = 0.0,
     ) -> bool:
         """幂等入账：fill_id 已存在返回 False，不重复记账。"""
         try:
             with self._conn:
                 self._conn.execute(
-                    "INSERT INTO fills (fill_id, client_order_id, qty, price, fee, side, filled_at)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (fill_id, client_order_id, qty, price, fee, side, filled_at),
+                    "INSERT INTO fills (fill_id, client_order_id, qty, price, fee,"
+                    " realized_pnl, side, filled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (fill_id, client_order_id, qty, price, fee, realized_pnl, side, filled_at),
                 )
         except sqlite3.IntegrityError:
             return False
         return True
+
+    def fill_exists(self, fill_id: str) -> bool:
+        row = self._conn.execute(
+            "SELECT 1 FROM fills WHERE fill_id = ?", (fill_id,)
+        ).fetchone()
+        return row is not None
+
+    def get_fill(self, fill_id: str) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT * FROM fills WHERE fill_id = ?", (fill_id,)
+        ).fetchone()
+        return dict(row) if row else None
 
     def fills_for_order(self, client_order_id: str) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
