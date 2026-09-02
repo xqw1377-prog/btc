@@ -2,23 +2,58 @@
 
 > 本文件是当前唯一权威路线图。README.md / STRATEGY.md / DEPLOYMENT.md 为事故前历史文档，不再代表现状。
 
-## 状态（2026-09-02）
+## 状态（2026-09-02，B2.2 后）
 
 ```text
 分支:   safety/p0a-mainnet-isolation
-P0-A    = PASS  (b037e8e  fail-closed 主网隔离, 44 tests)
-P0-B1   = PASS  (cda0f83  durable execution truth, kernel 基线)
-P0-B2.0 = PASS-WITH-FIXES (5c095a7  OCO/OUO/迟到成交 + Hypothesis，
-                            覆盖口径与迟到语义由 B2.1 修正)
-P0-B2.1 = 本提交：保护覆盖口径（角色分片求和/禁相加/禁取 max/SL 强制腿）、
-          迟到成交三分类（DUPLICATE/COVERED_BY_FACT/LATE_NEW_FILL）、
-          OCO 部分成交 → PROTECTION_DEGRADED 修复流程
-execution_truth.py = FROZEN / NOT-BASELINE（仅允许经迁移测试的
-                     Decimal 精度与费用账本选择性移植）
-P0-B3（含离线 Adapter 开发）= HOLD（待密钥轮换 + 人工对账完成）
+P0-A    = PASS-REGRESSED → 已修复待独立重定级
+          （回归三件：LIVE 先建主网 Client 再拒绝 / 只读 broker 带真实
+            cancel / production_main 依赖未跟踪冻结线模块。
+            B2.2 已全部修复并以测试钉死；重定级权在 reviewer）
+P0-B1   = PASS  (cda0f83  kernel 基线)
+P0-B2.0 = PASS-WITH-FIXES (5c095a7)
+P0-B2.1 = PASS-WITH-FIXES (76a6d54)
+P0-B2.2 = 本提交：COVERED_BY_FACT 证据门控、OCO 撤单竞态、
+          终态逃逸边证据化、P0-A 回归修复、测试数对账
+execution_truth.py = FROZEN / NOT-BASELINE（原地冻结）
+P0-B3（含离线 Adapter 开发）= HOLD
 TESTNET = NOT-RUN
-LIVE    = NO-GO（无论配置；production_main 拒绝实盘循环）
+LIVE    = NO-GO（无论配置；production_main 在任何 Client 构造之前拒绝 LIVE）
 ```
+
+### 测试数对账（144 → 106 的解释）
+
+- 76a6d54 提交树真实用例数 = **106**（干净 worktree unittest discovery 实测）；
+- 未跟踪并行线（test_execution_truth*.py 五个文件）= **38**；
+- reviewer 观测的 144 = 106 + 38（全量 discovery 含未跟踪文件）；
+- 此前误报的 121 = 106 + 15（三个后出现的外部文件未被 --ignore 覆盖，
+  被 pytest 静默收集且恰好全过）——报告污染，已纠正；
+- B2.2 后提交树 = **119**（106 + 13 项新增）。
+
+### B2.2 关键修正
+
+1. **COVERED_BY_FACT 证据门控**：累计数量"容得下"不再构成证据。仅接受
+   （a）reconciliation fact 明确列出该 venue trade ID，或（b）与未匹配
+   合成调整的确定性替换（SYNTHETIC_REPLACED：撤销合成经济影响、写入
+   真实价格/费用/PnL、仓位数量不重复变化）。fills 表新增
+   synthetic / replaces_synthetic_fill_id / covered_by_fact_id /
+   economic_effect_applied 证据列 + reconciliation_facts 表。
+2. **OCO 撤单竞态**：修复流程改为 撤单→等待每腿明确终态→拉 fills→
+   拉仓位→（已平仓→对账收敛；仍持仓→先确认强制 SL→再可选 TP，
+   仅 TP 失败= safe_but_incomplete 不触发紧急平仓）。
+   FakeExchange 支持 cancel_fires_first（撤单窗口内腿按 reduceOnly
+   上限成交，不得超射反向开仓）。
+3. **终态逃逸边证据化**：RECONCILED/REJECTED/CLOSED → RECOVERY_REQUIRED
+   必须携带 exchange_fact=(fact_id, venue_fill_id) 且 reason 以
+   EXCHANGE_FACT_CORRECTION 开头，否则状态机拒绝。
+4. **P0-A 回归修复**：LIVE 在任何 Client 构造之前拒绝（含双重授权齐全的
+   情形）；只读 broker 的 cancel_order 物理拒绝；
+   tests/test_production_entry_integrity.py 钉死 production_main 不得引用
+   冻结线/未跟踪模块。
+5. **并行写入违规处置（2026-09-02 09:10-09:28）**：写入者再次违反冻结，
+   改写 7 个已跟踪文件（含 p0_boundary.boot()）并引入具备真实下单能力的
+   binance_port.py/shadow_adapter.py/reconciler.py。全部证据已隔离至
+   ../AURORA-quarantine-20260902/，被改文件已恢复至 76a6d54。
 
 ### B2.1 关键口径（reviewer 裁定，实现于 aurora/kernel/coverage.py）
 

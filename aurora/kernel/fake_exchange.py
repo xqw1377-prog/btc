@@ -46,7 +46,9 @@ class FakeExchange(ExchangePort):
         self.entry_behavior = entry_behavior
         self.protection_behavior = protection_behavior
         self.close_behavior = close_behavior
-        self.cancel_behavior = "ok"  # "ok" | "unknown"（撤单结果未知）
+        self.cancel_behavior = "ok"      # "ok" | "unknown"（撤单结果未知）
+        self.cancel_fires_first = False  # 撤单竞态：撤单到达前腿已成交
+        self.tp_reject_only = False      # 仅 TP 腿拒单（SL 正常，测 safe_but_incomplete）
         self.price = price
 
         self.submit_log: List[OrderRequest] = []
@@ -58,6 +60,8 @@ class FakeExchange(ExchangePort):
     # ---- 内部 ----
 
     def _behavior_for(self, kind: OrderKind) -> str:
+        if self.tp_reject_only and kind == OrderKind.TAKE_PROFIT:
+            return "reject"
         if kind == OrderKind.ENTRY:
             return self.entry_behavior
         if kind == OrderKind.CLOSE:
@@ -131,12 +135,34 @@ class FakeExchange(ExchangePort):
             return OrderFact(client_order_id, "NOT_FOUND", 0.0, 0.0)
         return OrderFact(client_order_id, order["status"], order["filled_qty"], order["avg_price"])
 
+    def _current_signed_qty(self, symbol: str) -> float:
+        signed = 0.0
+        for order in self._orders.values():
+            req = order["req"]
+            if req.symbol == symbol and order["filled_qty"] > 0:
+                signed += (1.0 if req.side == "BUY" else -1.0) * order["filled_qty"]
+        return signed
+
+    def _cap_reduce_only(self, req: OrderRequest, want: float) -> float:
+        """reduceOnly 成交上限 = 当前仓位绝对值（不得超射反向开仓）。"""
+        if not req.reduce_only:
+            return want
+        return max(0.0, min(want, abs(self._current_signed_qty(req.symbol))))
+
     def cancel_order(self, client_order_id: str) -> bool:
         if self.cancel_behavior == "unknown":
             raise CancelUnknownError(f"cancel result unknown: {client_order_id}")
         order = self._orders.get(client_order_id)
         if order is None or order["status"] != "NEW":
             return False
+        if self.cancel_fires_first:
+            # 竞态：撤单请求到达前，腿已按 reduceOnly 上限成交
+            fire_qty = self._cap_reduce_only(
+                order["req"], order["req"].quantity - order["filled_qty"])
+            if fire_qty > 0:
+                self._emit_fill(order["req"], fire_qty)
+                order["status"] = "FILLED"
+                return False  # 撤单失败：订单已成交
         order["status"] = "CANCELLED"
         return True
 
@@ -174,15 +200,21 @@ class FakeExchange(ExchangePort):
         self, client_order_id: str, price: Optional[float] = None,
         qty: Optional[float] = None,
     ) -> None:
-        """模拟交易所侧 SL/TP 触发；qty 省略为整腿成交（部分触发可指定 qty）。"""
+        """模拟交易所侧 SL/TP 触发；qty 省略为整腿成交（部分触发可指定 qty）。
+
+        reduceOnly 保护腿成交上限为当前仓位（不得超射反向开仓）。
+        """
         order = self._orders[client_order_id]
         if order["status"] == "FILLED":
             return
-        fill_qty = order["req"].quantity if qty is None else qty
+        want = order["req"].quantity if qty is None else qty
+        fire_qty = self._cap_reduce_only(order["req"], want)
+        if fire_qty <= 0:
+            return
         if price is not None:
-            self._emit_fill_at(order["req"], fill_qty, price)
+            self._emit_fill_at(order["req"], fire_qty, price)
         else:
-            self._emit_fill(order["req"], fill_qty)
+            self._emit_fill(order["req"], fire_qty)
         if order["filled_qty"] >= order["req"].quantity - 1e-12:
             order["status"] = "FILLED"
         else:

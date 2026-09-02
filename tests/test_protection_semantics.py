@@ -220,26 +220,168 @@ class LateFillTests(Harness):
         order = self.ledger.get_order("T7-ENTRY")
         self.assertAlmostEqual(order["filled_qty"], 0.010, places=10)
 
-    def test_t8_fill_covered_by_reconciliation_snapshot(self):
-        """T8：已被事实快照计入的迟到 Fill 只关联审计，不重复记账。"""
-        # 构造：订单事实同步到 0.010，但成交明细只录了 0.006
+    def test_t8_covered_by_fact_requires_evidence(self):
+        """T8（P0-B2.2 重写）：累计数量"容得下"不构成证据。
+
+        reviewer 反例：交易所 executed 0.010、账本真实 fills 0.008、
+        迟到 fill 0.002 —— 数量条件成立，但这正是缺失的真实成交，
+        必须判 LATE_NEW_FILL 而非 COVERED_BY_FACT。
+        """
         self.ledger.create_intent("T8", "BTCUSDT", "LONG", 0.010)
         self.ledger.record_order_submitting(
             "T8-ENTRY", "T8", "ENTRY", "BUY", "LONG", 0.010)
         self.ledger.update_order("T8-ENTRY", state="FILLED",
                                  filled_qty=0.010, avg_price=100.0)
-        self.ledger.insert_fill("T8-F0", "T8-ENTRY", 0.006, 100.0, 0.0, "BUY", utc_now())
-        covered = self._make_fill("T8-ENTRY", "T8-F1", 0.004, 100.0)
+        self.ledger.insert_fill("T8-F0", "T8-ENTRY", 0.008, 100.0, 0.0, "BUY", utc_now())
+
+        missing = self._make_fill("T8-ENTRY", "T8-F1", 0.002, 100.0)
+        result = self.orch.apply_fill_event(missing)
+        self.assertEqual(result["class"], "LATE_NEW_FILL")  # 数量口径不再放行
+        self.assertAlmostEqual(
+            self.ledger.get_order("T8-ENTRY")["filled_qty"], 0.010, places=10)
+
+        # 正路径：reconciliation fact 明确列出该 venue trade ID → 仅关联审计
+        self.ledger.create_intent("T8B", "BTCUSDT", "LONG", 0.010)
+        self.ledger.record_order_submitting(
+            "T8B-ENTRY", "T8B", "ENTRY", "BUY", "LONG", 0.010)
+        self.ledger.update_order("T8B-ENTRY", state="FILLED",
+                                 filled_qty=0.010, avg_price=100.0)
+        self.ledger.record_reconciliation_fact(
+            "fact-boot-1", "T8B-ENTRY", covered_fill_ids=["T8B-V9"],
+            exchange_executed_qty=0.010)
+        covered = self._make_fill("T8B-ENTRY", "T8B-V9", 0.004, 100.0)
         result = self.orch.apply_fill_event(covered)
         self.assertEqual(result["class"], "COVERED_BY_FACT")
-        order = self.ledger.get_order("T8-ENTRY")
-        self.assertAlmostEqual(order["filled_qty"], 0.010, places=10)  # 未重复
-        rows = self.ledger.fills_for_order("T8-ENTRY")
-        self.assertEqual(len(rows), 2)  # 审计层保留
-        self.assertAlmostEqual(sum(r["qty"] for r in rows), 0.010, places=10)
+        self.assertEqual(result["evidence_fact_id"], "fact-boot-1")
+        self.assertAlmostEqual(
+            self.ledger.get_order("T8B-ENTRY")["filled_qty"], 0.010, places=10)
+        row = self.ledger.get_fill("T8B-V9")
+        self.assertEqual(row["covered_by_fact_id"], "fact-boot-1")
+        self.assertEqual(row["economic_effect_applied"], 0)  # 不重复计经济影响
+
+    def test_synthetic_fill_replaced_by_real_fill(self):
+        """合成调整被真实 Fill 确定性替换：经济影响替换、数量不重复变化。"""
+        self._open_full("SYN", 0.010)
+        gap = self._make_fill("SYN-ENTRY", "SYN-GAP", 0.002, 100.0)
+        self.orch.record_synthetic_fill(gap, reason="reconciliation gap")
+        order_before = self.ledger.get_order("SYN-ENTRY")["filled_qty"]
+
+        real = self._make_fill("SYN-ENTRY", "SYN-REAL-1", 0.002, 101.5)
+        result = self.orch.apply_fill_event(real)
+        self.assertEqual(result["class"], "SYNTHETIC_REPLACED")
+        self.assertEqual(result["replaces"], "SYN-GAP")
+        # 数量不重复变化
+        self.assertAlmostEqual(
+            self.ledger.get_order("SYN-ENTRY")["filled_qty"],
+            order_before, places=10)
+        # 真实价格/费用入账；合成单标记为已替换
+        real_row = self.ledger.get_fill("SYN-REAL-1")
+        self.assertEqual(real_row["replaces_synthetic_fill_id"], "SYN-GAP")
+        self.assertGreater(real_row["fee"], 0)
+        syn_row = self.ledger.get_fill("SYN-GAP")
+        self.assertEqual(syn_row["covered_by_fact_id"], "replaced-by:SYN-REAL-1")
+
+
+class CancelRaceTests(Harness):
+    """P0-B2.2 OCO 撤单期间竞态门禁（reviewer 指定 R1/R2/R3）。"""
+
+    def test_r1_leg_fires_during_cancel_window(self):
+        """R1：撤单请求到确认之间旧腿再次成交 → 以事实收敛，不重建。"""
+        self._open_full("R1", 0.010)
+        self.exchange.fire_protection("R1-TP", price=101.0, qty=0.004)  # 触发降级
+        self.exchange.cancel_fires_first = True  # SL 在撤单窗口内全部成交
+        self.orch.recover()
+        intent = self.ledger.get_intent("R1")
+        self.assertEqual(intent["state"], IntentState.RECONCILED.value)
+        # 撤单窗口内成交的腿以事实入账
+        sl = self.ledger.get_order("R1-SL")
+        self.assertEqual(sl["state"], "FILLED")
+        self.assertEqual(len(self.ledger.fills_for_order("R1-SL")), 1)
+        # 仓位归零 → 不重建
+        rebuilds = [o for o in self.ledger.orders_for_intent("R1")
+                    if "-R" in o["client_order_id"]]
+        self.assertEqual(rebuilds, [])
+        self.assertFalse(self.ledger.kill_state()["engaged"])
+        self.assertEqual(
+            self.exchange.position("BTCUSDT").signed_qty, 0.0)
+
+    def test_r2_position_zeroed_before_rebuild(self):
+        """R2：撤单过程中仓位已归零 → 不重建，直接对账。"""
+        self._open_full("R2", 0.010)
+        self.exchange.fire_protection("R2-TP", price=101.0, qty=0.010)  # 全量触发=平仓
+        self.orch.recover()
+        intent = self.ledger.get_intent("R2")
+        self.assertEqual(intent["state"], IntentState.RECONCILED.value)
+        rebuilds = [o for o in self.ledger.orders_for_intent("R2")
+                    if "-R" in o["client_order_id"]]
+        self.assertEqual(rebuilds, [])
+        # 兄弟 SL 腿被精确撤销
+        self.assertEqual(self.ledger.get_order("R2-SL")["state"], "CANCELLED")
+        self.assertFalse(self.ledger.kill_state()["engaged"])
+
+    def test_r3_sl_ok_tp_fail_safe_but_incomplete_no_flatten(self):
+        """R3：新 SL 成功、TP 失败 → 安全但不完整，不触发紧急平仓。"""
+        self.exchange.tp_reject_only = True
+        result = self._open_full("R3", 0.010)
+        self.assertTrue(result["success"])
+        self.assertTrue(result["safe_but_incomplete"])
+        self.assertEqual(
+            self.ledger.get_intent("R3")["state"], IntentState.PROTECTED.value)
+        # SL 强制腿在位；TP 被拒
+        self.assertEqual(self.ledger.get_order("R3-SL")["state"], "ACTIVE")
+        self.assertEqual(self.ledger.get_order("R3-TP")["state"], "REJECTED")
+        # 不熔断、不紧急平仓
+        self.assertFalse(self.ledger.kill_state()["engaged"])
+        closes = [r for r in self.exchange.submit_log
+                  if r.order_kind == OrderKind.CLOSE]
+        self.assertEqual(closes, [])
+        # 覆盖语义分开表达
+        status = compute_protection_status(
+            self.ledger.orders_for_intent("R3"), 0.010)
+        self.assertTrue(status.mandatory_ok)
+        self.assertFalse(status.tp_ok)
+        self.assertTrue(status.safe_but_incomplete)
+
+    def test_r3b_repair_sl_ok_tp_fail_stays_protected(self):
+        """R3 变体：修复流程中 SL 重建成功、TP 失败 → 仍 PROTECTED 不平仓。"""
+        self._open_full("R3B", 0.010)
+        self.exchange.fire_protection("R3B-TP", price=101.0, qty=0.004)
+        self.exchange.tp_reject_only = True  # 重建时仅 TP 被拒
+        self.orch.recover()
+        intent = self.ledger.get_intent("R3B")
+        self.assertEqual(intent["state"], IntentState.PROTECTED.value)
+        sl_r = [o for o in self.ledger.orders_for_intent("R3B")
+                if o["client_order_id"].startswith("R3B-SL-R")
+                and o["state"] == "ACTIVE"]
+        self.assertTrue(sl_r)
+        self.assertAlmostEqual(sl_r[0]["quantity"], 0.006, places=10)
+        self.assertFalse(self.ledger.kill_state()["engaged"])
+        closes = [r for r in self.exchange.submit_log
+                  if r.order_kind == OrderKind.CLOSE]
+        self.assertEqual(closes, [])
+
+    def test_coverage_excludes_unconfirmed_legs(self):
+        """覆盖只计交易所确认 ACTIVE 的腿（SUBMITTING/未知态不计入）。"""
+        orders = [
+            {"client_order_id": "U-SL", "order_kind": "STOP_LOSS",
+             "state": "ACTIVE", "quantity": 0.006, "filled_qty": 0.0},
+            # 本地已记录、未经交易所确认的腿：不得计入覆盖
+            {"client_order_id": "U-SL2", "order_kind": "STOP_LOSS",
+             "state": "SUBMITTING", "quantity": 0.004, "filled_qty": 0.0},
+            # 已撤/已拒/已触发的腿同样不计入
+            {"client_order_id": "U-SL3", "order_kind": "STOP_LOSS",
+             "state": "CANCELLED", "quantity": 0.010, "filled_qty": 0.0},
+            {"client_order_id": "U-TP", "order_kind": "TAKE_PROFIT",
+             "state": "ACTIVE", "quantity": 0.010, "filled_qty": 0.0},
+        ]
+        status = compute_protection_status(orders, 0.010)
+        self.assertAlmostEqual(status.sl_coverage, 0.006, places=10)
+        self.assertFalse(status.mandatory_ok)  # 0.006 < 0.010
+        self.assertTrue(status.tp_ok)
 
 
 class IdempotencyTests(Harness):
+
     def test_t9_repeated_recover_no_duplicate_cancel_or_rebuild(self):
         """T9：多次 recover() 不重复撤单或补挂。"""
         self._open_full("T9", 0.010)

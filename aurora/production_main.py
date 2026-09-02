@@ -94,10 +94,12 @@ class BinanceBroker:
             raise BrokerError(str(exc)) from exc
 
     def cancel_order(self, symbol: str, order_id: str) -> Dict[str, Any]:
-        try:
-            return self._client.futures_cancel_order(symbol=symbol, orderId=order_id)
-        except Exception as exc:
-            raise BrokerError(str(exc)) from exc
+        # 只读 broker 不具备任何账户变更能力；撤单仅允许经武装执行内核
+        # 按精确 client_order_id 执行（P0-A 复审修复）
+        raise SafetyViolation(
+            "[P0] read-only broker refuses cancel; cancel belongs to the"
+            " armed execution kernel only."
+        )
 
     def open_orders(self, symbol: str) -> List[Dict[str, Any]]:
         try:
@@ -107,16 +109,19 @@ class BinanceBroker:
 
 
 def _build_network_broker(mode: RunMode) -> BinanceBroker:
+    # LIVE 在任何 Client 构造之前拒绝：构造主网 Client 本身就会发起网络请求，
+    # "先构造再拒绝"属于回归（P0-A 复审发现，此处修复）
+    if mode == RunMode.LIVE:
+        raise SafetyViolation(
+            "[P0] LIVE remains NO-GO; refusing before any mainnet client construction."
+        )
     from binance.client import Client
 
     api_key = os.getenv("BINANCE_API_KEY") or ""
     api_secret = os.getenv("BINANCE_API_SECRET") or ""
     if not api_key or not api_secret:
         raise SafetyViolation("[P0] missing BINANCE_API_KEY/SECRET.")
-    if mode == RunMode.LIVE:
-        client = Client(api_key, api_secret, testnet=False)
-    else:
-        client = Client(api_key, api_secret, testnet=True)
+    client = Client(api_key, api_secret, testnet=True)
     return BinanceBroker(client, mode)
 
 
@@ -124,7 +129,12 @@ def run_boot() -> BootContext:
     load_dotenv()
     mode = resolve_mode()
     broker = None
-    if mode in (RunMode.TESTNET, RunMode.SHADOW, RunMode.LIVE):
+    if mode == RunMode.LIVE:
+        # 双重授权可校验，但无论结果如何都不会构造主网客户端
+        raise SafetyViolation(
+            "[P0] LIVE remains NO-GO; no mainnet client will be constructed."
+        )
+    if mode in (RunMode.TESTNET, RunMode.SHADOW):
         broker = _build_network_broker(mode)
     return boot(
         persist_path=os.getenv("AURORA_P0_STATE") or default_state_path(),

@@ -80,6 +80,32 @@ class StateMachineTests(unittest.TestCase):
                 with self.assertRaises(InvalidTransition):
                     assert_transition("intent", "T", terminal, target, "x", "T")
 
+    def test_terminal_escape_requires_exchange_fact_evidence(self):
+        """终态逃逸边证据门控：缺 fact/venue_fill_id 或 reason 前缀不符即拒绝。"""
+        frm = IntentState.RECONCILED
+        to = IntentState.RECOVERY_REQUIRED
+        # 无证据 → 拒绝
+        with self.assertRaises(InvalidTransition):
+            assert_transition("intent", "T", frm, to,
+                              "EXCHANGE_FACT_CORRECTION something", "T")
+        # 证据不完整 → 拒绝
+        with self.assertRaises(InvalidTransition):
+            assert_transition("intent", "T", frm, to,
+                              "EXCHANGE_FACT_CORRECTION something", "T",
+                              exchange_fact=("", "venue-1"))
+        with self.assertRaises(InvalidTransition):
+            assert_transition("intent", "T", frm, to,
+                              "EXCHANGE_FACT_CORRECTION something", "T",
+                              exchange_fact=("fact-1", ""))
+        # reason 前缀不符 → 拒绝（普通异常不得滥用逃逸边）
+        with self.assertRaises(InvalidTransition):
+            assert_transition("intent", "T", frm, to, "ordinary failure", "T",
+                              exchange_fact=("fact-1", "venue-1"))
+        # 证据齐全 → 唯一放行路径
+        assert_transition("intent", "T", frm, to,
+                          "EXCHANGE_FACT_CORRECTION late venue fact", "T",
+                          exchange_fact=("fact-1", "venue-1"))
+
     def test_protection_degraded_chain_is_legal(self):
         chain = [
             IntentState.PROTECTED,

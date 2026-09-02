@@ -119,6 +119,13 @@ def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+TERMINAL_ESCAPE_SOURCES = (
+    IntentState.RECONCILED,
+    IntentState.REJECTED,
+    IntentState.CLOSED,
+)
+
+
 def assert_transition(
     entity_type: str,
     entity_id: str,
@@ -126,11 +133,29 @@ def assert_transition(
     to_state: IntentState,
     reason: str,
     correlation_id: Optional[str] = None,
+    exchange_fact: Optional[tuple] = None,
 ) -> Transition:
     if to_state not in ALLOWED_TRANSITIONS.get(from_state, frozenset()):
         raise InvalidTransition(
             f"{entity_type} {entity_id}: illegal transition {from_state.value} -> {to_state.value}"
         )
+    if (
+        from_state in TERMINAL_ESCAPE_SOURCES
+        and to_state == IntentState.RECOVERY_REQUIRED
+    ):
+        # 终态逃逸边仅限"交易所事实修正"：必须同时给出 fact_id 与 venue_fill_id，
+        # 防止普通异常路径滥用该边推翻终态
+        if not exchange_fact or not exchange_fact[0] or not exchange_fact[1]:
+            raise InvalidTransition(
+                f"{entity_type} {entity_id}: terminal escape "
+                f"{from_state.value} -> RECOVERY_REQUIRED requires "
+                f"exchange_fact=(fact_id, venue_fill_id)"
+            )
+        if not reason.startswith("EXCHANGE_FACT_CORRECTION"):
+            raise InvalidTransition(
+                f"{entity_type} {entity_id}: terminal escape reason must start "
+                f"with EXCHANGE_FACT_CORRECTION"
+            )
     return Transition(
         entity_type=entity_type,
         entity_id=entity_id,

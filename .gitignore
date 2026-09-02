@@ -77,3 +77,6 @@ regime_stats.json
 state/*.json
 state/*.tmp
 state/locks/
+
+# Hypothesis property-test cache
+.hypothesis/

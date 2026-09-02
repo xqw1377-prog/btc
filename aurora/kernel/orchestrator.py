@@ -297,52 +297,38 @@ class Orchestrator:
             f"protection submit for actual filled qty={filled_qty}",
             correlation_id=intent_id)
 
-        ok = True
-        for tag, kind in (("SL", OrderKind.STOP_LOSS), ("TP", OrderKind.TAKE_PROFIT)):
-            cid = f"{intent_id}-{tag}"
-            try:
-                self.ledger.record_order_submitting(
-                    client_order_id=cid, intent_id=intent_id,
-                    order_kind=kind.value,
-                    side="SELL" if side == "LONG" else "BUY", position_side=side,
-                    quantity=filled_qty, stop_price=99.0 if tag == "SL" else 101.0,
-                    reduce_only=True,
-                )
-            except Exception as exc:
-                raise _LedgerWriteFailed(str(exc)) from exc
-            req = OrderRequest(
-                client_order_id=cid, symbol=self.symbol, order_kind=kind,
-                side="SELL" if side == "LONG" else "BUY", position_side=side,
-                quantity=filled_qty,
-                stop_price=99.0 if tag == "SL" else 101.0, reduce_only=True,
-            )
-            try:
-                ack = self.exchange.submit_order(req)
-                # 保护单挂上即处于工作状态（ACTIVE）；成交留待交易所触发后对账入账
-                self.ledger.update_order(
-                    cid,
-                    state="ACTIVE" if ack.status == "NEW" else "FILLED",
-                    exchange_order_id=ack.exchange_order_id,
-                    filled_qty=ack.filled_qty, avg_price=ack.avg_price)
-            except (OrderRejectedError, SubmitUnknownError) as exc:
-                self.ledger.update_order(cid, state="REJECTED")
-                ok = False
-                break
-
-        if not ok:
+        # 强制腿 SL：失败 = 裸奔仓位 → 紧急平仓
+        try:
+            self._place_protection_leg(
+                intent_id, self._leg_cid(intent_id, "SL"),
+                OrderKind.STOP_LOSS, side, filled_qty, stop_price=99.0)
+        except (OrderRejectedError, SubmitUnknownError) as exc:
             self.ledger.transition_intent(
                 intent_id, IntentState.PROTECTION_FAILED,
-                "protection unconfirmed within deadline", correlation_id=intent_id)
-            return self._emergency_close(intent_id, trigger="protection failed")
+                f"mandatory SL rejected: {exc}", correlation_id=intent_id)
+            return self._emergency_close(intent_id, trigger="mandatory SL failed")
+
+        # 可选腿 TP：仅 TP 失败 = safe_but_incomplete，不紧急平仓
+        tp_ok = True
+        try:
+            self._place_protection_leg(
+                intent_id, self._leg_cid(intent_id, "TP"),
+                OrderKind.TAKE_PROFIT, side, filled_qty, stop_price=101.0)
+        except (OrderRejectedError, SubmitUnknownError):
+            tp_ok = False
 
         self.ledger.transition_intent(
             intent_id, IntentState.PROTECTED,
-            f"SL/TP confirmed for qty={filled_qty}", correlation_id=intent_id)
+            f"SL confirmed for qty={filled_qty}"
+            + ("" if tp_ok else "; TP incomplete (safe_but_incomplete)"),
+            correlation_id=intent_id)
         self.ledger.set_position_fact(
             self.symbol, PositionFactState.KNOWN_OPEN, qty=filled_qty, side=side,
-            source="protection", note="protected")
+            source="protection", note="protected" if tp_ok else "sl-only")
         return {"success": True, "intent_id": intent_id, "state": "PROTECTED",
-                "protected_qty": filled_qty}
+                "protected_qty": filled_qty,
+                "tp_coverage": filled_qty if tp_ok else 0.0,
+                "safe_but_incomplete": not tp_ok}
 
     def _emergency_close(self, intent_id: str, trigger: str) -> Dict[str, Any]:
         self.ledger.transition_intent(
@@ -627,13 +613,14 @@ class Orchestrator:
                 "safe_but_incomplete": fresh.safe_but_incomplete}
 
     def _repair_protection(self, intent_id: str) -> Dict[str, Any]:
-        """PROTECTION_DEGRADED 修复：按交易所剩余仓位重建 SL/TP。
+        """PROTECTION_DEGRADED 修复（P0-B2.2 竞态安全顺序）。
 
-        - 只使用交易所仓位事实，绝不用入场成交量推算剩余仓位；
-        - 旧腿按精确 client_order_id 撤销并确认；撤单结果未知 →
-          RECOVERY_REQUIRED + Kill；
-        - 修复期间（DEGRADED）禁止新开仓（open_position 有对应门禁）；
-        - 两腿确认后回到 PROTECTED。
+        检测部分成交 → DEGRADED → 精确撤销全部旧腿 → 等待每条腿明确终态
+        → 拉取最新 fills → 拉取交易所实际仓位 →
+          已平仓：不重建，直接对账收敛；
+          仍持仓：先提交并确认 SL（强制），再提交可选 TP；
+                  仅 TP 失败 = safe_but_incomplete，不触发紧急平仓。
+        撤单结果未知 / 撤单后腿仍无明确终态 → RECOVERY_REQUIRED + Kill。
         """
         current = IntentState(self.ledger.get_intent(intent_id)["state"])
         if current == IntentState.PROTECTED:
@@ -642,68 +629,101 @@ class Orchestrator:
                 "protection coverage insufficient / leg fired with remainder",
                 correlation_id=intent_id)
 
-        pos = self.exchange.position(self.symbol)
-        if pos is None:
+        def _recovery(reason: str) -> Dict[str, Any]:
             self.ledger.transition_intent(
-                intent_id, IntentState.RECOVERY_REQUIRED,
-                "repair blocked: exchange position UNKNOWN", correlation_id=intent_id)
-            self.ledger.engage_kill(f"protection repair position unknown {intent_id}")
+                intent_id, IntentState.RECOVERY_REQUIRED, reason,
+                correlation_id=intent_id)
+            self.ledger.engage_kill(f"protection repair: {reason}")
             self.ledger.set_position_fact(
                 self.symbol, PositionFactState.UNKNOWN,
-                source="repair", note="position unknown")
+                source="repair", note=reason)
             return {"success": False, "intent_id": intent_id,
-                    "state": "RECOVERY_REQUIRED", "reason": "position UNKNOWN"}
+                    "state": "RECOVERY_REQUIRED", "reason": reason}
 
-        remaining = abs(pos.signed_qty)
-        side = "LONG" if pos.signed_qty > 0 else "SHORT"
-        if remaining < 1e-12:
-            return {"success": True, "intent_id": intent_id,
-                    "reason": "flat; reconcile path handles"}
-
-        # 精确撤销全部活动旧腿
+        # 1) 精确撤销全部旧腿，并等待每条腿明确终态
         for order in self.ledger.orders_for_intent(intent_id):
             if order["order_kind"] not in ("STOP_LOSS", "TAKE_PROFIT"):
                 continue
-            if order["state"] not in ("ACTIVE", "SUBMITTING"):
+            if order["state"] != "ACTIVE":
                 continue
             cid = order["client_order_id"]
             try:
-                if self.exchange.cancel_order(cid):
-                    self.ledger.update_order(cid, state="CANCELLED")
+                self.exchange.cancel_order(cid)
             except CancelUnknownError:
-                self.ledger.transition_intent(
-                    intent_id, IntentState.RECOVERY_REQUIRED,
-                    f"repair cancel unknown: {cid}", correlation_id=intent_id)
-                self.ledger.engage_kill(f"cancel unknown during repair {cid}")
-                self.ledger.set_position_fact(
-                    self.symbol, PositionFactState.UNKNOWN,
-                    source="repair", note=f"cancel unknown {cid}")
-                return {"success": False, "intent_id": intent_id,
-                        "state": "RECOVERY_REQUIRED",
-                        "reason": f"cancel result unknown: {cid}"}
+                return _recovery(f"cancel result unknown: {cid}")
+            fact = self.exchange.query_order(cid)
+            if fact.status == "CANCELLED":
+                self.ledger.update_order(cid, state="CANCELLED")
+            elif fact.status in ("FILLED", "PARTIALLY_FILLED"):
+                # 撤单竞态：腿在撤单窗口内成交 → 以事实为准
+                self._apply_fills(cid)
+                self.ledger.update_order(
+                    cid, state=fact.status, filled_qty=fact.filled_qty,
+                    avg_price=fact.avg_price)
+            elif fact.status == "NEW":
+                return _recovery(f"cancel unconfirmed, leg still NEW: {cid}")
+            else:
+                return _recovery(f"leg in unexpected state {fact.status}: {cid}")
 
+        # 2) 拉取交易所实际仓位（唯一数量真源）
+        pos = self.exchange.position(self.symbol)
+        if pos is None:
+            return _recovery("exchange position UNKNOWN")
+
+        if abs(pos.signed_qty) < 1e-12:
+            # 修复期间已平仓：不重建，直接对账收敛
+            self.ledger.transition_intent(
+                intent_id, IntentState.CLOSING,
+                "flat confirmed during repair", correlation_id=intent_id)
+            self.ledger.transition_intent(
+                intent_id, IntentState.CLOSED,
+                "already flat on exchange", correlation_id=intent_id)
+            self.ledger.transition_intent(
+                intent_id, IntentState.RECONCILED,
+                "ledger matches exchange after repair-time close",
+                correlation_id=intent_id)
+            self.ledger.set_position_fact(
+                self.symbol, PositionFactState.KNOWN_FLAT, source="repair")
+            return {"success": True, "intent_id": intent_id,
+                    "state": "RECONCILED", "reason": "flat during repair"}
+
+        remaining = abs(pos.signed_qty)
+        side = "LONG" if pos.signed_qty > 0 else "SHORT"
+
+        # 3) 先提交并确认强制腿 SL
         self.ledger.transition_intent(
             intent_id, IntentState.PROTECTION_SUBMITTING,
-            f"rebuild protection for remaining {remaining}", correlation_id=intent_id)
+            f"rebuild mandatory SL for remaining {remaining}",
+            correlation_id=intent_id)
+        try:
+            self._place_protection_leg(
+                intent_id, self._leg_cid(intent_id, "SL-R"),
+                OrderKind.STOP_LOSS, side, remaining, stop_price=99.0)
+        except (OrderRejectedError, SubmitUnknownError) as exc:
+            self.ledger.transition_intent(
+                intent_id, IntentState.PROTECTION_FAILED,
+                f"mandatory SL rebuild rejected: {exc}", correlation_id=intent_id)
+            return self._emergency_close(
+                intent_id, trigger="mandatory SL rebuild failed")
 
-        for tag, kind in (("SL-R", OrderKind.STOP_LOSS), ("TP-R", OrderKind.TAKE_PROFIT)):
-            cid = self._leg_cid(intent_id, tag)
-            try:
-                self._place_protection_leg(
-                    intent_id, cid, kind, side, remaining,
-                    stop_price=99.0 if tag.startswith("SL") else 101.0)
-            except (OrderRejectedError, SubmitUnknownError) as exc:
-                self.ledger.transition_intent(
-                    intent_id, IntentState.PROTECTION_FAILED,
-                    f"protection rebuild rejected: {exc}", correlation_id=intent_id)
-                return self._emergency_close(
-                    intent_id, trigger="protection rebuild failed")
+        # 4) 再提交可选腿 TP；仅 TP 失败 = 安全但不完整，不紧急平仓
+        tp_ok = True
+        try:
+            self._place_protection_leg(
+                intent_id, self._leg_cid(intent_id, "TP-R"),
+                OrderKind.TAKE_PROFIT, side, remaining, stop_price=101.0)
+        except (OrderRejectedError, SubmitUnknownError):
+            tp_ok = False
 
         self.ledger.transition_intent(
             intent_id, IntentState.PROTECTED,
-            f"protection rebuilt for remaining {remaining}", correlation_id=intent_id)
+            "SL rebuilt"
+            + ("" if tp_ok else "; TP incomplete (safe_but_incomplete)"),
+            correlation_id=intent_id)
         return {"success": True, "intent_id": intent_id, "state": "PROTECTED",
-                "sl_coverage": remaining, "tp_coverage": remaining}
+                "sl_coverage": remaining,
+                "tp_coverage": remaining if tp_ok else 0.0,
+                "safe_but_incomplete": not tp_ok}
 
     def _place_protection_leg(
         self, intent_id: str, cid: str, kind: OrderKind, side: str,
@@ -747,16 +767,21 @@ class Orchestrator:
             n += 1
         return f"{base}{n}"
 
-    # ---------- 迟到成交（P0-B2.1 三分类） ----------
+    # ---------- 迟到成交（P0-B2.2 证据门控三分类） ----------
 
     def apply_fill_event(self, fill: Fill) -> Dict[str, Any]:
-        """迟到 Fill 事件三分类处理。
+        """迟到 Fill 事件分类处理（证据门控，P0-B2.2 修正）。
 
-        DUPLICATE          fill_id 已存在 → 无经济影响
-        COVERED_BY_FACT    未见过但已被有证据的事实同步计入 → 仅关联审计
-        LATE_NEW_FILL      未被任何事实覆盖 → 更新订单累计成交/费用/PnL、
-                           拉取交易所仓位、重算保护；终态意图经逃逸边进入
-                           RECOVERY_REQUIRED 并熔断
+        DUPLICATE           fill_id 已存在 → 无经济影响
+        COVERED_BY_FACT     存在明确把该 venue trade ID 列为已覆盖的
+                            reconciliation fact → 仅关联审计，不重复记账。
+                            累计数量"容得下"不再构成证据。
+        SYNTHETIC_REPLACED  与未匹配合成调整确定性替换（同订单同数量）→
+                            撤销合成经济影响、写入真实价格/费用/PnL，
+                            仓位数量不重复变化
+        LATE_NEW_FILL       无任何证据 → 修正订单累计成交/费用/PnL、拉取仓位、
+                            重算保护；终态意图经证据门控逃逸边进入
+                            RECOVERY_REQUIRED 并熔断
         """
         if self.ledger.fill_exists(fill.fill_id):
             return {"class": "DUPLICATE", "fill_id": fill.fill_id}
@@ -768,21 +793,46 @@ class Orchestrator:
             return {"class": "ORPHAN", "fill_id": fill.fill_id,
                     "action": "MANUAL_RECOVERY"}
 
-        economic = sum(f["qty"] for f in self.ledger.fills_for_order(fill.client_order_id))
-        covered_by_fact = float(order["filled_qty"]) >= economic + fill.qty - 1e-9
-
-        realized = self._realized_pnl(order, fill)
-        inserted = self.ledger.insert_fill(
-            fill.fill_id, fill.client_order_id, fill.qty, fill.price,
-            fill.fee, fill.side, fill.filled_at, realized_pnl=realized)
-        if not inserted:  # 竞态下他方已入账
-            return {"class": "DUPLICATE", "fill_id": fill.fill_id}
-
-        if covered_by_fact:
+        # 证据一：reconciliation fact 明确覆盖该 venue trade ID
+        fact_id = self.ledger.evidence_covers_fill(fill.fill_id)
+        if fact_id:
+            realized = self._realized_pnl(order, fill)
+            inserted = self.ledger.insert_fill(
+                fill.fill_id, fill.client_order_id, fill.qty, fill.price,
+                fill.fee, fill.side, fill.filled_at, realized_pnl=realized,
+                covered_by_fact_id=fact_id, economic_effect_applied=False)
+            if not inserted:
+                return {"class": "DUPLICATE", "fill_id": fill.fill_id}
             return {"class": "COVERED_BY_FACT", "fill_id": fill.fill_id,
+                    "evidence_fact_id": fact_id,
                     "order": fill.client_order_id, "realized_pnl": realized}
 
-        # ---- LATE_NEW_FILL：新交易所事实 ----
+        # 证据二：确定性替换未匹配的合成调整
+        synthetic = next(
+            (s for s in self.ledger.open_synthetic_fills(fill.client_order_id)
+             if abs(float(s["qty"]) - fill.qty) <= 1e-9), None)
+        if synthetic is not None:
+            realized = self._realized_pnl(order, fill)
+            inserted = self.ledger.insert_fill(
+                fill.fill_id, fill.client_order_id, fill.qty, fill.price,
+                fill.fee, fill.side, fill.filled_at, realized_pnl=realized,
+                replaces_synthetic_fill_id=synthetic["fill_id"])
+            if inserted:
+                self.ledger.mark_synthetic_replaced(
+                    synthetic["fill_id"], fill.fill_id)
+            return {"class": "SYNTHETIC_REPLACED", "fill_id": fill.fill_id,
+                    "replaces": synthetic["fill_id"],
+                    "realized_pnl": realized,
+                    "order_qty_unchanged": True}
+
+        # ---- LATE_NEW_FILL：无证据的新交易所事实 ----
+        economic = sum(
+            f["qty"] for f in self.ledger.fills_for_order(fill.client_order_id))
+        realized = self._realized_pnl(order, fill)
+        self.ledger.insert_fill(
+            fill.fill_id, fill.client_order_id, fill.qty, fill.price,
+            fill.fee, fill.side, fill.filled_at, realized_pnl=realized)
+
         new_filled = round(economic + fill.qty, 10)
         state = "FILLED" if new_filled >= float(order["quantity"]) - 1e-9 \
             else "PARTIALLY_FILLED"
@@ -799,9 +849,10 @@ class Orchestrator:
         ):
             self.ledger.transition_intent(
                 order["intent_id"], IntentState.RECOVERY_REQUIRED,
-                f"late exchange fact invalidates terminal state "
-                f"(fill {fill.fill_id} qty {fill.qty})",
-                correlation_id=order["intent_id"])
+                f"EXCHANGE_FACT_CORRECTION late venue fact invalidates "
+                f"terminal state (fill {fill.fill_id} qty {fill.qty})",
+                correlation_id=order["intent_id"],
+                exchange_fact=(f"late-fill:{fill.fill_id}", fill.fill_id))
             self.ledger.engage_kill(f"late fill after terminal state {fill.fill_id}")
         elif intent_state == IntentState.PROTECTED:
             self.sync_protection(order["intent_id"])
@@ -810,6 +861,26 @@ class Orchestrator:
                 "order": fill.client_order_id, "new_filled_qty": new_filled,
                 "realized_pnl": realized,
                 "position_after": abs(pos.signed_qty) if pos else None}
+
+    def record_synthetic_fill(
+        self, fill: Fill, reason: str = "reconciliation gap",
+    ) -> Dict[str, Any]:
+        """对账缺口合成调整（数量层面补齐）。真实 Fill 到达后按
+        SYNTHETIC_REPLACED 路径替换其经济影响。"""
+        order = self.ledger.get_order(fill.client_order_id)
+        if order is None:
+            return self._refuse("no order for synthetic fill")
+        inserted = self.ledger.insert_fill(
+            fill.fill_id, fill.client_order_id, fill.qty, fill.price,
+            fill.fee, fill.side, fill.filled_at, realized_pnl=0.0,
+            synthetic=True)
+        if inserted:
+            economic = sum(
+                f["qty"] for f in self.ledger.fills_for_order(fill.client_order_id))
+            self.ledger.update_order(
+                fill.client_order_id, filled_qty=round(economic, 10))
+        return {"success": True, "synthetic_fill_id": fill.fill_id,
+                "reason": reason}
 
     def _realized_pnl(self, order: Dict, fill: Fill) -> float:
         """平仓方向成交的已实现盈亏（入场腿记 0）。"""

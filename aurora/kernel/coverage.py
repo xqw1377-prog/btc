@@ -16,7 +16,11 @@ from typing import Dict, Iterable, Optional
 
 EPS = 1e-9
 
-ACTIVE_ORDER_STATES = ("SUBMITTING", "ACTIVE", "PROTECTION_SUBMITTING")
+# 仅计入"交易所已确认挂牌"的腿。明确不计入：
+# - SUBMITTING / PROTECTION_SUBMITTING（本地已记录但未经交易所确认）
+# - CANCELLED / REJECTED / FILLED / PARTIALLY_FILLED（不再保护）
+# - 未来引入的 PENDING_CANCEL / CANCEL_UNKNOWN 一律不属于该集合
+ACTIVE_ORDER_STATES = ("ACTIVE",)
 
 
 @dataclass(frozen=True)

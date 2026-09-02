@@ -53,7 +53,20 @@ CREATE TABLE IF NOT EXISTS fills (
     fee             REAL NOT NULL DEFAULT 0,
     realized_pnl    REAL NOT NULL DEFAULT 0,
     side            TEXT NOT NULL,
-    filled_at       TEXT NOT NULL
+    filled_at       TEXT NOT NULL,
+    synthetic                 INTEGER NOT NULL DEFAULT 0,
+    replaces_synthetic_fill_id TEXT,
+    covered_by_fact_id         TEXT,
+    quantity_effect_applied    INTEGER NOT NULL DEFAULT 1,
+    economic_effect_applied    INTEGER NOT NULL DEFAULT 1
+);
+
+CREATE TABLE IF NOT EXISTS reconciliation_facts (
+    fact_id                TEXT PRIMARY KEY,
+    client_order_id        TEXT NOT NULL,
+    covered_fill_ids       TEXT NOT NULL DEFAULT '[]',  -- JSON 数组
+    exchange_executed_qty  REAL NOT NULL DEFAULT 0,
+    captured_at            TEXT NOT NULL
 );
 
 CREATE TABLE IF NOT EXISTS kill_switch (
@@ -170,13 +183,15 @@ class Ledger:
     def transition_intent(
         self, intent_id: str, to_state: IntentState, reason: str,
         correlation_id: Optional[str] = None,
+        exchange_fact: Optional[tuple] = None,
     ) -> bool:
         current = self.get_intent(intent_id)
         if current is None:
             return False
         from_state = IntentState(current["state"])
         transition = assert_transition(
-            "intent", intent_id, from_state, to_state, reason, correlation_id
+            "intent", intent_id, from_state, to_state, reason,
+            correlation_id, exchange_fact=exchange_fact,
         )
         with self._conn:
             cur = self._conn.execute(
@@ -265,18 +280,70 @@ class Ledger:
     def insert_fill(
         self, fill_id: str, client_order_id: str, qty: float, price: float,
         fee: float, side: str, filled_at: str, realized_pnl: float = 0.0,
+        synthetic: bool = False, replaces_synthetic_fill_id: Optional[str] = None,
+        covered_by_fact_id: Optional[str] = None, economic_effect_applied: bool = True,
     ) -> bool:
         """幂等入账：fill_id 已存在返回 False，不重复记账。"""
         try:
             with self._conn:
                 self._conn.execute(
                     "INSERT INTO fills (fill_id, client_order_id, qty, price, fee,"
-                    " realized_pnl, side, filled_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (fill_id, client_order_id, qty, price, fee, realized_pnl, side, filled_at),
+                    " realized_pnl, side, filled_at, synthetic,"
+                    " replaces_synthetic_fill_id, covered_by_fact_id,"
+                    " quantity_effect_applied, economic_effect_applied)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+                    (fill_id, client_order_id, qty, price, fee, realized_pnl,
+                     side, filled_at, int(synthetic), replaces_synthetic_fill_id,
+                     covered_by_fact_id, int(economic_effect_applied)),
                 )
         except sqlite3.IntegrityError:
             return False
         return True
+
+    def record_reconciliation_fact(
+        self, fact_id: str, client_order_id: str,
+        covered_fill_ids: list, exchange_executed_qty: float,
+    ) -> None:
+        """记录对账事实证据：明确列出本次已覆盖的 venue trade IDs。"""
+        import json as _json
+        with self._conn:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO reconciliation_facts"
+                " (fact_id, client_order_id, covered_fill_ids,"
+                "  exchange_executed_qty, captured_at) VALUES (?, ?, ?, ?, ?)",
+                (fact_id, client_order_id, _json.dumps(sorted(covered_fill_ids)),
+                 exchange_executed_qty, utc_now()),
+            )
+
+    def evidence_covers_fill(self, fill_id: str) -> Optional[str]:
+        """返回把该 venue fill_id 明确列为已覆盖的 reconciliation fact_id。"""
+        import json as _json
+        rows = self._conn.execute(
+            "SELECT fact_id, covered_fill_ids FROM reconciliation_facts"
+        ).fetchall()
+        for row in rows:
+            try:
+                if fill_id in _json.loads(row["covered_fill_ids"]):
+                    return row["fact_id"]
+            except Exception:
+                continue
+        return None
+
+    def open_synthetic_fills(self, client_order_id: str) -> list:
+        """尚未被真实 Fill 替换的合成调整（用于替换定位）。"""
+        rows = self._conn.execute(
+            "SELECT * FROM fills WHERE client_order_id = ? AND synthetic = 1"
+            " AND covered_by_fact_id IS NULL ORDER BY filled_at",
+            (client_order_id,),
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def mark_synthetic_replaced(self, synthetic_fill_id: str, by_real_fill_id: str) -> None:
+        with self._conn:
+            self._conn.execute(
+                "UPDATE fills SET covered_by_fact_id = ? WHERE fill_id = ?",
+                (f"replaced-by:{by_real_fill_id}", synthetic_fill_id),
+            )
 
     def fill_exists(self, fill_id: str) -> bool:
         row = self._conn.execute(
