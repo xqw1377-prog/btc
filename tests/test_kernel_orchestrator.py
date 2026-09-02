@@ -140,6 +140,62 @@ class AcceptanceTests(Harness):
         again = self.orch.open_position("LONG", 0.01, intent_id="A6b-2")
         self.assertTrue(again["success"])
 
+    def test_g6c_oco_sibling_leg_cancelled_after_sl_fires(self):
+        """OCO 语义：SL 触发后，TP 兄弟腿必须按精确 ID 撤销，不留孤儿挂单。"""
+        self._boot_flat()
+        self.orch.open_position("LONG", 0.01, intent_id="A6c")
+        self.exchange.fire_protection("A6c-SL", price=99.0)
+        self.orch.recover()
+        tp = self.ledger.get_order("A6c-TP")
+        self.assertEqual(tp["state"], "CANCELLED")
+        sl = self.ledger.get_order("A6c-SL")
+        self.assertEqual(sl["state"], "FILLED")
+        self.assertEqual(
+            self.ledger.get_intent("A6c")["state"], IntentState.RECONCILED.value)
+
+    def test_g6d_ouo_protection_topup_after_entry_completes(self):
+        """OUO 语义：部分成交建保护后入场单补满，保护量必须跟随补足。"""
+        self.exchange.entry_behavior = "partial"
+        self._boot_flat()
+        result = self.orch.open_position("LONG", 0.010, intent_id="A6d")
+        self.assertAlmostEqual(result["protected_qty"], 0.006, places=10)
+        # 入场单后续成交至全量（模拟迟到/增量 Fill）
+        self.exchange.complete_fill("A6d-ENTRY")
+        report = self.orch.recover()
+        sl_topup = self.ledger.get_order("A6d-SL-TOPUP")
+        tp_topup = self.ledger.get_order("A6d-TP-TOPUP")
+        self.assertAlmostEqual(sl_topup["quantity"], 0.004, places=10)
+        self.assertAlmostEqual(tp_topup["quantity"], 0.004, places=10)
+        # 覆盖量按侧计算：SL 侧与 TP 侧各自覆盖全部持仓 0.010
+        sides = {"STOP_LOSS": 0.0, "TAKE_PROFIT": 0.0}
+        for o in self.ledger.orders_for_intent("A6d"):
+            if o["order_kind"] in sides and o["state"] in ("ACTIVE", "FILLED"):
+                sides[o["order_kind"]] += o["quantity"]
+        self.assertAlmostEqual(sides["STOP_LOSS"], 0.010, places=10)
+        self.assertAlmostEqual(sides["TAKE_PROFIT"], 0.010, places=10)
+        fact = self.ledger.get_position_fact("BTCUSDT")
+        self.assertAlmostEqual(fact["qty"], 0.010, places=10)
+
+    def test_g6e_late_fill_after_reconciled_no_silent_accounting(self):
+        """迟到成交（Hummingbot 语义）：只入审计账，不改已对账的持仓事实。"""
+        self._boot_flat()
+        self.orch.open_position("LONG", 0.01, intent_id="A6e")
+        self.exchange.fire_protection("A6e-SL", price=99.0)
+        self.orch.recover()
+        self.assertEqual(
+            self.ledger.get_intent("A6e")["state"], IntentState.RECONCILED.value)
+        entry = self.ledger.get_order("A6e-ENTRY")
+        recorded = self.ledger.insert_fill(
+            "LATE-EVENT-1", "A6e-ENTRY", 0.01, 100.5, 0.0, "BUY", "t-late")
+        self.assertTrue(recorded)  # 审计层保留迟到事件
+        after = self.ledger.get_order("A6e-ENTRY")
+        self.assertAlmostEqual(after["filled_qty"], entry["filled_qty"], places=10)
+        self.assertEqual(
+            self.ledger.get_intent("A6e")["state"], IntentState.RECONCILED.value)
+        self.assertEqual(
+            self.ledger.get_position_fact("BTCUSDT")["state"],
+            PositionFactState.KNOWN_FLAT.value)
+
     def test_g7_kill_switch_survives_restart(self):
         self._boot_flat()
         self.ledger.engage_kill("drawdown breach")
