@@ -9,19 +9,16 @@ from dotenv import load_dotenv
 load_dotenv()
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from binance.client import Client
 import pandas as pd
 
 from aurora.alpha_engine import AlphaEngine
 from aurora.capital_controller import CapitalController, Action, RiskState
 from aurora.execution_engine import ExecutionEngine
+from aurora.safety import trading_client
 
 class AuroraFinal:
     def __init__(self):
-        api_key = os.getenv('BINANCE_API_KEY')
-        api_secret = os.getenv('BINANCE_API_SECRET')
-
-        self.client = Client(api_key, api_secret)
+        self.client = trading_client()
         self.symbol = 'BTCUSDT'
         self.client.futures_change_leverage(symbol=self.symbol, leverage=3)
 
@@ -44,14 +41,23 @@ class AuroraFinal:
         sig.signal(sig.SIGTERM, lambda s, f: setattr(self, 'running', False))
 
     def _ensure_hedge_mode(self):
+        from aurora.p0_boundary import PositionMode, SafetyViolation, verify_position_mode
+
+        class _ModeAdapter:
+            def get_position_mode(inner_self):
+                data = self.client.futures_get_position_mode()
+                dual = data.get("dualSidePosition")
+                if isinstance(dual, str):
+                    dual = dual.lower() == "true"
+                return PositionMode.HEDGE if dual else PositionMode.ONE_WAY
+
         try:
-            self.client.futures_change_position_mode(dualSidePosition='true')
-            print("✅ Position mode: Hedge")
+            verify_position_mode(_ModeAdapter(), PositionMode.HEDGE)
+            print("[P0] position mode verified HEDGE (read-only, not changed)")
+        except SafetyViolation:
+            raise
         except Exception as e:
-            if 'No need to change' in str(e):
-                print("✅ Position mode: Hedge (already set)")
-            else:
-                print(f"⚠️ Position mode: {e}")
+            raise SystemExit(f"[P0] position mode read failed: {e}")
 
     def _get_balance(self) -> float:
         for asset in self.client.futures_account()['assets']:

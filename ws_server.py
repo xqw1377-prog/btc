@@ -12,19 +12,17 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 load_dotenv()
 
-from binance.client import Client
 from aurora.feature_engine import FeatureEngine
 from aurora.market_state_engine_v2 import MarketStateEngineV2
+from aurora.safety import read_only_client
 
 class WebSocketServer:
     def __init__(self, host: str = 'localhost', port: int = 8000):
         self.host = host
         self.port = port
         self.clients: Set = set()
-        
-        api_key = os.getenv('BINANCE_API_KEY')
-        api_secret = os.getenv('BINANCE_API_SECRET')
-        self.client = Client(api_key, api_secret)
+
+        self.client = read_only_client()
         
         self.feature_engine = FeatureEngine()
         self.state_engine = MarketStateEngineV2()

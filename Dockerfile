@@ -14,4 +14,5 @@ COPY . .
 ENV PYTHONUNBUFFERED=1
 ENV AURORA_ENV=production
 
+# Unique trading-adjacent entry. Boot fails closed; LIVE remains NO-GO.
 CMD ["python", "-m", "aurora.production_main"]

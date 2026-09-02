@@ -5,15 +5,13 @@
 
 import os
 from dotenv import load_dotenv
-from binance.client import Client
+
+from aurora.safety import read_only_client
 
 def main():
     load_dotenv()
-    
-    api_key = os.getenv('BINANCE_API_KEY')
-    api_secret = os.getenv('BINANCE_API_SECRET')
-    
-    client = Client(api_key, api_secret)
+
+    client = read_only_client()
     
     print("=" * 60)
     print("AURORA 系统状态检查")

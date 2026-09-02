@@ -72,3 +72,8 @@ build/
 
 # Regime Stats
 regime_stats.json
+# Safety lock
+.aurora_trading.lock
+state/*.json
+state/*.tmp
+state/locks/

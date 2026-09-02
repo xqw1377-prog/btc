@@ -1,0 +1,82 @@
+"""Compatibility facade over the P0 Safety Boundary.
+
+Old kernels must not obtain a trading client. The only allowed process
+entry for anything that could trade is `python -m aurora.production_main`.
+"""
+from aurora.p0_boundary import (
+    RunMode,
+    SafetyViolation,
+    assert_endpoint,
+    key_fingerprint,
+    resolve_account_fingerprint,
+    resolve_mode,
+)
+
+
+def env_value(name):
+    import os
+    return (os.getenv(name) or "").strip()
+
+
+def live_gates():
+    from aurora.p0_boundary import assert_live_dual_auth, assert_not_live_trading
+
+    assert_live_dual_auth()
+    assert_not_live_trading(RunMode.LIVE)
+
+
+def probe_account(client):
+    try:
+        account = client.futures_account()
+    except Exception as e:
+        raise SafetyViolation(f"[P0] account probe failed: {str(e)[:200]}")
+    if not isinstance(account, dict):
+        raise SafetyViolation("[P0] account probe returned invalid payload.")
+    return account
+
+
+def build_client(mode, purpose):
+    from binance.client import Client
+    import os
+
+    if isinstance(mode, RunMode):
+        mode_name = mode.value
+        mode_enum = mode
+    else:
+        mode_name = mode
+        mode_enum = RunMode(mode)
+    if mode_enum == RunMode.PAPER:
+        raise SafetyViolation("[P0] PAPER must not open an exchange client.")
+    api_key = os.getenv("BINANCE_API_KEY")
+    api_secret = os.getenv("BINANCE_API_SECRET")
+    if not api_key or not api_secret:
+        raise SafetyViolation("[P0] missing BINANCE_API_KEY/SECRET.")
+    try:
+        client = Client(api_key, api_secret, testnet=(mode_enum != RunMode.LIVE))
+    except Exception as e:
+        raise SafetyViolation(f"[P0] exchange connect failed ({purpose}): {str(e)[:200]}")
+    assert_endpoint(getattr(client, "FUTURES_URL", "") or "", mode_enum)
+    resolve_account_fingerprint(mode_enum, api_key)
+    return client
+
+
+def acquire_instance_lock():
+    raise SafetyViolation(
+        "[P0] process-level lock is retired; account-fingerprint lock lives in production_main."
+    )
+
+
+def trading_client():
+    raise SafetyViolation(
+        "[P0] direct trading entries are retired. "
+        "Start only via: python -m aurora.production_main"
+    )
+
+
+def read_only_client():
+    mode = resolve_mode()
+    if mode == RunMode.PAPER:
+        raise SafetyViolation("[P0] PAPER forbids exchange connections, including read-only.")
+    if mode == RunMode.LIVE:
+        raise SafetyViolation("[P0] LIVE remains NO-GO, including read-only clients.")
+    return build_client(mode, "read-only")

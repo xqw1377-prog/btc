@@ -8,9 +8,9 @@ from dotenv import load_dotenv
 load_dotenv()
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from binance.client import Client
 import pandas as pd
 
+from aurora.safety import trading_client
 from aurora.feature_engine import FeatureEngine
 from aurora.market_state_engine_v2 import MarketStateEngineV2
 from aurora.portfolio_brain_v2 import PortfolioBrainV2
@@ -25,10 +25,7 @@ from aurora.kernel_types import Intent
 
 class AuroraHedgeFundKernel:
     def __init__(self):
-        api_key = os.getenv('BINANCE_API_KEY')
-        api_secret = os.getenv('BINANCE_API_SECRET')
-
-        self.client = Client(api_key, api_secret)
+        self.client = trading_client()
         self.symbol = 'BTCUSDT'
         self.client.futures_change_leverage(symbol=self.symbol, leverage=3)
 

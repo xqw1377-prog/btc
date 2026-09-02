@@ -35,12 +35,11 @@ services:
       - POSTGRES_HOST=postgres
     volumes:
       - ./logs:/app/logs
-      - ./replay_data:/app/replay_data
-      - ./regime_stats.json:/app/regime_stats.json
     depends_on:
       - redis
       - postgres
-    restart: unless-stopped
+    # 隔离期：容器只跑配置自检，禁止自动重启循环
+    restart: "no"
 
   grafana:
     image: grafana/grafana:latest
