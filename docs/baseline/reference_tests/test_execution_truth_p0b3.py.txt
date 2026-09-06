@@ -1,0 +1,143 @@
+import os
+import sys
+import tempfile
+import unittest
+from decimal import Decimal
+from unittest.mock import MagicMock
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from aurora.binance_port import BinancePort
+from aurora.execution_truth import (
+    DurableExecutor,
+    FakeExchange,
+    Ledger,
+    OrderStatus,
+    PositionState,
+    PositionTruth,
+    Side,
+)
+from aurora.reconciler import Reconciler, ReconcileResult
+
+
+class P0B3BinancePortTests(unittest.TestCase):
+    def test_submit_query_cancel_mapping(self):
+        client = MagicMock()
+        client.futures_create_order.return_value = {
+            "orderId": 123,
+            "clientOrderId": "AURORA_open_001",
+            "symbol": "BTCUSDT",
+            "side": "BUY",
+            "positionSide": "LONG",
+            "type": "MARKET",
+            "origQty": "0.1",
+            "reduceOnly": False,
+            "status": "FILLED",
+            "executedQty": "0.1",
+            "avgPrice": "100000.00",
+            "updateTime": 1750000000000,
+        }
+        client.futures_get_order.return_value = client.futures_create_order.return_value
+        client.futures_cancel_order.return_value = {
+            "orderId": 123,
+            "status": "CANCELED",
+            "clientOrderId": "AURORA_open_001",
+        }
+
+        port = BinancePort(client, symbol="BTCUSDT")
+
+        raw = port.submit(
+            "AURORA_open_001",
+            {
+                "side": "BUY",
+                "position_side": "LONG",
+                "type": "MARKET",
+                "quantity": Decimal("0.1"),
+                "reduce_only": False,
+            },
+        )
+        self.assertEqual(raw["status"], "FILLED")
+        self.assertEqual(raw["executedQty"], "0.1")
+        self.assertEqual(raw["avgPrice"], "100000.00")
+        self.assertEqual(len(raw["fills"]), 1)
+        self.assertIn("fee", raw["fills"][0])
+
+        q = port.query("AURORA_open_001")
+        self.assertEqual(q["status"], "FILLED")
+
+        c = port.cancel("AURORA_open_001")
+        self.assertEqual(c["status"], "CANCELED")
+
+    def test_position_mapping(self):
+        client = MagicMock()
+        client.futures_position_information.return_value = [
+            {
+                "symbol": "BTCUSDT",
+                "positionAmt": "0.1",
+                "entryPrice": "100000.00",
+            }
+        ]
+        port = BinancePort(client, symbol="BTCUSDT")
+        pos = port.position()
+        self.assertEqual(pos["side"], "LONG")
+        self.assertEqual(pos["size"], Decimal("0.1"))
+        self.assertEqual(pos["entry_price"], Decimal("100000.00"))
+
+    def test_position_flat(self):
+        client = MagicMock()
+        client.futures_position_information.return_value = [
+            {"symbol": "BTCUSDT", "positionAmt": "0", "entryPrice": "0"}
+        ]
+        port = BinancePort(client, symbol="BTCUSDT")
+        pos = port.position()
+        self.assertEqual(pos["side"], "FLAT")
+
+
+class P0B3ReconcilerTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.db_path = os.path.join(self.tmp.name, "truth.db")
+        self.ledger = Ledger(self.db_path)
+        self.port = FakeExchange(symbol="BTCUSDT", default_price=Decimal("100000.00"), fee_rate=Decimal("0.0005"))
+        self.executor = DurableExecutor(
+            "BTCUSDT",
+            self.ledger,
+            self.port,
+            max_retries=2,
+            poll_interval_ms=0,
+            poll_timeout_ms=0,
+        )
+
+    def tearDown(self):
+        try:
+            self.ledger._conn().close()
+            del self.ledger._local.conn
+        except Exception:
+            pass
+        self.tmp.cleanup()
+
+    def test_reconcile_match_after_open(self):
+        self.executor.open_position(Side.LONG, Decimal("0.1"))
+        rec = self.executor.reconcile("post-open")
+        self.assertEqual(rec.status, "MATCHED")
+
+    def test_reconcile_drift_size_mismatch(self):
+        self.executor.open_position(Side.LONG, Decimal("0.1"))
+        # Inject a bigger position on the exchange side
+        self.port._position = {"LONG": Decimal("0.25")}
+        rec = self.executor.reconcile("manual")
+        self.assertEqual(rec.status, "DRIFT")
+        saved = self.ledger.get_position("BTCUSDT")
+        self.assertEqual(saved.state, PositionState.UNKNOWN)
+
+    def test_reconcile_exchange_open_ledger_flat(self):
+        # Exchange says LONG 0.1, ledger is empty/flat
+        self.port.set_position_state("LONG", Decimal("0.1"), Decimal("100000.00"))
+        truth = PositionTruth("BTCUSDT", self.ledger)
+        rec = Reconciler("BTCUSDT", self.ledger, self.port, truth).reconcile("boot")
+        self.assertEqual(rec.status, "DRIFT")
+        self.assertIn("exchange open, ledger flat", rec.reason)
+
+
+if __name__ == "__main__":
+    unittest.main()

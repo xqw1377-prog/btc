@@ -1,0 +1,62 @@
+Archived boot/reconcile assertions from tests/test_execution_truth.py
+====================================================================
+
+Reason: these assertions exercise DurableExecutor.boot()/reconcile(), which
+delegates to `aurora.reconciler.Reconciler` — a module that was NEVER
+implemented (no git history, no quarantined copy). They are preserved here as
+specification, not deleted. See DISPOSITION.md for per-assertion mapping.
+
+Captured verbatim at archive time (file sha256 of the pre-edit source:
+d61b3ef456b35e7d39412034d95bae20ebcdbd70757066b78177454b70550961).
+
+--- test_boot_reconcile_detects_drift ---
+
+    def test_boot_reconcile_detects_drift(self):
+        # Pre-seed an open in the fake exchange but a flat ledger
+        self.port.set_position_state("LONG", Decimal("0.1"), Decimal("100000.00"))
+        boot = self.executor.boot()
+        self.assertFalse(boot["ok"])
+        self.assertEqual(boot["state"], PositionState.UNKNOWN.value)
+        self.assertIn("exchange open, ledger flat", boot["reason"])
+
+Contract: at boot, if the exchange reports an open position while the ledger
+is flat, the system must detect drift and enter UNKNOWN — it must NOT be
+silently treated as flat.
+Disposition: REQUIRED_UNCOVERED — the reference Reconciler is NOT-BUILT and
+the current kernel recover() only iterates persisted intents (no intent →
+nothing is checked). Registered as gap BOOT-DRIFT, linked to G0 follow-up.
+
+--- test_boot_matches_when_both_flat ---
+
+    def test_boot_matches_when_both_flat(self):
+        boot = self.executor.boot()
+        self.assertTrue(boot["ok"])
+        self.assertEqual(boot["state"], PositionState.KNOWN_FLAT.value)
+
+Contract: boot with both exchange and ledger flat proceeds cleanly.
+Disposition: ARCHIVED SPEC — depends on unbuilt reconcile(); kernel startup
+recovery family (tests/test_kernel_orchestrator.py::test_g8_*) covers pending
+-intent recovery, not a boot-time position verdict. Partial overlap only.
+
+--- tail of test_submit_unknown_results_in_unknown_state ---
+
+        # Restart sees the same UNKNOWN and refuses to boot
+        ledger2, exec2 = self._fresh_executor()
+        boot = exec2.boot()
+        self.assertFalse(boot["ok"])
+        self.assertEqual(boot["state"], PositionState.UNKNOWN.value)
+
+Contract: after restart, an UNKNOWN position must refuse boot/re-entry.
+Disposition: PARTIALLY MIGRATED — the executable half was rewritten in the
+tracked test to assert the equivalent refusal through open_position()
+("already UNKNOWN"), mirroring kernel test_g6_unknown_position_forbids_new_open.
+The boot()-gate part remains uncovered (boot is unbuilt).
+
+--- tail of test_ledger_rebuilds_position_across_restart ---
+
+        boot = exec2.boot()
+        self.assertTrue(boot["ok"])
+
+Contract: restart with a ledger-rebuilt KNOWN_OPEN position boots clean.
+Disposition: PARTIALLY MIGRATED — ledger rebuild assertions kept executable;
+the boot()-ok assertion is archived (boot is unbuilt).
