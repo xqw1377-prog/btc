@@ -14,8 +14,10 @@ from aurora.p0_boundary import (  # noqa: E402
     RunMode,
     SafetyStore,
     SafetyViolation,
+    assert_client_endpoint,
     assert_endpoint,
     boot,
+    effective_futures_url,
     resolve_mode,
 )
 
@@ -43,7 +45,9 @@ class ScrubbedEnv(unittest.TestCase):
 
     def tearDown(self):
         for k, v in self._saved.items():
-            if v is not None:
+            if v is None:
+                os.environ.pop(k, None)
+            else:
                 os.environ[k] = v
 
 
@@ -168,6 +172,29 @@ class EndpointMatrixTests(ScrubbedEnv):
             assert_endpoint("https://eviltestnet.example.com/fapi/v1/order", RunMode.TESTNET)
         with self.assertRaises(SafetyViolation):
             assert_endpoint("https://evil.com/?next=testnet.binancefuture.com", RunMode.SHADOW)
+
+    def test_effective_url_follows_client_testnet_flag(self):
+        class _Client:
+            FUTURES_URL = "https://fapi.binance.com/fapi"
+            FUTURES_TESTNET_URL = "https://testnet.binancefuture.com/fapi"
+
+            def __init__(self, testnet):
+                self.testnet = testnet
+
+        self.assertEqual(
+            effective_futures_url(_Client(True)),
+            "https://testnet.binancefuture.com/fapi",
+        )
+        self.assertEqual(
+            effective_futures_url(_Client(False)),
+            "https://fapi.binance.com/fapi",
+        )
+        assert_client_endpoint(_Client(True), RunMode.TESTNET)
+        assert_client_endpoint(_Client(False), RunMode.LIVE)
+        with self.assertRaises(SafetyViolation):
+            assert_client_endpoint(_Client(False), RunMode.TESTNET)
+        with self.assertRaises(SafetyViolation):
+            assert_client_endpoint(_Client(True), RunMode.LIVE)
 
 
 class EnvDefaultTests(ScrubbedEnv):

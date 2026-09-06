@@ -6,8 +6,10 @@ entry for anything that could trade is `python -m aurora.production_main`.
 from aurora.p0_boundary import (
     RunMode,
     SafetyViolation,
-    assert_endpoint,
+    assert_client_construction_targets,
+    assert_client_endpoint,
     assert_live_dual_auth,
+    install_outbound_guard,
     assert_not_live_trading,
     key_fingerprint,
     resolve_account_fingerprint,
@@ -57,11 +59,19 @@ def build_client(mode, purpose):
     api_secret = os.getenv("BINANCE_API_SECRET")
     if not api_key or not api_secret:
         raise SafetyViolation("[P0] missing BINANCE_API_KEY/SECRET.")
+    # 构造期即出网：先校验 SDK 将使用的目标常量，再禁跳转，再挂出站守卫。
+    assert_client_construction_targets(Client, mode_enum)
     try:
-        client = Client(api_key, api_secret, testnet=(mode_enum != RunMode.LIVE))
+        client = Client(
+            api_key,
+            api_secret,
+            testnet=(mode_enum != RunMode.LIVE),
+            requests_params={"allow_redirects": False},
+        )
     except Exception as e:
         raise SafetyViolation(f"[P0] exchange connect failed ({purpose}): {str(e)[:200]}")
-    assert_endpoint(getattr(client, "FUTURES_URL", "") or "", mode_enum)
+    install_outbound_guard(client, mode_enum)
+    assert_client_endpoint(client, mode_enum)
     resolve_account_fingerprint(mode_enum, api_key)
     return client
 

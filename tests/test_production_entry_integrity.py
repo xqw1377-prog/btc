@@ -58,6 +58,7 @@ class LiveRefusalOrderTests(unittest.TestCase):
         """即便双重授权齐全，LIVE 也必须在构造任何 Client 之前拒绝。"""
         env = self._scrubbed({
             "TRADING_MODE": "LIVE",
+            "TESTNET": "false",
             "ALLOW_LIVE_TRADING": "true",
             "AURORA_LIVE_CONFIRM": "I_UNDERSTAND_LIVE_RISK",
             "BINANCE_API_KEY": "k",
@@ -80,6 +81,7 @@ class LiveRefusalOrderTests(unittest.TestCase):
     def test_build_network_broker_live_armed_uses_mainnet_flag(self):
         env = self._scrubbed({
             "TRADING_MODE": "LIVE",
+            "TESTNET": "false",
             "ALLOW_LIVE_TRADING": "true",
             "AURORA_LIVE_CONFIRM": "I_UNDERSTAND_LIVE_RISK",
             "AURORA_ARM_LIVE": "I_ARM_LIVE_EXECUTION",
@@ -89,13 +91,41 @@ class LiveRefusalOrderTests(unittest.TestCase):
             "AURORA_LIVE_KEY_SHA256": "x",
         })
         fake = mock.Mock()
+        fake.testnet = False
         fake.FUTURES_URL = "https://fapi.binance.com"
         with mock.patch.dict(os.environ, env, clear=True):
             with mock.patch("binance.client.Client", return_value=fake) as ctor:
+                # 构造期出站目标校验读取类常量，mock 类需给出真实值
+                ctor.API_URL = "https://api{}.binance.{}/api"
+                ctor.FUTURES_URL = "https://fapi.binance.{}/fapi"
+                ctor.BASE_ENDPOINT_DEFAULT = ""
                 broker = production_main._build_network_broker(RunMode.LIVE)
         ctor.assert_called_once()
         self.assertFalse(ctor.call_args.kwargs.get("testnet", True))
         self.assertIs(broker.client, fake)
+
+    def test_build_network_broker_testnet_uses_testnet_url(self):
+        env = self._scrubbed({
+            "TRADING_MODE": "TESTNET",
+            "TESTNET": "true",
+            "BINANCE_API_KEY": "k",
+            "BINANCE_API_SECRET": "s",
+            "AURORA_ACCOUNT_FINGERPRINT": "x",
+        })
+        fake = mock.Mock()
+        fake.testnet = True
+        fake.FUTURES_URL = "https://fapi.binance.com/fapi"
+        fake.FUTURES_TESTNET_URL = "https://testnet.binancefuture.com/fapi"
+        fake.session = mock.Mock()
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch("binance.client.Client", return_value=fake) as ctor:
+                # 构造期出站目标校验读取类常量，mock 类需给出真实值
+                ctor.API_TESTNET_URL = "https://testnet.binance.vision/api"
+                ctor.FUTURES_TESTNET_URL = "https://testnet.binancefuture.com/fapi"
+                broker = production_main._build_network_broker(RunMode.TESTNET)
+        ctor.assert_called_once()
+        self.assertTrue(ctor.call_args.kwargs.get("testnet"))
+        self.assertEqual(broker.futures_url, "https://testnet.binancefuture.com/fapi")
 
 
 class ReadOnlyBrokerTests(unittest.TestCase):

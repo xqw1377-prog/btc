@@ -34,8 +34,11 @@ from aurora.p0_boundary import (
     PositionSnapshot,
     RunMode,
     SafetyViolation,
-    assert_endpoint,
+    assert_client_construction_targets,
+    assert_client_endpoint,
     assert_live_dual_auth,
+    install_outbound_guard,
+    effective_futures_url,
     assert_not_live_trading,
     boot,
     default_lock_dir,
@@ -50,7 +53,7 @@ FORBIDDEN_IMPORTS = ("aurora_hf_kernel", "aurora_final")
 class BinanceBroker:
     def __init__(self, client: Any, mode: RunMode):
         self._client = client
-        self.futures_url = getattr(client, "FUTURES_URL", "") or ""
+        self.futures_url = effective_futures_url(client)
         self._mode = mode
 
     def account(self) -> Dict[str, Any]:
@@ -137,8 +140,16 @@ def _build_network_broker(mode: RunMode) -> BinanceBroker:
     api_secret = os.getenv("BINANCE_API_SECRET") or ""
     if not api_key or not api_secret:
         raise SafetyViolation("[P0] missing BINANCE_API_KEY/SECRET.")
-    client = Client(api_key, api_secret, testnet=(mode != RunMode.LIVE))
-    assert_endpoint(getattr(client, "FUTURES_URL", "") or "", mode)
+    # 构造期即出网：先校验 SDK 将使用的目标常量，再禁跳转，再挂出站守卫。
+    assert_client_construction_targets(Client, mode)
+    client = Client(
+        api_key,
+        api_secret,
+        testnet=(mode != RunMode.LIVE),
+        requests_params={"allow_redirects": False},
+    )
+    install_outbound_guard(client, mode)
+    assert_client_endpoint(client, mode)
     return BinanceBroker(client, mode)
 
 

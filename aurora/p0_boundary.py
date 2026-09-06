@@ -186,6 +186,91 @@ def assert_endpoint(url: str, mode: RunMode) -> None:
         return
 
 
+def effective_futures_url(client: Any) -> str:
+    """USDS-M URL python-binance will actually request.
+
+    Client.FUTURES_URL stays on fapi.binance.com even when testnet=True;
+    futures calls then switch to FUTURES_TESTNET_URL.
+    """
+    if getattr(client, "testnet", False) is True:
+        return str(getattr(client, "FUTURES_TESTNET_URL", "") or "")
+    return str(getattr(client, "FUTURES_URL", "") or "")
+
+
+def assert_client_endpoint(client: Any, mode: RunMode) -> None:
+    flagged = getattr(client, "testnet", False) is True
+    if mode == RunMode.LIVE and flagged:
+        raise SafetyViolation("[P0] LIVE client is flagged testnet.")
+    if mode in (RunMode.TESTNET, RunMode.SHADOW) and not flagged:
+        raise SafetyViolation(f"[P0] {mode.value} client is not flagged testnet.")
+    assert_endpoint(effective_futures_url(client), mode)
+
+
+def assert_client_construction_targets(client_cls: Any, mode: RunMode) -> None:
+    """在实例化 SDK Client 之前校验其构造期与后续请求的出站目标。
+
+    python-binance 1.0.19 的 Client.__init__ 会立即 ping spot API（testnet
+    时目标为 API_TESTNET_URL），期货请求另走 FUTURES_TESTNET_URL；因此只
+    在构造后检查 futures URL 不足以覆盖构造期网络行为。这些 URL 是类常量，
+    可在实例化 SDK 客户端之前完成校验。
+
+    LIVE：期货目标仍按白名单校验；构造期 spot ping 走主网 api 主机，
+    本批不扩白名单，仅要求其非空且不得指向 testnet（方向校验，fail-closed）。
+    """
+    if mode in (RunMode.TESTNET, RunMode.SHADOW):
+        urls = (
+            str(getattr(client_cls, "API_TESTNET_URL", "") or ""),
+            str(getattr(client_cls, "FUTURES_TESTNET_URL", "") or ""),
+        )
+        for url in urls:
+            assert_endpoint(url, mode)
+        return
+    if mode != RunMode.LIVE:
+        raise SafetyViolation(f"[P0] {mode.value} must not construct an exchange client.")
+    tld = "com"
+    base = str(getattr(client_cls, "BASE_ENDPOINT_DEFAULT", "") or "")
+    futures_url = str(getattr(client_cls, "FUTURES_URL", "") or "").format(tld)
+    assert_endpoint(futures_url, mode)
+    spot_host = _endpoint_host(
+        str(getattr(client_cls, "API_URL", "") or "").format(base, tld)
+    )
+    if not spot_host or spot_host in ALLOWED_TESTNET_HOSTS:
+        raise SafetyViolation(
+            f"[P0] LIVE construction-time spot ping target invalid or testnet: {spot_host or 'no-host'}"
+        )
+
+
+def install_outbound_guard(client: Any, mode: RunMode) -> None:
+    """在会话出站入口（session.send）按模式允许列表逐次检查目标。
+
+    requests 的每一次会话发送都经过 Session.send，任何跳转也只会以一次新的
+    send 出现；目标 host 不在允许列表时在出站前抛 SafetyViolation，而不是
+    先发出再报错。此处不引入对 requests 的依赖，仅包装实例方法。
+    """
+    allowed = (
+        ALLOWED_TESTNET_HOSTS
+        if mode in (RunMode.TESTNET, RunMode.SHADOW)
+        else ALLOWED_LIVE_HOSTS
+    )
+    session = getattr(client, "session", None)
+    if session is None:
+        raise SafetyViolation("[P0] exchange client has no transport session to guard.")
+    if getattr(session, "_aurora_guarded", False) is True:
+        return
+    raw_send = session.send
+
+    def _guarded_send(request: Any, **kwargs: Any) -> Any:
+        host = _endpoint_host(getattr(request, "url", "") or "")
+        if host not in allowed:
+            raise SafetyViolation(
+                f"[P0] {mode.value} outbound blocked before send: {host or 'no-host'}"
+            )
+        return raw_send(request, **kwargs)
+
+    session.send = _guarded_send
+    session._aurora_guarded = True
+
+
 def resolve_account_fingerprint(mode: RunMode, api_key: str, environ: Optional[Dict[str, str]] = None) -> str:
     src = environ or os.environ
     if mode == RunMode.PAPER:
