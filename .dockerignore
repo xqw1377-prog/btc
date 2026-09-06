@@ -1,0 +1,35 @@
+# C1: secret & runtime-artifact exclusion for build context "." (docker-compose.yml: aurora.build = .)
+# Scope is deliberately narrow: credentials, runtime state, logs, VCS internals, tool caches.
+# Reference implementation / tests are NOT excluded here (packaging policy is a separate decision).
+
+# --- credentials (root and nested; .env.example is a template and stays) ---
+.env
+.env.*
+!.env.example
+**/.env
+**/.env.*
+!**/.env.example
+docker-compose.override.yml
+
+# --- runtime state: SQLite ledger + WAL/SHM, safety store, account locks ---
+state/
+
+# --- logs ---
+*.log
+**/*.log
+
+# --- version control internals ---
+.git/
+.gitignore
+
+# --- tool caches / OS noise ---
+.hypothesis/
+.pytest_cache/
+__pycache__/
+**/__pycache__/
+*.pyc
+.DS_Store
+**/.DS_Store
+
+# --- frontend dependency tree (never needed by the python image) ---
+aurora-dashboard/node_modules/

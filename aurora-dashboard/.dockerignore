@@ -1,0 +1,16 @@
+# C1: secret & runtime-artifact exclusion for build context "aurora-dashboard/"
+# (Dockerfile here does COPY . . ; no compose/CI reference found -> context assumed = this directory)
+
+# --- credentials ---
+.env
+.env.*
+!.env.example
+
+# --- host artifacts: deps are installed in-image, dist is built in-image ---
+node_modules/
+dist/
+
+# --- logs / VCS / OS noise ---
+*.log
+.git/
+.DS_Store

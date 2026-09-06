@@ -32,8 +32,11 @@ env/
 *.log
 logs/
 
-# Database
+# Database (incl. SQLite WAL/SHM side files — never delete these by hand, see sqlite.org/wal.html)
 *.db
+*.db-wal
+*.db-shm
+*.db-journal
 *.sqlite3
 
 # Data Files
