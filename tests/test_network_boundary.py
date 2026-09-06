@@ -156,20 +156,16 @@ class UnauthorizedLiveTests(ScrubbedEnv):
                 )
                 self.tearDown()
 
-    def test_fully_authorized_live_still_zero_transport(self):
-        # 语义边界：授权全齐时允许到达构造（ctor 被 mock），但构造后校验/守卫
-        # 仍保证 0 真实出站——本批不改变"arm token 前 LIVE 已被拒"的既有语义。
+    def test_authorized_live_refused_before_construction(self):
+        # 授权齐全只代表通过身份与开关检查；SDK 构造期 spot ping 会打向
+        # 主网 api 主机，而 ALLOWED_LIVE_HOSTS 未包含它——正向白名单校验
+        # 必须在实例化之前拒绝，且适配器 0 次。使用真实 Client 类常量。
         self.set_live_env()
         spy = TransportSpy()
-        with _patch_transport(spy), mock.patch(
-            "binance.client.Client"
-        ) as ctor:
+        with _patch_transport(spy):
             with self.assertRaises(SafetyViolation):
                 safety.build_client(RunMode.LIVE, "c2-test")
             self.assertEqual(len(spy.calls), 0)
-        with _patch_transport(spy), mock.patch(
-            "binance.client.Client"
-        ) as ctor:
             with self.assertRaises(SafetyViolation):
                 production_main._build_network_broker(RunMode.LIVE)
             self.assertEqual(len(spy.calls), 0)
@@ -321,6 +317,131 @@ class ErrorPathTests(ScrubbedEnv):
             with self.assertRaises(SafetyViolation):
                 safety.build_client(RunMode.TESTNET, "c2-test")
         self.assertEqual(len(spy.calls), 1)
+
+
+class ConstructionTargetStrictTests(ScrubbedEnv):
+    """构造期首跳目标必须是解析完成的明确允许地址，不是仅'非 testnet'。
+
+    反例覆盖：非 https、未批准端口、URL 用户信息、未批准 host。
+    校验发生在 Client 实例化之前——适配器必须 0 次。
+    """
+
+    def _assert_refused(self, attr, bad_url):
+        from binance.client import Client
+
+        self.set_testnet_env()
+        spy = TransportSpy()
+        with _patch_transport(spy), mock.patch.object(
+            Client, attr, bad_url
+        ):
+            with self.assertRaises(SafetyViolation):
+                safety.build_client(RunMode.TESTNET, "c2-test")
+            self.assertEqual(len(spy.calls), 0)
+
+    def test_spot_ping_non_testnet_unapproved_host(self):
+        # 授权齐全、期货目标合法，但 spot ping 目标被改成
+        # 非测试网、未批准的地址——必须在到达传输层前拒绝。
+        self._assert_refused(
+            "API_TESTNET_URL", "https://attacker.example.com/api"
+        )
+
+    def test_spot_ping_http_scheme(self):
+        self._assert_refused(
+            "API_TESTNET_URL", "http://testnet.binance.vision/api"
+        )
+
+    def test_spot_ping_unapproved_port(self):
+        self._assert_refused(
+            "API_TESTNET_URL", "https://testnet.binance.vision:8443/api"
+        )
+
+    def test_spot_ping_url_userinfo(self):
+        self._assert_refused(
+            "API_TESTNET_URL", "https://user:pw@testnet.binance.vision/api"
+        )
+
+    def test_futures_target_unapproved_host(self):
+        self._assert_refused(
+            "FUTURES_TESTNET_URL", "https://futures.attacker.example.com/fapi"
+        )
+
+
+class RedirectEnforcementTests(ScrubbedEnv):
+    """禁止重定向是传输边界强制规则，调用方不能重新打开第二跳。"""
+
+    REDIRECT_CODES = (301, 302, 303, 307, 308)
+
+    def _client(self, spy):
+        self.set_testnet_env()
+        with _patch_transport(spy):
+            return safety.build_client(RunMode.TESTNET, "c2-test")
+
+    def test_per_request_redirect_override_refused(self):
+        # SDK 1.0.19 合并顺序允许单次请求的 requests_params 覆盖全局参数；
+        # 传输守卫必须在该覆盖生效前拒绝。
+        spy = TransportSpy()
+        client = self._client(spy)
+        with _patch_transport(spy):
+            before = len(spy.calls)
+            with self.assertRaises(SafetyViolation):
+                client.futures_account(
+                    requests_params={"allow_redirects": True}
+                )
+            self.assertEqual(len(spy.calls), before)
+
+    def test_redirect_sweep_not_followed_same_and_cross_host(self):
+        for code in self.REDIRECT_CODES:
+            for location in (
+                "https://testnet.binancefuture.com/fapi/v1/other",  # 同允许 host
+                "https://fapi.binance.com/fapi/v1/other",           # 主网
+                "https://unknown.example.com/x",                    # 未知 host
+            ):
+                with self.subTest(code=code, location=location):
+                    spy = TransportSpy()
+                    client = self._client(spy)
+                    with _patch_transport(spy):
+                        spy.handler = lambda req, c=code, loc=location: _fake_response(
+                            req, status=c, headers={"Location": loc}
+                        )
+                        before = len(spy.calls)
+                        with self.assertRaises(Exception):
+                            client.futures_account()
+                        self.assertEqual(len(spy.calls), before + 1)
+                        for host in spy.hosts():
+                            self.assertTrue(_host_allowed(host), host)
+
+    def test_direct_session_send_default_no_redirect(self):
+        # 直接调用受控 session.send 且未传参数：requests 默认允许重定向，
+        # 守卫必须强制关闭——302 只应产生一次适配器调用。
+        spy = TransportSpy()
+        client = self._client(spy)
+        with _patch_transport(spy):
+            prep = client.session.prepare_request(
+                requests.Request(
+                    "GET", "https://testnet.binancefuture.com/fapi/v1/time"
+                )
+            )
+            spy.handler = lambda req: _fake_response(
+                req, status=302, headers={"Location": "https://fapi.binance.com/x"}
+            )
+            before = len(spy.calls)
+            resp = client.session.send(prep, timeout=1)
+            self.assertEqual(resp.status_code, 302)
+            self.assertEqual(len(spy.calls), before + 1)
+
+    def test_direct_session_send_explicit_redirect_refused(self):
+        spy = TransportSpy()
+        client = self._client(spy)
+        with _patch_transport(spy):
+            prep = client.session.prepare_request(
+                requests.Request(
+                    "GET", "https://testnet.binancefuture.com/fapi/v1/time"
+                )
+            )
+            before = len(spy.calls)
+            with self.assertRaises(SafetyViolation):
+                client.session.send(prep, allow_redirects=True, timeout=1)
+            self.assertEqual(len(spy.calls), before)
 
 
 if __name__ == "__main__":

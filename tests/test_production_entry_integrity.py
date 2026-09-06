@@ -78,7 +78,9 @@ class LiveRefusalOrderTests(unittest.TestCase):
             production_main._build_network_broker(RunMode.LIVE)
         self.assertIn("NO-GO", str(ctx.exception))
 
-    def test_build_network_broker_live_armed_uses_mainnet_flag(self):
+    def test_build_network_broker_live_armed_refused_spot_ping_target(self):
+        # 授权齐全只代表通过身份与开关检查；构造期 spot ping 目标
+        # （主网 api 主机）不在 ALLOWED_LIVE_HOSTS，构造前拒绝是正确结果。
         env = self._scrubbed({
             "TRADING_MODE": "LIVE",
             "TESTNET": "false",
@@ -99,10 +101,9 @@ class LiveRefusalOrderTests(unittest.TestCase):
                 ctor.API_URL = "https://api{}.binance.{}/api"
                 ctor.FUTURES_URL = "https://fapi.binance.{}/fapi"
                 ctor.BASE_ENDPOINT_DEFAULT = ""
-                broker = production_main._build_network_broker(RunMode.LIVE)
-        ctor.assert_called_once()
-        self.assertFalse(ctor.call_args.kwargs.get("testnet", True))
-        self.assertIs(broker.client, fake)
+                with self.assertRaises(SafetyViolation):
+                    production_main._build_network_broker(RunMode.LIVE)
+                self.assertEqual(ctor.call_count, 0)
 
     def test_build_network_broker_testnet_uses_testnet_url(self):
         env = self._scrubbed({

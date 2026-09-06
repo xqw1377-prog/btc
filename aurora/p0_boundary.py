@@ -206,46 +206,75 @@ def assert_client_endpoint(client: Any, mode: RunMode) -> None:
     assert_endpoint(effective_futures_url(client), mode)
 
 
+def assert_strict_url_allowed(url: str, allowed: frozenset, mode: RunMode) -> None:
+    """对解析完成的 URL 做严格出站校验，不只是 hostname 子串匹配。
+
+    要求：https scheme、精确 hostname 命中允许列表、无 URL 用户信息、
+    端口为缺省或 443。任一不满足即在出站/构造前拒绝。
+    """
+    raw = (url or "").strip()
+    parsed = urlparse(raw)
+    if parsed.scheme.lower() != "https":
+        raise SafetyViolation(f"[P0] {mode.value} endpoint is not https: {raw[:80]}")
+    if parsed.username is not None or parsed.password is not None:
+        raise SafetyViolation(f"[P0] {mode.value} endpoint carries userinfo: {raw[:80]}")
+    try:
+        port = parsed.port
+    except ValueError:
+        raise SafetyViolation(f"[P0] {mode.value} endpoint port invalid: {raw[:80]}")
+    if port not in (None, 443):
+        raise SafetyViolation(f"[P0] {mode.value} endpoint port not allowed: {raw[:80]}")
+    host = (parsed.hostname or "").lower()
+    if host not in allowed:
+        raise SafetyViolation(
+            f"[P0] {mode.value} endpoint host not in allowlist: {host or 'no-host'}"
+        )
+
+
 def assert_client_construction_targets(client_cls: Any, mode: RunMode) -> None:
     """在实例化 SDK Client 之前校验其构造期与后续请求的出站目标。
 
     python-binance 1.0.19 的 Client.__init__ 会立即 ping spot API（testnet
     时目标为 API_TESTNET_URL），期货请求另走 FUTURES_TESTNET_URL；因此只
-    在构造后检查 futures URL 不足以覆盖构造期网络行为。这些 URL 是类常量，
-    可在实例化 SDK 客户端之前完成校验。
+    在构造后检查 futures URL 不足以覆盖构造期网络行为。校验使用与真实
+    构造参数一致解析完成的 URL（tld='com'、base_endpoint 取类默认值），
+    而非仅检查类常量模板。
 
-    LIVE：期货目标仍按白名单校验；构造期 spot ping 走主网 api 主机，
-    本批不扩白名单，仅要求其非空且不得指向 testnet（方向校验，fail-closed）。
+    LIVE：构造期 spot ping 目标按正向白名单校验；ALLOWED_LIVE_HOSTS 未包含
+    主网 spot 主机，因此当前策略下 LIVE 即使授权齐全也在构造前拒绝——
+    这是策略不满足的明确报告点，不是授权语义的变更。
     """
     if mode in (RunMode.TESTNET, RunMode.SHADOW):
         urls = (
             str(getattr(client_cls, "API_TESTNET_URL", "") or ""),
             str(getattr(client_cls, "FUTURES_TESTNET_URL", "") or ""),
         )
-        for url in urls:
-            assert_endpoint(url, mode)
-        return
-    if mode != RunMode.LIVE:
-        raise SafetyViolation(f"[P0] {mode.value} must not construct an exchange client.")
-    tld = "com"
-    base = str(getattr(client_cls, "BASE_ENDPOINT_DEFAULT", "") or "")
-    futures_url = str(getattr(client_cls, "FUTURES_URL", "") or "").format(tld)
-    assert_endpoint(futures_url, mode)
-    spot_host = _endpoint_host(
-        str(getattr(client_cls, "API_URL", "") or "").format(base, tld)
-    )
-    if not spot_host or spot_host in ALLOWED_TESTNET_HOSTS:
-        raise SafetyViolation(
-            f"[P0] LIVE construction-time spot ping target invalid or testnet: {spot_host or 'no-host'}"
+        allowed = ALLOWED_TESTNET_HOSTS
+    elif mode == RunMode.LIVE:
+        tld = "com"
+        base = str(getattr(client_cls, "BASE_ENDPOINT_DEFAULT", "") or "")
+        urls = (
+            str(getattr(client_cls, "API_URL", "") or "").format(base, tld),
+            str(getattr(client_cls, "FUTURES_URL", "") or "").format(tld),
         )
+        allowed = ALLOWED_LIVE_HOSTS
+    else:
+        raise SafetyViolation(f"[P0] {mode.value} must not construct an exchange client.")
+    for url in urls:
+        assert_strict_url_allowed(url, allowed, mode)
 
 
 def install_outbound_guard(client: Any, mode: RunMode) -> None:
-    """在会话出站入口（session.send）按模式允许列表逐次检查目标。
+    """在会话出站入口（session.send）强制模式允许列表并禁止重定向。
 
     requests 的每一次会话发送都经过 Session.send，任何跳转也只会以一次新的
     send 出现；目标 host 不在允许列表时在出站前抛 SafetyViolation，而不是
-    先发出再报错。此处不引入对 requests 的依赖，仅包装实例方法。
+    先发出再报错。重定向是强制规则：调用方显式 allow_redirects=True 直接
+    拒绝，缺省（Session.send 默认 True）统一强制为 False——因为 SDK 的
+    per-request requests_params 可以在全局参数之后覆盖它。
+
+    本守卫仅针对锁定的 SDK/Requests 版本验证过；升级或更换传输路径必须
+    重新通过契约测试。此处不引入对 requests 的依赖，仅包装实例方法。
     """
     allowed = (
         ALLOWED_TESTNET_HOSTS
@@ -265,6 +294,11 @@ def install_outbound_guard(client: Any, mode: RunMode) -> None:
             raise SafetyViolation(
                 f"[P0] {mode.value} outbound blocked before send: {host or 'no-host'}"
             )
+        if kwargs.get("allow_redirects") is True:
+            raise SafetyViolation(
+                f"[P0] {mode.value} caller re-enabled redirects; refused before send."
+            )
+        kwargs["allow_redirects"] = False
         return raw_send(request, **kwargs)
 
     session.send = _guarded_send
