@@ -1,7 +1,7 @@
 """Config self-check: python -m aurora.safety_check
 
-Does not start a trading loop. LIVE can only be validated as dual-auth
-complete, then reported as NO-GO.
+Does not start a trading loop. LIVE without the arm token is reported as
+NO-GO; dual-auth plus AURORA_ARM_LIVE proves the live path is unlocked.
 """
 import argparse
 import sys
@@ -10,6 +10,7 @@ from aurora.p0_boundary import (
     RunMode,
     SafetyViolation,
     assert_live_dual_auth,
+    live_execution_armed,
     resolve_mode,
 )
 
@@ -31,7 +32,10 @@ def main():
     if mode == RunMode.PAPER:
         print("[P0] PAPER: no exchange connection.")
     if mode == RunMode.LIVE:
-        print("[P0] LIVE dual-auth present, but LIVE remains NO-GO.")
+        if live_execution_armed():
+            print("[P0] LIVE dual-auth + arm token present; production_main may construct mainnet client.")
+        else:
+            print("[P0] LIVE dual-auth present, but LIVE remains NO-GO without AURORA_ARM_LIVE.")
         sys.exit(0)
     if args.probe:
         print("[P0] --probe ignored; use python -m aurora.production_main --boot-only")

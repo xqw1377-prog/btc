@@ -140,6 +140,43 @@ class AcceptanceTests(Harness):
         again = self.orch.open_position("LONG", 0.01, intent_id="A6b-2")
         self.assertTrue(again["success"])
 
+    def test_g6c2_oco_cancel_unknown_not_reconciled(self):
+        """全平后兄弟腿撤单未知：熔断且不得标成 RECONCILED。"""
+        self._boot_flat()
+        self.orch.open_position("LONG", 0.01, intent_id="A6c2")
+        self.exchange.fire_protection("A6c2-SL", price=99.0)
+        self.exchange.cancel_behavior = "unknown"
+        self.orch.recover()
+        intent = self.ledger.get_intent("A6c2")
+        self.assertEqual(intent["state"], IntentState.RECOVERY_REQUIRED.value)
+        self.assertTrue(self.ledger.kill_state()["engaged"])
+        self.assertNotEqual(intent["state"], IntentState.RECONCILED.value)
+
+    def test_g13_protection_submit_unknown_not_rejected_or_flattened(self):
+        """保护腿提交超时：订单标 SUBMIT_UNKNOWN，禁止当成拒单去紧急平仓。"""
+        self.exchange.protection_behavior = "timeout_then_gone"
+        self._boot_flat()
+        result = self.orch.open_position("LONG", 0.01, intent_id="A13")
+        self.assertFalse(result["success"])
+        self.assertEqual(result["state"], "RECOVERY_REQUIRED")
+        sl = self.ledger.get_order("A13-SL")
+        self.assertEqual(sl["state"], "SUBMIT_UNKNOWN")
+        closes = [r for r in self.exchange.submit_log
+                  if r.order_kind == OrderKind.CLOSE]
+        self.assertEqual(closes, [])
+        self.assertTrue(self.ledger.kill_state()["engaged"])
+        self.assertAlmostEqual(self.exchange.position("BTCUSDT").signed_qty, 0.01)
+
+    def test_g14_recover_survives_order_query_failure(self):
+        """恢复路径查询失败必须落 UNKNOWN，不得把进程打崩。"""
+        self._boot_flat()
+        self.orch.open_position("LONG", 0.01, intent_id="A14")
+        self.exchange.fail_order_queries(True)
+        report = self.orch.recover()
+        self.assertTrue(len(report["unresolved"]) >= 1)
+        fact = self.ledger.get_position_fact("BTCUSDT")
+        self.assertEqual(fact["state"], PositionFactState.UNKNOWN.value)
+
     def test_g6c_oco_sibling_leg_cancelled_after_sl_fires(self):
         """OCO 语义：SL 触发后，TP 兄弟腿必须按精确 ID 撤销，不留孤儿挂单。"""
         self._boot_flat()

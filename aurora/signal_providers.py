@@ -33,17 +33,22 @@ class BreakoutSignalProvider:
         atr = features.get('atr', 0)
         close = features.get('close', 0)
 
-        if df is not None and len(df) >= 30:
-            high_30 = df['high'].tail(30).max()
-            low_30 = df['low'].tail(30).min()
+        if df is not None and len(df) >= 32:
+            # 信号 bar = 最后一根已收盘 K；突破窗口不含该 bar、也不含未收盘 K
+            closed = df.iloc[:-1] if len(df) >= 2 else df
+            if len(closed) >= 31:
+                signal_close = float(closed.iloc[-1]['close'])
+                lookback = closed.iloc[-31:-1]
+                high_30 = float(lookback['high'].max())
+                low_30 = float(lookback['low'].min())
 
-            if close > high_30 * 0.999 and abs(momentum_pct) > 0.003:
-                conf = min(0.6 + abs(momentum_pct) * 20, 0.95)
-                return Signal(source="breakout", direction=Intent.LONG, confidence=conf, timeframe=self.TIMEFRAME, reason=f"Breakout above {high_30:.0f}")
+                if signal_close > high_30 * 0.999 and abs(momentum_pct) > 0.003:
+                    conf = min(0.6 + abs(momentum_pct) * 20, 0.95)
+                    return Signal(source="breakout", direction=Intent.LONG, confidence=conf, timeframe=self.TIMEFRAME, reason=f"Breakout above {high_30:.0f}")
 
-            if close < low_30 * 1.001 and abs(momentum_pct) > 0.003:
-                conf = min(0.6 + abs(momentum_pct) * 20, 0.95)
-                return Signal(source="breakout", direction=Intent.SHORT, confidence=conf, timeframe=self.TIMEFRAME, reason=f"Breakdown below {low_30:.0f}")
+                if signal_close < low_30 * 1.001 and abs(momentum_pct) > 0.003:
+                    conf = min(0.6 + abs(momentum_pct) * 20, 0.95)
+                    return Signal(source="breakout", direction=Intent.SHORT, confidence=conf, timeframe=self.TIMEFRAME, reason=f"Breakdown below {low_30:.0f}")
 
         if abs(momentum_pct) > 0.005:
             direction = Intent.LONG if momentum > 0 else Intent.SHORT

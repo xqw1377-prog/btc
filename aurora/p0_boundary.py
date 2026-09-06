@@ -5,8 +5,8 @@ audit freeze. It does not implement strategy. It answers: what mode are we
 in, which account, is anyone else trading it, what orders exist, is the
 position protected, and what is the real loss state.
 
-LIVE trading is intentionally impossible here. Passing dual-auth only proves
-the gates work; production_main still refuses to enter a live loop.
+LIVE trading requires dual-auth plus an explicit arm token. Dual-auth alone
+does not construct a mainnet client or start the execution kernel.
 """
 from __future__ import annotations
 
@@ -20,6 +20,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Dict, List, Optional, Protocol
+from urllib.parse import urlparse
 
 
 class SafetyViolation(SystemExit):
@@ -68,6 +69,14 @@ class PositionMode(str, Enum):
 
 MAINNET_MARK = "fapi.binance.com"
 TESTNET_MARK = "testnet"
+ALLOWED_LIVE_HOSTS = frozenset({"fapi.binance.com"})
+ALLOWED_TESTNET_HOSTS = frozenset({
+    "testnet.binancefuture.com",
+    "testnet.binance.vision",
+})
+LEGACY_TESTNET_TRUTHY = frozenset({"true", "1", "yes", "on"})
+LEGACY_TESTNET_FALSY = frozenset({"false", "0", "no", "off"})
+LIVE_ARM_TOKEN = "I_ARM_LIVE_EXECUTION"
 VALID_MODES = tuple(m.value for m in RunMode)
 RECONCILE_TRIGGERS = (
     "boot",
@@ -104,14 +113,19 @@ def resolve_mode(environ: Optional[Dict[str, str]] = None) -> RunMode:
             f"[P0] unknown TRADING_MODE={raw!r}; allowed={VALID_MODES}. refuse start."
         )
     legacy = (get("TESTNET") or "").strip().lower()
-    if legacy in ("true", "false") and raw != RunMode.PAPER.value:
-        expected = "true" if raw == RunMode.TESTNET.value else "false"
-        if raw == RunMode.SHADOW.value:
-            expected = "true"
-        if legacy != expected:
+    if legacy:
+        if legacy not in LEGACY_TESTNET_TRUTHY | LEGACY_TESTNET_FALSY:
             raise SafetyViolation(
-                f"[P0] config conflict: TRADING_MODE={raw} vs TESTNET={legacy}. refuse start."
+                f"[P0] unknown TESTNET={legacy!r}; "
+                "allowed=true/1/yes/on/false/0/no/off. refuse start."
             )
+        if raw != RunMode.PAPER.value:
+            expect_truthy = raw in (RunMode.TESTNET.value, RunMode.SHADOW.value)
+            is_truthy = legacy in LEGACY_TESTNET_TRUTHY
+            if is_truthy != expect_truthy:
+                raise SafetyViolation(
+                    f"[P0] config conflict: TRADING_MODE={raw} vs TESTNET={legacy}. refuse start."
+                )
     return RunMode(raw)
 
 
@@ -129,23 +143,47 @@ def assert_live_dual_auth(environ: Optional[Dict[str, str]] = None) -> None:
         raise SafetyViolation("[P0] LIVE requires AURORA_LIVE_CONFIRM=I_UNDERSTAND_LIVE_RISK.")
 
 
-def assert_not_live_trading(mode: RunMode) -> None:
-    if mode == RunMode.LIVE:
+def live_execution_armed(environ: Optional[Dict[str, str]] = None) -> bool:
+    src = environ if environ is not None else os.environ
+    return (src.get("AURORA_ARM_LIVE") or "").strip() == LIVE_ARM_TOKEN
+
+
+def assert_not_live_trading(mode: RunMode, environ: Optional[Dict[str, str]] = None) -> None:
+    """Refuse LIVE unless dual-auth already passed *and* the arm token is set.
+
+    Dual-auth alone is not enough: that only proves the gates work.
+    """
+    if mode != RunMode.LIVE:
+        return
+    if not live_execution_armed(environ):
         raise SafetyViolation(
-            "[P0] LIVE remains NO-GO in the Safety Boundary. Dual-auth does not start trading."
+            "[P0] LIVE remains NO-GO until AURORA_ARM_LIVE=I_ARM_LIVE_EXECUTION. "
+            "Dual-auth does not start trading."
         )
 
 
+def _endpoint_host(url: str) -> str:
+    raw = (url or "").strip()
+    if not raw:
+        return ""
+    parsed = urlparse(raw if "://" in raw else f"https://{raw}")
+    return (parsed.hostname or "").lower()
+
+
 def assert_endpoint(url: str, mode: RunMode) -> None:
-    lowered = (url or "").lower()
-    if mode in (RunMode.TESTNET, RunMode.SHADOW) and TESTNET_MARK not in lowered:
-        raise SafetyViolation(f"[P0] {mode.value} endpoint is not testnet: {url}")
-    if mode == RunMode.LIVE and MAINNET_MARK not in lowered:
-        raise SafetyViolation(f"[P0] LIVE endpoint is not mainnet: {url}")
     if mode == RunMode.PAPER:
         raise SafetyViolation("[P0] PAPER must not attach any exchange endpoint.")
-    if mode != RunMode.LIVE and MAINNET_MARK in lowered and TESTNET_MARK not in lowered:
-        raise SafetyViolation(f"[P0] {mode.value} refused mainnet endpoint: {url}")
+    host = _endpoint_host(url)
+    if not host:
+        raise SafetyViolation(f"[P0] {mode.value} endpoint missing hostname: {url}")
+    if mode in (RunMode.TESTNET, RunMode.SHADOW):
+        if host not in ALLOWED_TESTNET_HOSTS:
+            raise SafetyViolation(f"[P0] {mode.value} endpoint is not testnet: {url}")
+        return
+    if mode == RunMode.LIVE:
+        if host not in ALLOWED_LIVE_HOSTS:
+            raise SafetyViolation(f"[P0] LIVE endpoint is not mainnet: {url}")
+        return
 
 
 def resolve_account_fingerprint(mode: RunMode, api_key: str, environ: Optional[Dict[str, str]] = None) -> str:
@@ -662,7 +700,7 @@ def boot(
         resolve_account_fingerprint(mode, api_key, src)
         if broker is not None:
             assert_endpoint(broker.futures_url, mode)
-        assert_not_live_trading(mode)
+        assert_not_live_trading(mode, src)
 
     if mode != RunMode.PAPER and broker is None:
         raise SafetyViolation(f"[P0] {mode.value} boot requires an injected or live broker.")

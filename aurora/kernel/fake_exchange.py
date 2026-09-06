@@ -56,6 +56,7 @@ class FakeExchange(ExchangePort):
         self._fills: Dict[str, List[Fill]] = {}
         self._fill_seq = 0
         self._fail_position = False
+        self._fail_order_query = False
 
     # ---- 内部 ----
 
@@ -130,6 +131,8 @@ class FakeExchange(ExchangePort):
                         order["filled_qty"], order["avg_price"])
 
     def query_order(self, client_order_id: str) -> OrderFact:
+        if self._fail_order_query:
+            raise RuntimeError(f"order query failed: {client_order_id}")
         order = self._orders.get(client_order_id)
         if order is None:
             return OrderFact(client_order_id, "NOT_FOUND", 0.0, 0.0)
@@ -230,3 +233,6 @@ class FakeExchange(ExchangePort):
 
     def fail_position_queries(self, fail: bool) -> None:
         self._fail_position = fail
+
+    def fail_order_queries(self, fail: bool) -> None:
+        self._fail_order_query = fail

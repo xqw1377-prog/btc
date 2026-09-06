@@ -73,6 +73,42 @@ class LegacyConflictTests(ScrubbedEnv):
         os.environ["TESTNET"] = "false"
         self.assertEqual(resolve_mode(), RunMode.PAPER)
 
+    def test_live_with_legacy_truthy_aliases_rejected(self):
+        os.environ["TRADING_MODE"] = "LIVE"
+        for raw in ("1", "yes", "on"):
+            os.environ["TESTNET"] = raw
+            with self.subTest(legacy=raw):
+                with self.assertRaises(SafetyViolation):
+                    resolve_mode()
+
+    def test_testnet_with_legacy_falsy_aliases_rejected(self):
+        os.environ["TRADING_MODE"] = "TESTNET"
+        for raw in ("0", "no", "off"):
+            os.environ["TESTNET"] = raw
+            with self.subTest(legacy=raw):
+                with self.assertRaises(SafetyViolation):
+                    resolve_mode()
+
+    def test_unknown_legacy_testnet_rejected(self):
+        os.environ["TRADING_MODE"] = "TESTNET"
+        os.environ["TESTNET"] = "maybe"
+        with self.assertRaises(SafetyViolation):
+            resolve_mode()
+
+    def test_testnet_accepts_legacy_truthy_aliases(self):
+        os.environ["TRADING_MODE"] = "TESTNET"
+        for raw in ("true", "1", "yes", "on"):
+            os.environ["TESTNET"] = raw
+            with self.subTest(legacy=raw):
+                self.assertEqual(resolve_mode(), RunMode.TESTNET)
+
+    def test_live_accepts_legacy_falsy_aliases(self):
+        os.environ["TRADING_MODE"] = "LIVE"
+        for raw in ("false", "0", "no", "off"):
+            os.environ["TESTNET"] = raw
+            with self.subTest(legacy=raw):
+                self.assertEqual(resolve_mode(), RunMode.LIVE)
+
 
 class ProbeFailureTests(ScrubbedEnv):
     """探活失败必须拒绝进入交易流程。"""
@@ -124,7 +160,14 @@ class EndpointMatrixTests(ScrubbedEnv):
     def test_matching_endpoints_accepted(self):
         assert_endpoint(self.TESTNET_URL, RunMode.TESTNET)
         assert_endpoint(self.TESTNET_URL, RunMode.SHADOW)
+        assert_endpoint("https://testnet.binance.vision/fapi/v1/order", RunMode.TESTNET)
         assert_endpoint(self.MAINNET, RunMode.LIVE)
+
+    def test_substring_testnet_host_rejected(self):
+        with self.assertRaises(SafetyViolation):
+            assert_endpoint("https://eviltestnet.example.com/fapi/v1/order", RunMode.TESTNET)
+        with self.assertRaises(SafetyViolation):
+            assert_endpoint("https://evil.com/?next=testnet.binancefuture.com", RunMode.SHADOW)
 
 
 class EnvDefaultTests(ScrubbedEnv):

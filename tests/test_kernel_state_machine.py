@@ -45,6 +45,8 @@ class StateMachineTests(unittest.TestCase):
             (IntentState.SUBMIT_UNKNOWN, IntentState.REJECTED),
             (IntentState.FILLED_UNPROTECTED, IntentState.PROTECTION_FAILED),
             (IntentState.PROTECTION_SUBMITTING, IntentState.PROTECTION_FAILED),
+            (IntentState.PROTECTION_SUBMITTING, IntentState.RECOVERY_REQUIRED),
+            (IntentState.PROTECTED, IntentState.RECOVERY_REQUIRED),
             (IntentState.PROTECTION_FAILED, IntentState.CLOSING),
             (IntentState.CLOSING, IntentState.CLOSE_UNKNOWN),
             (IntentState.CLOSE_UNKNOWN, IntentState.RECOVERY_REQUIRED),

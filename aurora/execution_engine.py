@@ -1,6 +1,7 @@
 from typing import Dict, Any, Optional
 from dataclasses import dataclass
-from binance.client import Client
+
+from aurora.p0_boundary import SafetyViolation
 
 @dataclass
 class OrderResult:
@@ -11,9 +12,11 @@ class OrderResult:
     error: Optional[str] = None
 
 class ExecutionEngine:
-    def __init__(self, client: Client, symbol: str = "BTCUSDT"):
-        self.client = client
-        self.symbol = symbol
+    def __init__(self, client: Any, symbol: str = "BTCUSDT"):
+        raise SafetyViolation(
+            "[P0] ExecutionEngine is retired. "
+            "Start only via: python -m aurora.production_main"
+        )
 
     def place_order(self, side: str, size_btc: float, sl_price: float, tp_price: float) -> OrderResult:
         if size_btc < 0.001:

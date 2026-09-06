@@ -75,11 +75,22 @@ class FeatureEngine:
         
         return df
     
-    def get_latest_features(self, df: pd.DataFrame) -> Dict[str, Any]:
-        if len(df) == 0:
+    def closed_bars(self, df: pd.DataFrame, exclude_forming: bool = True) -> pd.DataFrame:
+        """Drop the still-forming last candle so signals cannot see future ticks."""
+        if df is None or len(df) == 0:
+            return df
+        if exclude_forming and len(df) >= 2:
+            return df.iloc[:-1].copy()
+        return df
+
+    def get_latest_features(self, df: pd.DataFrame, exclude_forming: bool = True) -> Dict[str, Any]:
+        if df is None or len(df) == 0:
+            return {}
+        work = self.closed_bars(df, exclude_forming=exclude_forming)
+        if work is None or len(work) == 0:
             return {}
         
-        df = self.compute_all(df)
+        df = self.compute_all(work)
         latest = df.iloc[-1]
         
         return {

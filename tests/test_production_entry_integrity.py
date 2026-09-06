@@ -73,23 +73,119 @@ class LiveRefusalOrderTests(unittest.TestCase):
         self.assertIn("NO-GO", str(ctx.exception))
 
     def test_build_network_broker_refuses_live(self):
-        with self.assertRaises(SafetyViolation):
+        with self.assertRaises(SafetyViolation) as ctx:
             production_main._build_network_broker(RunMode.LIVE)
+        self.assertIn("NO-GO", str(ctx.exception))
+
+    def test_build_network_broker_live_armed_uses_mainnet_flag(self):
+        env = self._scrubbed({
+            "TRADING_MODE": "LIVE",
+            "ALLOW_LIVE_TRADING": "true",
+            "AURORA_LIVE_CONFIRM": "I_UNDERSTAND_LIVE_RISK",
+            "AURORA_ARM_LIVE": "I_ARM_LIVE_EXECUTION",
+            "BINANCE_API_KEY": "k",
+            "BINANCE_API_SECRET": "s",
+            "AURORA_ACCOUNT_FINGERPRINT": "x",
+            "AURORA_LIVE_KEY_SHA256": "x",
+        })
+        fake = mock.Mock()
+        fake.FUTURES_URL = "https://fapi.binance.com"
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch("binance.client.Client", return_value=fake) as ctor:
+                broker = production_main._build_network_broker(RunMode.LIVE)
+        ctor.assert_called_once()
+        self.assertFalse(ctor.call_args.kwargs.get("testnet", True))
+        self.assertIs(broker.client, fake)
 
 
 class ReadOnlyBrokerTests(unittest.TestCase):
-    def _broker(self):
+    def _broker(self, rows=None):
         class _DummyClient:
             FUTURES_URL = "https://testnet.binancefuture.com"
-        return production_main.BinanceBroker(_DummyClient(), RunMode.TESTNET)
+
+            def __init__(self, payload):
+                self._payload = payload
+
+            def futures_position_information(self, symbol):
+                return self._payload
+
+        return production_main.BinanceBroker(_DummyClient(rows), RunMode.TESTNET)
 
     def test_create_order_refused(self):
         with self.assertRaises(SafetyViolation):
-            self._broker().create_order(symbol="BTCUSDT", side="BUY", type="MARKET")
+            self._broker([]).create_order(symbol="BTCUSDT", side="BUY", type="MARKET")
 
     def test_cancel_order_refused(self):
         with self.assertRaises(SafetyViolation):
-            self._broker().cancel_order("BTCUSDT", "123")
+            self._broker([]).cancel_order("BTCUSDT", "123")
+
+    def test_empty_position_list_is_flat(self):
+        snap = self._broker([]).get_position("BTCUSDT")
+        self.assertEqual(snap.kind, production_main.PositionQueryKind.FLAT)
+
+    def test_hedge_dual_nonzero_legs_are_unknown(self):
+        snap = self._broker([
+            {"positionAmt": "0.01", "entryPrice": "100", "positionSide": "LONG"},
+            {"positionAmt": "-0.01", "entryPrice": "101", "positionSide": "SHORT"},
+        ]).get_position("BTCUSDT")
+        self.assertEqual(snap.kind, production_main.PositionQueryKind.UNKNOWN)
+
+    def test_single_open_leg_is_open(self):
+        snap = self._broker([
+            {"positionAmt": "0.0", "entryPrice": "0", "positionSide": "SHORT"},
+            {"positionAmt": "0.02", "entryPrice": "99.5", "positionSide": "LONG"},
+        ]).get_position("BTCUSDT")
+        self.assertEqual(snap.kind, production_main.PositionQueryKind.OPEN)
+        self.assertEqual(snap.side, "LONG")
+        self.assertAlmostEqual(snap.size, 0.02)
+
+
+class BuildClientRefusalTests(unittest.TestCase):
+    ENV_KEYS = LiveRefusalOrderTests.ENV_KEYS
+
+    def test_live_build_client_refuses_before_binance_client(self):
+        from aurora import safety as safety_mod
+        from aurora.safety import build_client
+
+        source = Path(safety_mod.__file__).read_text()
+        live_idx = source.find("assert_not_live_trading(mode_enum)")
+        client_idx = source.find("Client(")
+        self.assertGreater(live_idx, 0)
+        self.assertGreater(client_idx, live_idx)
+
+        env = {k: v for k, v in os.environ.items() if k not in self.ENV_KEYS}
+        env.update({
+            "TRADING_MODE": "LIVE",
+            "ALLOW_LIVE_TRADING": "true",
+            "AURORA_LIVE_CONFIRM": "I_UNDERSTAND_LIVE_RISK",
+            "BINANCE_API_KEY": "k",
+            "BINANCE_API_SECRET": "s",
+        })
+        with mock.patch.dict(os.environ, env, clear=True):
+            with mock.patch.dict(sys.modules):
+                fake_mod = mock.MagicMock()
+                sys.modules["binance"] = mock.MagicMock()
+                sys.modules["binance.client"] = fake_mod
+                with self.assertRaises(SafetyViolation) as ctx:
+                    build_client(RunMode.LIVE, "trading")
+                fake_mod.Client.assert_not_called()
+        self.assertIn("NO-GO", str(ctx.exception))
+
+
+class RetiredEngineTests(unittest.TestCase):
+    def test_execution_engine_constructor_refused(self):
+        from aurora.execution_engine import ExecutionEngine
+        from aurora.p0_boundary import SafetyViolation
+
+        with self.assertRaises(SafetyViolation):
+            ExecutionEngine(object())
+
+    def test_execution_engine_v2_constructor_refused(self):
+        from aurora.execution_engine_v2 import ExecutionEngineV2
+        from aurora.p0_boundary import SafetyViolation
+
+        with self.assertRaises(SafetyViolation):
+            ExecutionEngineV2(object())
 
 
 if __name__ == "__main__":

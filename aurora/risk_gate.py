@@ -60,8 +60,10 @@ class RiskGate:
                 intent.take_profit_pct = assessment.take_profit_pct
                 intent.risk_level = assessment.risk_level
             except Exception as e:
-                intent.size_pct = min(intent.size_pct, 0.10)
-                intent.risk_level = RiskLevel.MID
+                intent.action = "HOLD"
+                intent.risk_level = RiskLevel.BLOCKED
+                intent.reason = f"Risk gate failed closed: {e}"
+                return intent
 
         elif intent.action == "CLOSE":
             if not position.is_open:

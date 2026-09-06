@@ -7,6 +7,8 @@ from aurora.p0_boundary import (
     RunMode,
     SafetyViolation,
     assert_endpoint,
+    assert_live_dual_auth,
+    assert_not_live_trading,
     key_fingerprint,
     resolve_account_fingerprint,
     resolve_mode,
@@ -47,6 +49,10 @@ def build_client(mode, purpose):
         mode_enum = RunMode(mode)
     if mode_enum == RunMode.PAPER:
         raise SafetyViolation("[P0] PAPER must not open an exchange client.")
+    # LIVE：双重授权 + 武装令牌都通过后才允许构造主网 Client。
+    if mode_enum == RunMode.LIVE:
+        assert_live_dual_auth()
+        assert_not_live_trading(mode_enum)
     api_key = os.getenv("BINANCE_API_KEY")
     api_secret = os.getenv("BINANCE_API_SECRET")
     if not api_key or not api_secret:

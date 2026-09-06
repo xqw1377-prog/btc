@@ -32,6 +32,7 @@ class Orchestrator:
         self.exchange = exchange
         self.symbol = symbol
         self.instance_id = instance_id
+        self._protect_px: Dict[str, Any] = {}
 
     # ---------- 公共 API ----------
 
@@ -42,7 +43,17 @@ class Orchestrator:
         for order in self.ledger.pending_orders():
             intent_id = order["intent_id"]
             cid = order["client_order_id"]
-            fact = self.exchange.query_order(cid)
+            fact = self._safe_query_order(cid)
+            if fact is None:
+                report["unresolved"].append({
+                    "client_order_id": cid,
+                    "order_kind": order["order_kind"],
+                    "fact": "QUERY_FAILED",
+                })
+                self.ledger.set_position_fact(
+                    self.symbol, PositionFactState.UNKNOWN,
+                    source="recovery", note=f"query failed {cid}")
+                continue
             entry = {
                 "client_order_id": cid,
                 "order_kind": order["order_kind"],
@@ -91,8 +102,16 @@ class Orchestrator:
                             f"recovery: protection order {cid} not found",
                             correlation_id=intent_id)
                         self._emergency_close(intent_id, trigger="recovery protection missing")
+                    elif state == IntentState.RECOVERY_REQUIRED and not self._exchange_flat():
+                        self._emergency_close(intent_id, trigger="recovery protection missing")
                 else:
-                    self.ledger.update_order(cid, state="ACTIVE" if fact.status == "NEW" else "FILLED")
+                    self.ledger.update_order(
+                        cid,
+                        state="ACTIVE" if fact.status == "NEW" else "FILLED",
+                        filled_qty=fact.filled_qty if fact.status != "NEW" else None,
+                        avg_price=fact.avg_price if fact.status != "NEW" else None)
+                    if fact.status in ("FILLED", "PARTIALLY_FILLED"):
+                        self._apply_fills(cid)
                     if state == IntentState.PROTECTION_SUBMITTING:
                         self.ledger.transition_intent(
                             intent_id, IntentState.PROTECTED,
@@ -148,7 +167,13 @@ class Orchestrator:
         self._reconcile_protected_intents()
         # 仍处于 PROTECTED 的意图：按覆盖口径核对并补足/修复
         for intent in self.ledger.list_intents(states=[IntentState.PROTECTED.value]):
-            self.sync_protection(intent["intent_id"])
+            synced = self.sync_protection(intent["intent_id"])
+            if not synced.get("success"):
+                report["unresolved"].append({
+                    "intent_id": intent["intent_id"],
+                    "fact": "QUERY_FAILED",
+                    "reason": synced.get("reason"),
+                })
         # 崩溃可能遗留在 DEGRADED 的意图：从当前事实幂等续修
         for intent in self.ledger.list_intents(
                 states=[IntentState.PROTECTION_DEGRADED.value]):
@@ -160,6 +185,8 @@ class Orchestrator:
     def open_position(
         self, side: str, quantity: float,
         intent_id: Optional[str] = None, reason: str = "manual",
+        stop_price: Optional[float] = None,
+        take_profit_price: Optional[float] = None,
     ) -> Dict[str, Any]:
         kill = self.ledger.kill_state()
         if kill["engaged"]:
@@ -207,6 +234,10 @@ class Orchestrator:
                 "position already open", correlation_id=intent_id)
             return self._refuse("position already open")
 
+        self._protect_px[intent_id] = (
+            float(stop_price) if stop_price else 99.0,
+            float(take_profit_price) if take_profit_price else 101.0,
+        )
         try:
             return self._submit_entry(intent_id, side, quantity, reason)
         except _LedgerWriteFailed as exc:
@@ -297,12 +328,25 @@ class Orchestrator:
             f"protection submit for actual filled qty={filled_qty}",
             correlation_id=intent_id)
 
+        sl_px, tp_px = self._protect_prices(intent_id)
         # 强制腿 SL：失败 = 裸奔仓位 → 紧急平仓
         try:
             self._place_protection_leg(
                 intent_id, self._leg_cid(intent_id, "SL"),
-                OrderKind.STOP_LOSS, side, filled_qty, stop_price=99.0)
-        except (OrderRejectedError, SubmitUnknownError) as exc:
+                OrderKind.STOP_LOSS, side, filled_qty, stop_price=sl_px)
+        except SubmitUnknownError as exc:
+            self.ledger.transition_intent(
+                intent_id, IntentState.RECOVERY_REQUIRED,
+                f"mandatory SL submit unknown; query first: {exc}",
+                correlation_id=intent_id)
+            self.ledger.engage_kill(f"mandatory SL submit unknown {intent_id}")
+            self.ledger.set_position_fact(
+                self.symbol, PositionFactState.UNKNOWN,
+                source="protection", note=f"SL submit unknown {intent_id}")
+            return {"success": False, "intent_id": intent_id,
+                    "state": "RECOVERY_REQUIRED", "halt": True,
+                    "reason": f"mandatory SL submit unknown: {exc}"}
+        except OrderRejectedError as exc:
             self.ledger.transition_intent(
                 intent_id, IntentState.PROTECTION_FAILED,
                 f"mandatory SL rejected: {exc}", correlation_id=intent_id)
@@ -313,7 +357,7 @@ class Orchestrator:
         try:
             self._place_protection_leg(
                 intent_id, self._leg_cid(intent_id, "TP"),
-                OrderKind.TAKE_PROFIT, side, filled_qty, stop_price=101.0)
+                OrderKind.TAKE_PROFIT, side, filled_qty, stop_price=tp_px)
         except (OrderRejectedError, SubmitUnknownError):
             tp_ok = False
 
@@ -345,7 +389,7 @@ class Orchestrator:
         return result
 
     def _submit_close(self, intent_id: str, reason: str, emergency: bool) -> Dict[str, Any]:
-        pos = self.exchange.position(self.symbol)
+        pos = self._safe_position()
         if pos is None:
             self.ledger.transition_intent(
                 intent_id, IntentState.RECOVERY_REQUIRED,
@@ -454,18 +498,29 @@ class Orchestrator:
         OCO 语义（吸收自 NautilusTrader bracket 警告）：任一保护腿成交后，
         兄弟腿不保证被交易所自动撤销，必须按精确 ID 主动撤单。
         """
-        pos = self.exchange.position(self.symbol)
-        if pos is None or abs(pos.signed_qty) >= 1e-12:
-            return  # 交易所仍有仓位或事实不可知：不收敛
+        pos = self._safe_position()
+        if pos is None:
+            self.ledger.set_position_fact(
+                self.symbol, PositionFactState.UNKNOWN,
+                source="reconcile", note="exchange position query failed")
+            return
+        if abs(pos.signed_qty) >= 1e-12:
+            return  # 交易所仍有仓位：不收敛
 
         for intent in self.ledger.list_intents(states=[IntentState.PROTECTED.value]):
             iid = intent["intent_id"]
             fired = []
+            cancel_unknown = False
             for order in self.ledger.orders_for_intent(iid):
                 if order["order_kind"] not in ("STOP_LOSS", "TAKE_PROFIT"):
                     continue
                 cid = order["client_order_id"]
-                fact = self.exchange.query_order(cid)
+                fact = self._safe_query_order(cid)
+                if fact is None:
+                    self.ledger.engage_kill(
+                        f"protection query failed after exchange close {cid}")
+                    cancel_unknown = True
+                    continue
                 if fact.status == "FILLED":
                     self._apply_fills(cid)
                     self.ledger.update_order(
@@ -481,6 +536,17 @@ class Orchestrator:
                     except CancelUnknownError:
                         self.ledger.engage_kill(
                             f"sibling cancel unknown after exchange close {cid}")
+                        cancel_unknown = True
+            if cancel_unknown:
+                self.ledger.transition_intent(
+                    iid, IntentState.RECOVERY_REQUIRED,
+                    f"exchange-side close detected but sibling cancel/query unknown"
+                    f" ({'+'.join(fired) if fired else 'external close'})",
+                    correlation_id=iid)
+                self.ledger.set_position_fact(
+                    self.symbol, PositionFactState.UNKNOWN,
+                    source="reconcile", note=f"sibling cancel unknown {iid}")
+                continue
             self.ledger.transition_intent(
                 iid, IntentState.CLOSING,
                 f"exchange-side close detected ({'+'.join(fired) if fired else 'external close'})",
@@ -514,7 +580,13 @@ class Orchestrator:
         entry = self.ledger.get_order(f"{intent_id}-ENTRY")
         if entry is None:
             return self._refuse("no entry order")
-        fact = self.exchange.query_order(entry["client_order_id"])
+        fact = self._safe_query_order(entry["client_order_id"])
+        if fact is None:
+            self.ledger.set_position_fact(
+                self.symbol, PositionFactState.UNKNOWN,
+                source="protection-sync", note="entry query failed")
+            return {"success": False, "intent_id": intent_id,
+                    "reason": "order query failed"}
         if fact.status in ("FILLED", "PARTIALLY_FILLED"):
             self._apply_fills(entry["client_order_id"])
             self.ledger.update_order(
@@ -527,7 +599,13 @@ class Orchestrator:
         for order in self.ledger.orders_for_intent(intent_id):
             if order["order_kind"] not in ("STOP_LOSS", "TAKE_PROFIT"):
                 continue
-            pf = self.exchange.query_order(order["client_order_id"])
+            pf = self._safe_query_order(order["client_order_id"])
+            if pf is None:
+                self.ledger.set_position_fact(
+                    self.symbol, PositionFactState.UNKNOWN,
+                    source="protection-sync", note=f"query failed {order['client_order_id']}")
+                return {"success": False, "intent_id": intent_id,
+                        "reason": "order query failed"}
             if pf.status in ("FILLED", "PARTIALLY_FILLED"):
                 any_fired = True
                 self._apply_fills(order["client_order_id"])
@@ -537,7 +615,7 @@ class Orchestrator:
             elif pf.status == "CANCELLED":
                 self.ledger.update_order(order["client_order_id"], state="CANCELLED")
 
-        pos = self.exchange.position(self.symbol)
+        pos = self._safe_position()
         exchange_qty = abs(pos.signed_qty) if pos is not None else None
         if exchange_qty is not None and exchange_qty < 1e-12:
             return {"success": True, "intent_id": intent_id,
@@ -582,10 +660,28 @@ class Orchestrator:
                 continue
             cid = self._leg_cid(intent_id, tag)
             try:
+                sl_px, tp_px = self._protect_prices(intent_id)
                 self._place_protection_leg(
                     intent_id, cid, kind, side, deficit,
-                    stop_price=99.0 if tag.startswith("SL") else 101.0)
-            except (OrderRejectedError, SubmitUnknownError) as exc:
+                    stop_price=sl_px if tag.startswith("SL") else tp_px)
+            except SubmitUnknownError as exc:
+                current = IntentState(self.ledger.get_intent(intent_id)["state"])
+                if current in (
+                    IntentState.PROTECTED, IntentState.PROTECTION_SUBMITTING,
+                    IntentState.FILLED_UNPROTECTED, IntentState.PARTIALLY_FILLED,
+                ):
+                    self.ledger.transition_intent(
+                        intent_id, IntentState.RECOVERY_REQUIRED,
+                        f"protection top-up submit unknown (deficit={deficit}): {exc}",
+                        correlation_id=intent_id)
+                self.ledger.engage_kill(f"protection top-up submit unknown {intent_id}")
+                self.ledger.set_position_fact(
+                    self.symbol, PositionFactState.UNKNOWN,
+                    source="protection-sync", note=f"top-up unknown {cid}")
+                return {"success": False, "intent_id": intent_id,
+                        "state": "RECOVERY_REQUIRED",
+                        "reason": f"protection top-up submit unknown: {exc}"}
+            except OrderRejectedError:
                 current = IntentState(self.ledger.get_intent(intent_id)["state"])
                 if current in (IntentState.FILLED_UNPROTECTED,
                                IntentState.PROTECTION_SUBMITTING):
@@ -651,7 +747,9 @@ class Orchestrator:
                 self.exchange.cancel_order(cid)
             except CancelUnknownError:
                 return _recovery(f"cancel result unknown: {cid}")
-            fact = self.exchange.query_order(cid)
+            fact = self._safe_query_order(cid)
+            if fact is None:
+                return _recovery(f"query failed after cancel: {cid}")
             if fact.status == "CANCELLED":
                 self.ledger.update_order(cid, state="CANCELLED")
             elif fact.status in ("FILLED", "PARTIALLY_FILLED"):
@@ -666,7 +764,7 @@ class Orchestrator:
                 return _recovery(f"leg in unexpected state {fact.status}: {cid}")
 
         # 2) 拉取交易所实际仓位（唯一数量真源）
-        pos = self.exchange.position(self.symbol)
+        pos = self._safe_position()
         if pos is None:
             return _recovery("exchange position UNKNOWN")
 
@@ -696,10 +794,13 @@ class Orchestrator:
             f"rebuild mandatory SL for remaining {remaining}",
             correlation_id=intent_id)
         try:
+            sl_px, tp_px = self._protect_prices(intent_id)
             self._place_protection_leg(
                 intent_id, self._leg_cid(intent_id, "SL-R"),
-                OrderKind.STOP_LOSS, side, remaining, stop_price=99.0)
-        except (OrderRejectedError, SubmitUnknownError) as exc:
+                OrderKind.STOP_LOSS, side, remaining, stop_price=sl_px)
+        except SubmitUnknownError as exc:
+            return _recovery(f"mandatory SL rebuild result unknown: {exc}")
+        except OrderRejectedError as exc:
             self.ledger.transition_intent(
                 intent_id, IntentState.PROTECTION_FAILED,
                 f"mandatory SL rebuild rejected: {exc}", correlation_id=intent_id)
@@ -711,7 +812,7 @@ class Orchestrator:
         try:
             self._place_protection_leg(
                 intent_id, self._leg_cid(intent_id, "TP-R"),
-                OrderKind.TAKE_PROFIT, side, remaining, stop_price=101.0)
+                OrderKind.TAKE_PROFIT, side, remaining, stop_price=tp_px)
         except (OrderRejectedError, SubmitUnknownError):
             tp_ok = False
 
@@ -724,6 +825,21 @@ class Orchestrator:
                 "sl_coverage": remaining,
                 "tp_coverage": remaining if tp_ok else 0.0,
                 "safe_but_incomplete": not tp_ok}
+
+    def _protect_prices(self, intent_id: str) -> tuple:
+        sl, tp = 99.0, 101.0
+        cached = self._protect_px.get(intent_id)
+        if cached:
+            sl, tp = float(cached[0]), float(cached[1])
+        for order in self.ledger.orders_for_intent(intent_id):
+            px = order.get("stop_price")
+            if px is None:
+                continue
+            if order["order_kind"] == "STOP_LOSS":
+                sl = float(px)
+            elif order["order_kind"] == "TAKE_PROFIT":
+                tp = float(px)
+        return sl, tp
 
     def _place_protection_leg(
         self, intent_id: str, cid: str, kind: OrderKind, side: str,
@@ -749,11 +865,12 @@ class Orchestrator:
                 cid, state="ACTIVE" if ack.status == "NEW" else "FILLED",
                 exchange_order_id=ack.exchange_order_id,
                 filled_qty=ack.filled_qty, avg_price=ack.avg_price)
-        except _LedgerWriteFailed:
+        except SubmitUnknownError:
+            self.ledger.update_order(cid, state="SUBMIT_UNKNOWN")
             raise
-        except Exception as exc:
+        except Exception:
             self.ledger.update_order(cid, state="REJECTED")
-            raise exc
+            raise
 
     def _leg_cid(self, intent_id: str, tag: str) -> str:
         """确定性腿 ID：首腿无后缀，重复挂腿从 2 起编号。"""
@@ -839,8 +956,8 @@ class Orchestrator:
         self.ledger.update_order(
             fill.client_order_id, state=state, filled_qty=new_filled)
 
-        pos = self.exchange.position(self.symbol)
         self._refresh_position_fact()
+        pos = self._safe_position()
 
         intent = self.ledger.get_intent(order["intent_id"])
         intent_state = IntentState(intent["state"]) if intent else None
@@ -903,12 +1020,24 @@ class Orchestrator:
             if not inserted:
                 continue  # 重复 Fill 事件不重复记账
 
+    def _safe_query_order(self, client_order_id: str):
+        try:
+            return self.exchange.query_order(client_order_id)
+        except Exception:
+            return None
+
+    def _safe_position(self):
+        try:
+            return self.exchange.position(self.symbol)
+        except Exception:
+            return None
+
     def _exchange_flat(self) -> bool:
-        pos = self.exchange.position(self.symbol)
+        pos = self._safe_position()
         return pos is not None and abs(pos.signed_qty) < 1e-12
 
     def _refresh_position_fact(self) -> None:
-        pos = self.exchange.position(self.symbol)
+        pos = self._safe_position()
         if pos is None:
             self.ledger.set_position_fact(
                 self.symbol, PositionFactState.UNKNOWN,

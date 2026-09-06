@@ -4,7 +4,8 @@ from typing import Dict, Any, Optional, List
 from dataclasses import dataclass, field
 from enum import Enum
 from datetime import datetime
-from binance.client import Client
+
+from aurora.p0_boundary import SafetyViolation
 
 
 class OrderStatus(Enum):
@@ -50,7 +51,11 @@ class ExecutionEngineV2:
     MAX_RETRIES = 3
     RETRY_DELAY_BASE = 1.0
     
-    def __init__(self, client: Client, symbol: str = 'BTCUSDT'):
+    def __init__(self, client: Any, symbol: str = 'BTCUSDT'):
+        raise SafetyViolation(
+            "[P0] ExecutionEngineV2 is retired. "
+            "Start only via: python -m aurora.production_main"
+        )
         self.client = client
         self.symbol = symbol
         self.order_history: Dict[str, OrderRecord] = {}

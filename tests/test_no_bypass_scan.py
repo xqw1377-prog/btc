@@ -5,7 +5,7 @@
 - 任何文件不得出现 AsyncClient / UMFutures / CMFutures / ccxt / dapi / stream.binance / requests / httpx；
 - fapi.binance.com 仅允许出现在 aurora/p0_boundary.py（endpoint 断言常量）；
 - binance Client 构造仅允许出现在 aurora/safety.py 与 aurora/production_main.py；
-- binance.client 导入仅允许出现在安全层与两个执行引擎（仅类型标注，无构造）。
+- binance.client 导入仅允许出现在 aurora/safety.py 与 aurora/production_main.py。
 """
 import os
 import re
@@ -20,8 +20,6 @@ ALLOWED_CLIENT_CONSTRUCTION = {"aurora/safety.py", "aurora/production_main.py"}
 ALLOWED_BINANCE_IMPORT = {
     "aurora/safety.py",
     "aurora/production_main.py",
-    "aurora/execution_engine.py",
-    "aurora/execution_engine_v2.py",
 }
 
 FORBIDDEN_ANYWHERE = (

@@ -60,18 +60,22 @@ ALLOWED_TRANSITIONS: Dict[IntentState, FrozenSet[IntentState]] = {
     IntentState.PARTIALLY_FILLED: frozenset({
         IntentState.FILLED_UNPROTECTED,
         IntentState.PROTECTION_SUBMITTING,
+        IntentState.RECOVERY_REQUIRED,
     }),
     IntentState.FILLED_UNPROTECTED: frozenset({
         IntentState.PROTECTION_SUBMITTING,
         IntentState.PROTECTION_FAILED,
+        IntentState.RECOVERY_REQUIRED,
     }),
     IntentState.PROTECTION_SUBMITTING: frozenset({
         IntentState.PROTECTED,
         IntentState.PROTECTION_FAILED,
+        IntentState.RECOVERY_REQUIRED,
     }),
     IntentState.PROTECTED: frozenset({
         IntentState.CLOSING,
         IntentState.PROTECTION_DEGRADED,
+        IntentState.RECOVERY_REQUIRED,
     }),
     # 保护腿部分成交：仓位有剩余且保护覆盖不足，进入修复流程
     IntentState.PROTECTION_DEGRADED: frozenset({

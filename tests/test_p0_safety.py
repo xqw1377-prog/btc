@@ -180,6 +180,28 @@ class ModeTests(unittest.TestCase):
                 )
             self.assertIn("NO-GO", str(ctx.exception))
 
+    def test_p0_03b_live_armed_boot_succeeds(self):
+        key = "live-key-armed"
+        fp = key_fingerprint(key)
+        tmp, persist, locks = _tmp_paths()
+        with tmp:
+            ctx = boot(
+                persist,
+                locks,
+                broker=FakeBroker(url="https://fapi.binance.com"),
+                environ={
+                    "TRADING_MODE": "LIVE",
+                    "ALLOW_LIVE_TRADING": "true",
+                    "AURORA_LIVE_CONFIRM": "I_UNDERSTAND_LIVE_RISK",
+                    "AURORA_ARM_LIVE": "I_ARM_LIVE_EXECUTION",
+                    "BINANCE_API_KEY": key,
+                    "AURORA_ACCOUNT_FINGERPRINT": fp,
+                    "AURORA_LIVE_KEY_SHA256": fp,
+                },
+            )
+            self.assertEqual(ctx.mode, RunMode.LIVE)
+            ctx.lock.release()
+
 
 class PositionAndCloseTests(unittest.TestCase):
     def test_p0_04_query_failure_is_unknown(self):
