@@ -59,7 +59,12 @@ function App() {
             <div style={{ width: '40px', height: '40px', borderRadius: '8px', background: 'linear-gradient(135deg, #22c55e, #3b82f6)', display: 'flex', alignItems: 'center', justifyContent: 'center', fontWeight: 'bold', fontSize: '18px' }}>A</div>
             <div>
               <h1 style={{ fontSize: '18px', fontWeight: 'bold', background: 'linear-gradient(90deg, #22c55e, #3b82f6)', WebkitBackgroundClip: 'text', WebkitTextFillColor: 'transparent' }}>AURORA</h1>
-              <p style={{ fontSize: '11px', color: '#6b7280' }}>BTC 交易系统</p>
+              <p style={{ fontSize: '11px', color: '#6b7280' }}>
+                BTC 只读观察 · {system.meta?.mode || '来源未确认'}
+                {system.meta?.status === 'ok'
+                  ? ` · 更新于 ${system.meta.updatedAt?.slice(11, 19) || '-'}`
+                  : ` · 数据${system.meta?.status === 'stale' ? '陈旧' : '未确认'}`}
+              </p>
             </div>
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: '24px' }}>

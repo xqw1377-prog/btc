@@ -3,17 +3,19 @@ import { wsClient } from '../services/wsClient';
 
 export default function useWS() {
   const [system, setSystem] = useState({
-    mode: 'NORMAL',
+    mode: 'UNKNOWN',
     engine: 'TREND',
     exposure: 0,
     leverage: 1,
-    position: 'FLAT',
+    position: 'UNKNOWN',
+    positionsState: 'UNKNOWN',
     killSwitch: false,
-    engines: { trend: true, execution: true },
+    engines: { trend: false, execution: false },
     balance: 0,
     equity: 0,
     unrealizedPnl: 0,
-    positions: []
+    positions: [],
+    meta: { status: 'unknown', mode: null, updatedAt: null }
   });
 
   const [market, setMarket] = useState({
