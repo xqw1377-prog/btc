@@ -57,6 +57,9 @@ class FakeExchange(ExchangePort):
         self._fill_seq = 0
         self._fail_position = False
         self._fail_order_query = False
+        # BOOT-DRIFT 测试辅助：账本/本 fake 订单系统之外的外部持仓。
+        self._external: List[tuple] = []       # (signed_qty, entry_price)
+        self._ambiguous_position = False        # 如 HEDGE 双腿：查询不完整 → None
 
     # ---- 内部 ----
 
@@ -169,11 +172,23 @@ class FakeExchange(ExchangePort):
         order["status"] = "CANCELLED"
         return True
 
+    def seed_external_position(self, signed_qty: float, entry_price: float) -> None:
+        """注入账本与本订单系统之外的持仓（模拟外部/手工建仓）。"""
+        self._external.append((signed_qty, entry_price))
+
+    def set_position_query_ambiguous(self, flag: bool = True) -> None:
+        """模拟多腿/覆盖不足的仓位查询：返回 None（UNKNOWN），绝不净额成 FLAT。"""
+        self._ambiguous_position = flag
+
     def position(self, symbol: str) -> Optional[ExchangePosition]:
-        if self._fail_position:
+        if self._fail_position or self._ambiguous_position:
             return None  # 交易所事实不可知 = UNKNOWN，绝不能解释为空仓
         signed = 0.0
         entry_price = 0.0
+        for qty, px in self._external:
+            signed += qty
+            if qty:
+                entry_price = px
         for order in self._orders.values():
             req = order["req"]
             if req.symbol != symbol or order["filled_qty"] <= 0:

@@ -40,6 +40,10 @@ class Orchestrator:
         """启动恢复：解决未决订单 + 以交易所为真源重建持仓事实。"""
         report = {"resolved": [], "unresolved": [], "kill_engaged": False}
 
+        # BOOT-DRIFT：先快照账本证据，再对照仓位级独立查询结果。
+        pre_fact = self.ledger.get_position_fact(self.symbol)
+        pre_intents = {i["intent_id"]: i["state"] for i in self.ledger.list_intents()}
+
         for order in self.ledger.pending_orders():
             intent_id = order["intent_id"]
             cid = order["client_order_id"]
@@ -178,9 +182,74 @@ class Orchestrator:
         for intent in self.ledger.list_intents(
                 states=[IntentState.PROTECTION_DEGRADED.value]):
             self._repair_protection(intent["intent_id"])
+        self._boot_position_audit(report, pre_fact, pre_intents)
         kill = self.ledger.kill_state()
         report["kill_engaged"] = bool(kill["engaged"])
+        fact = self.ledger.get_position_fact(self.symbol)
+        report["position_fact"] = fact["state"] if fact else None
         return report
+
+    def _boot_position_audit(
+        self, report: Dict[str, Any], pre_fact: Optional[Dict[str, Any]],
+        pre_intents: Dict[str, str],
+    ) -> None:
+        """BOOT-DRIFT：交易所事实必须由账本证据解释，否则不认领、不误平。
+
+        - 账本完全无记录而交易所有仓 → UNKNOWN + 阻断新增风险；
+        - 账本 KNOWN_OPEN 而交易所确认空仓且本轮无成交/平仓证据 → UNKNOWN；
+        - 查询失败/不完整已由 _refresh_position_fact 标 UNKNOWN，这里不重复。
+        """
+        fact = self.ledger.get_position_fact(self.symbol)
+        if fact is None or fact["state"] == PositionFactState.UNKNOWN.value:
+            # 查询失败/不完整（含多腿模糊）已是 UNKNOWN；确保恢复报告
+            # 对调用链显式未完成，不能只靠下游各自读 fact。
+            if not report["unresolved"]:
+                report["unresolved"].append({
+                    "fact": "POSITION_FACT_UNKNOWN",
+                    "reason": "exchange position query failed or incomplete",
+                })
+            return
+        resolved_fills = any(
+            e.get("fact") in ("FILLED", "PARTIALLY_FILLED")
+            for e in report["resolved"]
+        )
+        # 本轮恢复中确实有 intent 被收敛到终态，也算"账本解释得通"的证据
+        # （交易所侧 SL/TP 触发走的 _reconcile_protected_intents 不进 resolved 列表）。
+        reconciled_this_run = any(
+            i["state"] in (IntentState.RECONCILED.value, IntentState.CLOSED.value)
+            and pre_intents.get(i["intent_id"]) not in (
+                IntentState.RECONCILED.value, IntentState.CLOSED.value,
+            )
+            for i in self.ledger.list_intents()
+        )
+        close_evidence = resolved_fills or reconciled_this_run
+        # UNKNOWN 的 fact 行只是"不知道"，不是持仓归属证据。
+        had_ledger_evidence = (
+            pre_fact is not None
+            and pre_fact["state"] != PositionFactState.UNKNOWN.value
+        ) or bool(pre_intents)
+        if fact["state"] == PositionFactState.KNOWN_OPEN.value:
+            if not had_ledger_evidence and not close_evidence:
+                self.ledger.set_position_fact(
+                    self.symbol, PositionFactState.UNKNOWN, source="boot-audit",
+                    note="BOOT-DRIFT: exchange position has no ledger evidence; not adopted")
+                report["unresolved"].append({
+                    "fact": "BOOT_DRIFT",
+                    "reason": "exchange open, ledger has no intent/order/position record",
+                })
+        elif fact["state"] == PositionFactState.KNOWN_FLAT.value:
+            if (
+                pre_fact is not None
+                and pre_fact["state"] == PositionFactState.KNOWN_OPEN.value
+                and not close_evidence
+            ):
+                self.ledger.set_position_fact(
+                    self.symbol, PositionFactState.UNKNOWN, source="boot-audit",
+                    note="BOOT-DRIFT: ledger open but exchange flat; no close/fill evidence")
+                report["unresolved"].append({
+                    "fact": "BOOT_DRIFT",
+                    "reason": "ledger open, exchange flat; no close evidence",
+                })
 
     def open_position(
         self, side: str, quantity: float,
@@ -217,6 +286,15 @@ class Orchestrator:
             }
         if not self.ledger.claim_intent(intent_id, self.instance_id):
             return self._refuse(f"intent {intent_id} claimed by another executor")
+
+        # 未决提交未核验前，不得新增风险（BOOT-DRIFT 原则同样适用于订单层）。
+        if self.ledger.pending_orders():
+            self.ledger.transition_intent(
+                intent_id, IntentState.REJECTED,
+                "pending orders unresolved; run recover() before new opens",
+                correlation_id=intent_id)
+            return self._refuse(
+                "pending orders unresolved; run recover() before new opens")
 
         fact = self.ledger.get_position_fact(self.symbol)
         if fact is None or fact["state"] == PositionFactState.UNKNOWN.value:
