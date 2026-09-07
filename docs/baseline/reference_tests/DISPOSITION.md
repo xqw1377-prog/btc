@@ -24,9 +24,14 @@ quarantine 模块不恢复；reference 测试不构成生产安全性证明。
 ## 二、test_execution_truth.py 四条失败逐断言处置
 
 四条失败的公共根因：`DurableExecutor.boot()/reconcile()` 依赖
-`aurora.reconciler.Reconciler` —— 该模块**从未实现**（无 Git 历史、无
-quarantine 副本）。reference 侧已把 `reconcile()` 改为显式
+`aurora.reconciler.Reconciler` —— **本轮检查的当前仓库、可达 Git 历史
+及所检查的 quarantine 范围内，未找到可复用实现**（不宣称绝对从未存在；
+去向裁决不变：不恢复旧模块）。reference 侧已把 `reconcile()` 改为显式
 `NotImplementedError(NOT-BUILT)`，避免悬挂 import 被误认为可恢复缺口。
+
+注意：**UNKNOWN 状态下拒绝开仓 ≠ 完成启动对账**。前者证明不继续增加
+风险，后者证明能发现未知风险，两者不能互相替代；因此下表的"部分迁移"
+仅指断言的可执行部分被保留，启动对账断言仍未覆盖。
 
 | 原测试 nodeid | 原验证合同 | 原依赖 | 处置 | 当前对应 | 结果 |
 |---|---|---|---|---|---|

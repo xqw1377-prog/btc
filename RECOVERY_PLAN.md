@@ -2,6 +2,16 @@
 
 > 本文件是当前唯一权威路线图。README.md / STRATEGY.md / DEPLOYMENT.md 为事故前历史文档，不再代表现状。
 
+## G-1 基线封存（2026-09-07，C6）
+
+```text
+G-1_BASELINE   SEALED — 代码基点 0bdde2a，详见 docs/baseline/G1_BASELINE.md
+                （封存的是准确可追溯基线，不是"G0 已修完"）
+当前能力真源    docs/product/CAPABILITY_STATUS.md
+G0 开放项       BOOT-DRIFT(G0-1) / G0-4 协议 / G0-5 配置一致性 —— OPEN
+LIVE            NO-GO
+```
+
 ## 状态（2026-09-02，B2.2 后）
 
 ```text
