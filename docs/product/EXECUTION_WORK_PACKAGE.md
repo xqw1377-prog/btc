@@ -1,20 +1,32 @@
 # EXECUTION WORK PACKAGE
 
 > 状态：**BOUNDARY-FROZEN / NOT AUTHORIZED TO EXECUTE**  
+> 封点提交：`6b2cc7c`（用户已接受为正式边界封点）  
 > 冻结日：2026-09-08  
-> 修订：REQUIRED AMENDMENTS 1–5 已并入；合同可真正冻结  
+> 修订：REQUIRED AMENDMENTS 1–5 已并入  
 > 前置：Harness `3aa4d8d` CLOSED-OFFLINE；`EXECUTE_AUTHORIZED=false`  
 > **本合同只把「若将来写那一笔 0.001」的边界一次性写死。不是开工令。**
 
 ```text
-EXECUTION WORK PACKAGE                BOUNDARY-FROZEN
+EXECUTION WORK PACKAGE                BOUNDARY-FROZEN   6b2cc7c
 REQUIRED AMENDMENTS                   INCORPORATED
+RESTART RECOVERY                      REQUIRED
+QUALIFICATION CLOSE                   FROZEN
+CLIENT ID NAMESPACE                   FROZEN
+QUALIFICATION LEDGER                  ISOLATED
+SCOPED SINGLE-USE PERMIT              REQUIRED
+
 EXECUTE_AUTHORIZED                    FALSE
-CONTROLLED TESTNET EXECUTE            DENIED
+EXECUTION AUTHORIZATION               NOT ISSUED
+SCOPED PERMIT                         NOT ISSUED
+0.001 BTC WRITE                       NOT AUTHORIZED
 REAL TESTNET WRITE                    DENIED
 production_main                       DENIED
 AURORA_ENABLE_TRADING                 DENIED
+INCIDENT KILL                         ACTIVE
+INCIDENT LEDGER                       IMMUTABLE
 INCIDENT KILL CLEAR                   DENIED
+AUTO TESTNET                          DENIED
 LIVE                                  NO-GO
 SYSTEM EXECUTION                      NOT QUALIFIED
 ```

@@ -118,11 +118,12 @@ INCIDENT_LOCK                 ACTIVE
 AUTO_TESTNET                  DENIED
 CONTROLLED_REQUAL             HARNESS-READY / EXECUTE DENIED
 EXECUTION_WP                  BOUNDARY-FROZEN / NOT AUTHORIZED TO EXECUTE
-                              REQUIRED AMENDMENTS INCORPORATED
+                              SEALED 6b2cc7c
+                              PERMIT NOT ISSUED
 LIVE                          NO-GO
 ```
 
-证据残留可永久 OPEN。受控写入边界已冻，执行未授权；`INCIDENT_LOCK` / 事故 kill 未解除。
+证据残留可永久 OPEN。受控写入边界已冻于 `6b2cc7c`，执行未授权、permit 未签发；`INCIDENT_LOCK` / 事故 kill 未解除。
 
 ---
 
