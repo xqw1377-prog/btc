@@ -16,7 +16,9 @@ G0-4A_COMMIT                  7a10302
 G0-4B_COMMIT                  1bb1ecf
 G0-4C_COMMIT                  5bfa311
 G0-5_COMMIT                   d0863ee
-WORKTREE                      禁止对交易所写入；ops_testnet_probe 保持未提交
+WORKTREE                      禁止对交易所写入
+                              sealed-at-the-time：ops_testnet_probe 未提交
+                              current head：ops_testnet_probe 已入库存档（G0-4D-R1）
 
 G0-1A                         CLOSED
 G0-1B                         CLOSED
@@ -42,6 +44,15 @@ G0-4C                         CLOSED-OFFLINE
 G0-4D EXECUTION               COMPLETE
 G0-4D EVIDENCE                SEALED
 G0-4D QUALIFICATION GATE      UNBLOCKED（EXECUTE 仍 DENIED）
+
+PRE-EXECUTION CONFORMANCE     PASS   eb0536b
+QTY EXACTNESS                 PASS
+CLIENT ID CONTRACT            PASS
+SESSION LEDGER ISOLATION      PASS
+TRUE RESTART RECOVERY         PASS
+QUALIFICATION CLOSE           PASS
+REAL WRITE AUTHORITY          NOT ISSUED
+REAL TESTNET WRITE            DENIED
 G0-5                          CLOSED-OFFLINE
 
 CONTROLLED TESTNET IMPLEMENTATION   CLOSED-OFFLINE
@@ -59,6 +70,14 @@ REAL TESTNET WRITE            DENIED
 KILL                          ACTIVE
 INCIDENT_LOCK                 ACTIVE
 AUTO_TESTNET                  DENIED
+OFFLINE CONTRACTS             PROVEN
+READ-ONLY TESTNET             SEALED
+CONTROLLED REQUAL HARNESS     IMPLEMENTED
+PRE_EXECUTION_CONFORMANCE     ALIGNED TO 6b2cc7c
+EXECUTION BOUNDARY            FROZEN
+EXECUTION AUTHORIZATION       NOT ISSUED
+SCOPED PERMIT                 NOT ISSUED
+REAL WRITE PATH               DENIED
 CONTROLLED_REQUAL             IMPLEMENTATION SEALED 5336467
                               EXECUTION AUTHORIZATION  NOT ISSUED
                               REAL TESTNET WRITE  DENIED
@@ -82,7 +101,7 @@ STRATEGY / V2                 HOLD
 |---|---|---|
 | PAPER 模式 | ACTIVE — 无交易所客户端、无出网 | tests/test_p0_safety.py, test_network_boundary.py |
 | SHADOW 模式 | READ-ONLY TESTNET — 只读镜像，生产循环禁止实例化 | p0_boundary, test_production_entry_integrity |
-| TESTNET 模式 | INCIDENT_LOCKED — KNOWN_FLAT；EXIT_MECHANISM UNKNOWN；kill ACTIVE；G0-4D HOLD（Algo schema 阻塞） | FACTS.md + G0-4D.md + G0-4D-AMENDMENT.md |
+| TESTNET 模式 | INCIDENT_LOCKED — KNOWN_FLAT；EXIT_MECHANISM UNKNOWN；kill ACTIVE；G0-4D **CLOSED-READONLY / R1 PASS**（恢复证据仍 PARTIAL） | FACTS.md + G0-4D.md + G0-4D-AMENDMENT.md。sealed-at-the-time 曾写 HOLD（Algo schema 阻塞），现已过时 |
 | LIVE 代码路径 | EXISTS（未被本批删除或改写） | production_main, safety.build_client |
 | LIVE 授权条件 | 既有条件未修改：双重授权 + AURORA_ARM_LIVE | p0_boundary.assert_live_dual_auth / assert_not_live_trading |
 | 当前 SDK+端点策略下的 armed-LIVE | BLOCKED_BEFORE_CLIENT — 构造期 spot ping 目标 api.binance.com 不在 ALLOWED_LIVE_HOSTS，授权齐全也构造前拒绝 | C2.1（04b2c0e），tests/test_network_boundary.py |
@@ -123,7 +142,7 @@ STRATEGY / V2                 HOLD
 | Incident Disposition | **SEALED** | 历史证据缺口 ACCEPTED；`INCIDENT_REQUALIFICATION_ELIGIBLE=YES` 仅批准进入 G0-4D 只读复核。lock / kill / AUTO TESTNET / SYSTEM EXECUTION 未解除。真源：DISPOSITION.md |
 | G0-4D 只读 TESTNET 资格复核 | **CLOSED-READONLY** | 认证 PASS；读协议 PASS；恢复证据 PARTIAL（无 SELL，缺口再确认）。fail-closed 未触发。回归：tests/test_g04d_readonly.py。现场：g04d_readonly.json。SYSTEM EXECUTION 仍 NO |
 | Controlled TESTNET Requal | **HARNESS-READY / EXECUTE DENIED** | 边界已冻；`ops_controlled_requal` 默认只出 PLAN；execute 旗标仍拒写。离线单次会话：开仓→PROTECTED→restart recover→flatten→会话 kill，事故账本字节不变。回归：tests/test_controlled_requal.py。真源：CONTROLLED_TESTNET_REQUAL.md |
-| Execution Work Package | **BOUNDARY-FROZEN / NOT AUTHORIZED TO EXECUTE** | 正式封点 `6b2cc7c`。REQUIRED AMENDMENTS 已并入。授权口径已升级（R2）：REAL WRITE AUTHORITY = valid START ORDER AND matching exact-session scoped permit AND explicit operator flag AND no terminal session record；EXECUTE_AUTHORIZED 仅为 legacy dead-man 指示。PASS-1 ≠ AUTO TESTNET ≠ SYSTEM EXECUTION。真源：EXECUTION_WORK_PACKAGE.md。permit 未签发 |
+| Execution Work Package | **BOUNDARY-FROZEN / NOT AUTHORIZED TO EXECUTE** | PRE-EXECUTION CONFORMANCE PASS（eb0536b）。| 正式封点 `6b2cc7c`。REQUIRED AMENDMENTS 已并入。授权口径已升级（R2）：REAL WRITE AUTHORITY = valid START ORDER AND matching exact-session scoped permit AND explicit operator flag AND no terminal session record；EXECUTE_AUTHORIZED 仅为 legacy dead-man 指示。PASS-1 ≠ AUTO TESTNET ≠ SYSTEM EXECUTION。真源：EXECUTION_WORK_PACKAGE.md。permit 未签发 |
 | G0-5 运行身份与配置隔离 | **CLOSED-OFFLINE** | 5A 交易相邻入口共用显式 `ConfigSource`：不 `load_dotenv` / 不向上搜索父目录、导入零副作用、不改写 `os.environ`、进程环境优先。5B `state/<mode>/<fingerprint>/` 物理隔离；事故 `state/kernel_ledger.db` 只读接管，源文件字节不变，kill 保留；显式 `AURORA_LEDGER_PATH` 不继承遗留账本。5C 缺指纹拒启；身份含 mode/fingerprint/position_mode/host/exclusivity；漂移 `ACCOUNT_IDENTITY_DRIFT` fail-closed；独占性默认 false。5D `SafeExecutor` 迁出为 OFFLINE_REFERENCE_ONLY，`BootContext.executor` 恒为 None。回归：tests/test_g05_identity_isolation.py。全套 370 passed（排除未提交 probe）。REAL EXCHANGE CALLS = 0。不授权 probe / 清 kill / TESTNET 真跑 |
 
 沿用既有登记的 G1/G4/G5 迁移项（启动余额不刷新、死配置、数量精度、
