@@ -39,7 +39,7 @@ MANUAL_CLOSE_ORDER            NOT_FOUND
 G0-4A                         CLOSED-OFFLINE
 G0-4B                         CLOSED-OFFLINE
 G0-4C                         CLOSED-OFFLINE
-G0-4D                         CLOSED-READONLY
+G0-4D                         HOLD（Algo 单查 schema 不匹配，见修正附录）
 G0-5                          CLOSED-OFFLINE
 KILL                          ACTIVE
 INCIDENT_LOCK                 ACTIVE
@@ -51,7 +51,7 @@ P0_SAFETY_STATUS              STALE / NOT AUTHORITATIVE
 STRATEGY / V2                 HOLD
 ```
 
-证据残留可以永久 OPEN。G0-4D 只读复核已封：认证/读协议 PASS，恢复证据 PARTIAL。`CONTROLLED TESTNET REQUALIFICATION` 仅冻结写入边界，**EXECUTE DENIED**。`INCIDENT_LOCK` / 事故 kill / AUTO TESTNET / SYSTEM EXECUTION 均未解除。
+证据残留可以永久 OPEN。G0-4D 只读复核：认证 PASS、普通读取 PASS、恢复证据 PARTIAL（EXIT-PROVENANCE-01 再确认 NOT_FOUND）；**Algo 单查 schema 不匹配（真实字段 orderType，无 type）→ 读协议该段 FAIL，G0-4D=HOLD**，修正附录 G0-4D-AMENDMENT.md。`CONTROLLED TESTNET REQUALIFICATION` 仅冻结写入边界，**EXECUTE DENIED**（且在 G0-4D 阻塞修复前不得解封）。`INCIDENT_LOCK` / 事故 kill / AUTO TESTNET / SYSTEM EXECUTION 均未解除。
 
 ## 一、运行与授权
 
@@ -59,7 +59,7 @@ STRATEGY / V2                 HOLD
 |---|---|---|
 | PAPER 模式 | ACTIVE — 无交易所客户端、无出网 | tests/test_p0_safety.py, test_network_boundary.py |
 | SHADOW 模式 | READ-ONLY TESTNET — 只读镜像，生产循环禁止实例化 | p0_boundary, test_production_entry_integrity |
-| TESTNET 模式 | INCIDENT_LOCKED — KNOWN_FLAT；EXIT_MECHANISM UNKNOWN；kill ACTIVE；G0-4D CLOSED-READONLY | FACTS.md + G0-4D.md |
+| TESTNET 模式 | INCIDENT_LOCKED — KNOWN_FLAT；EXIT_MECHANISM UNKNOWN；kill ACTIVE；G0-4D HOLD（Algo schema 阻塞） | FACTS.md + G0-4D.md + G0-4D-AMENDMENT.md |
 | LIVE 代码路径 | EXISTS（未被本批删除或改写） | production_main, safety.build_client |
 | LIVE 授权条件 | 既有条件未修改：双重授权 + AURORA_ARM_LIVE | p0_boundary.assert_live_dual_auth / assert_not_live_trading |
 | 当前 SDK+端点策略下的 armed-LIVE | BLOCKED_BEFORE_CLIENT — 构造期 spot ping 目标 api.binance.com 不在 ALLOWED_LIVE_HOSTS，授权齐全也构造前拒绝 | C2.1（04b2c0e），tests/test_network_boundary.py |
