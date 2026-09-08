@@ -34,6 +34,8 @@ class AccountingSnapshot:
     total_fees: float = 0.0
     net_pnl: float = 0.0
     funding_paid: float = 0.0
+    funding_net: float = 0.0
+    funding_incomplete: bool = False
     fill_count: int = 0
     closed_trade_count: int = 0
     last_fill_id: Optional[str] = None
@@ -71,7 +73,6 @@ def rebuild_from_ledger(ledger: "Ledger", initial_capital: float) -> AccountingS
     rows = ledger.list_economic_fills_with_context()
     gross = 0.0
     fees = 0.0
-    funding = 0.0
     closed_trades = 0
     equity = float(initial_capital)
     peak = equity
@@ -81,7 +82,6 @@ def rebuild_from_ledger(ledger: "Ledger", initial_capital: float) -> AccountingS
     for row in rows:
         gross += float(row.get("realized_pnl") or 0.0)
         fees += float(row.get("fee") or 0.0)
-        funding += float(row.get("funding_paid") or 0.0)
         net = _net_fill(row)
         equity += net
         if equity > peak:
@@ -94,7 +94,13 @@ def rebuild_from_ledger(ledger: "Ledger", initial_capital: float) -> AccountingS
             closed_trades += 1
         last_fill_id = row.get("fill_id")
 
-    net = gross - fees - funding
+    funding_net = 0.0
+    if hasattr(ledger, "sum_funding_net"):
+        funding_net = float(ledger.sum_funding_net())
+    equity += funding_net
+
+    net = gross - fees + funding_net
+    funding_paid = -funding_net
     return AccountingSnapshot(
         initial_capital=float(initial_capital),
         equity=round(equity, 10),
@@ -103,7 +109,8 @@ def rebuild_from_ledger(ledger: "Ledger", initial_capital: float) -> AccountingS
         gross_realized_pnl=round(gross, 10),
         total_fees=round(fees, 10),
         net_pnl=round(net, 10),
-        funding_paid=round(funding, 10),
+        funding_paid=round(funding_paid, 10),
+        funding_net=round(funding_net, 10),
         fill_count=len(rows),
         closed_trade_count=closed_trades,
         last_fill_id=last_fill_id,

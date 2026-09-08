@@ -64,7 +64,7 @@ class RiskGateFailClosedTests(unittest.TestCase):
             risk_level=RiskLevel.LOW, reason="test",
         )
         from aurora.kernel_types import PositionState
-        out = gate.approve(intent, PositionState(), 0.01, "TREND", 0.8)
+        out = gate.approve(intent, PositionState(), vol_atr_pct=0.01, regime="TREND", confidence=0.8)
         self.assertEqual(out.action, "HOLD")
         self.assertEqual(out.risk_level, RiskLevel.BLOCKED)
 
