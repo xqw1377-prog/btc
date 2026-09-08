@@ -1,140 +1,106 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef } from 'react';
 
 export default function KLineChart({ marketData }) {
-  const chartContainerRef = useRef(null);
+  const containerRef = useRef(null);
   const canvasRef = useRef(null);
-  const [chartLoaded, setChartLoaded] = useState(false);
+  const klines = Array.isArray(marketData?.klines) ? marketData.klines : [];
+  const observable = marketData?.meta?.status === 'ok';
 
   useEffect(() => {
-    if (!marketData?.klines || marketData.klines.length === 0) return;
-    if (!canvasRef.current) return;
+    if (!observable || klines.length === 0 || !canvasRef.current || !containerRef.current) return undefined;
 
     const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    const klines = marketData.klines;
+    const container = containerRef.current;
 
-    const width = canvas.width;
-    const height = canvas.height;
-    const padding = { top: 20, right: 60, bottom: 30, left: 10 };
+    const draw = () => {
+      const width = Math.max(container.clientWidth, 320);
+      const height = Math.max(container.clientHeight, 280);
+      const ratio = Math.min(window.devicePixelRatio || 1, 2);
+      canvas.width = width * ratio;
+      canvas.height = height * ratio;
+      canvas.style.width = `${width}px`;
+      canvas.style.height = `${height}px`;
 
-    ctx.clearRect(0, 0, width, height);
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      ctx.clearRect(0, 0, width, height);
 
-    const prices = klines.flatMap(k => [k.high, k.low]);
-    const minPrice = Math.min(...prices);
-    const maxPrice = Math.max(...prices);
-    const priceRange = maxPrice - minPrice || 1;
+      const padding = { top: 18, right: 72, bottom: 28, left: 8 };
+      const chartHeight = height - padding.top - padding.bottom;
+      const chartWidth = width - padding.left - padding.right;
+      const prices = klines.flatMap((bar) => [Number(bar.high), Number(bar.low)]).filter(Number.isFinite);
+      if (prices.length === 0) return;
+      const minPrice = Math.min(...prices);
+      const maxPrice = Math.max(...prices);
+      const priceRange = maxPrice - minPrice || 1;
+      const scaleY = (price) => padding.top + (1 - (price - minPrice) / priceRange) * chartHeight;
 
-    const candleWidth = (width - padding.left - padding.right) / klines.length;
-    const bodyWidth = candleWidth * 0.7;
+      ctx.lineWidth = 1;
+      ctx.font = '10px "IBM Plex Mono", monospace';
+      ctx.textAlign = 'left';
+      for (let i = 0; i <= 4; i += 1) {
+        const y = padding.top + (i / 4) * chartHeight;
+        ctx.strokeStyle = '#202a35';
+        ctx.beginPath();
+        ctx.moveTo(padding.left, y);
+        ctx.lineTo(width - padding.right, y);
+        ctx.stroke();
+        const price = maxPrice - (i / 4) * priceRange;
+        ctx.fillStyle = '#647386';
+        ctx.fillText(`$${price.toLocaleString('en-US', { maximumFractionDigits: 0 })}`, width - padding.right + 8, y + 3);
+      }
 
-    const scaleY = (price) => {
-      return padding.top + (1 - (price - minPrice) / priceRange) * (height - padding.top - padding.bottom);
+      const candleWidth = chartWidth / klines.length;
+      const bodyWidth = Math.max(2, candleWidth * 0.58);
+      const maxVolume = Math.max(...klines.map((bar) => Number(bar.volume) || 0), 1);
+
+      klines.forEach((bar, index) => {
+        const open = Number(bar.open);
+        const close = Number(bar.close);
+        const high = Number(bar.high);
+        const low = Number(bar.low);
+        if (![open, close, high, low].every(Number.isFinite)) return;
+        const x = padding.left + index * candleWidth + candleWidth / 2;
+        const positive = close >= open;
+        const color = positive ? '#38b887' : '#e05a5a';
+        ctx.strokeStyle = color;
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.moveTo(x, scaleY(high));
+        ctx.lineTo(x, scaleY(low));
+        ctx.stroke();
+        const bodyTop = Math.min(scaleY(open), scaleY(close));
+        ctx.fillRect(x - bodyWidth / 2, bodyTop, bodyWidth, Math.max(Math.abs(scaleY(close) - scaleY(open)), 1));
+
+        const volumeHeight = ((Number(bar.volume) || 0) / maxVolume) * (chartHeight * 0.13);
+        ctx.fillStyle = positive ? 'rgba(56,184,135,.22)' : 'rgba(224,90,90,.22)';
+        ctx.fillRect(x - bodyWidth / 2, padding.top + chartHeight - volumeHeight, bodyWidth, volumeHeight);
+      });
     };
 
-    ctx.strokeStyle = '#2a2a3e';
-    ctx.lineWidth = 0.5;
-    for (let i = 0; i <= 4; i++) {
-      const y = padding.top + (i / 4) * (height - padding.top - padding.bottom);
-      ctx.beginPath();
-      ctx.moveTo(padding.left, y);
-      ctx.lineTo(width - padding.right, y);
-      ctx.stroke();
+    draw();
+    const observer = new ResizeObserver(draw);
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, [klines, observable]);
 
-      const price = maxPrice - (i / 4) * priceRange;
-      ctx.fillStyle = '#6b7280';
-      ctx.font = '10px Inter, sans-serif';
-      ctx.textAlign = 'left';
-      ctx.fillText(`$${price.toLocaleString('en-US', { minimumFractionDigits: 0 })}`, width - padding.right + 5, y + 3);
-    }
-
-    klines.forEach((kline, i) => {
-      const x = padding.left + i * candleWidth + candleWidth / 2;
-      const isGreen = kline.close >= kline.open;
-      const color = isGreen ? '#22c55e' : '#ef4444';
-
-      const openY = scaleY(kline.open);
-      const closeY = scaleY(kline.close);
-      const highY = scaleY(kline.high);
-      const lowY = scaleY(kline.low);
-
-      ctx.strokeStyle = color;
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(x, highY);
-      ctx.lineTo(x, lowY);
-      ctx.stroke();
-
-      const bodyTop = Math.min(openY, closeY);
-      const bodyHeight = Math.max(Math.abs(closeY - openY), 1);
-
-      ctx.fillStyle = color;
-      ctx.fillRect(x - bodyWidth / 2, bodyTop, bodyWidth, bodyHeight);
-    });
-
-    const volumeHeight = height * 0.15;
-    const maxVolume = Math.max(...klines.map(k => k.volume));
-
-    klines.forEach((kline, i) => {
-      const x = padding.left + i * candleWidth + candleWidth / 2;
-      const isGreen = kline.close >= kline.open;
-      const volHeight = (kline.volume / maxVolume) * volumeHeight;
-
-      ctx.fillStyle = isGreen ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)';
-      ctx.fillRect(x - bodyWidth / 2, height - padding.bottom - volHeight, bodyWidth, volHeight);
-    });
-
-    setChartLoaded(true);
-  }, [marketData]);
-
-  const klines = marketData?.klines || [];
-  const lastKline = klines[klines.length - 1] || {};
-
+  const last = klines[klines.length - 1];
   return (
-    <div>
-      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '12px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <span style={{ fontSize: '14px', fontWeight: '500' }}>BTC/USDT</span>
-          <span style={{ fontSize: '11px', color: '#6b7280' }}>永续合约</span>
-          <span style={{ fontSize: '11px', padding: '2px 8px', borderRadius: '4px', background: 'rgba(34, 197, 94, 0.2)', color: '#22c55e' }}>1分钟</span>
-        </div>
-        <div style={{ fontSize: '11px', color: '#6b7280' }}>{klines.length} 根K线</div>
+    <div className="kline-observation">
+      <div className="chart-stats">
+        <div><span>Bars observed</span><strong>{observable ? klines.length : 'UNKNOWN'}</strong></div>
+        <div><span>Latest bar ID</span><strong>{observable && last?.time ? `BTCUSDT · 1m · ${last.time}` : 'UNKNOWN'}</strong></div>
+        <div><span>Closed-bar evidence</span><strong className="unknown-value">NOT PROVIDED BY FEED</strong></div>
       </div>
-
-      <div style={{ display: 'flex', alignItems: 'baseline', gap: '16px', marginBottom: '12px' }}>
-        <span style={{ fontSize: '28px', fontWeight: 'bold' }}>
-          ${(marketData?.price || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}
-        </span>
-        <span style={{ fontSize: '14px', color: (marketData?.priceChange || 0) >= 0 ? '#22c55e' : '#ef4444' }}>
-          {(marketData?.priceChange || 0) >= 0 ? '+' : ''}{(marketData?.priceChange || 0).toFixed(2)} ({(marketData?.priceChangePercent || 0) >= 0 ? '+' : ''}{(marketData?.priceChangePercent || 0).toFixed(2)}%)
-        </span>
-      </div>
-
-      <div style={{ position: 'relative', background: '#1a1a2e', borderRadius: '8px', overflow: 'hidden' }}>
-        <canvas
-          ref={canvasRef}
-          width={800}
-          height={300}
-          style={{ width: '100%', height: '256px' }}
-        />
-      </div>
-
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '12px', marginTop: '12px' }}>
-        <div style={{ background: '#1f2937', borderRadius: '8px', padding: '8px' }}>
-          <div style={{ fontSize: '11px', color: '#6b7280' }}>开盘价</div>
-          <div style={{ fontSize: '13px', fontWeight: '500' }}>${(lastKline.open || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-        </div>
-        <div style={{ background: '#1f2937', borderRadius: '8px', padding: '8px' }}>
-          <div style={{ fontSize: '11px', color: '#6b7280' }}>最高价</div>
-          <div style={{ fontSize: '13px', fontWeight: '500' }}>${(lastKline.high || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-        </div>
-        <div style={{ background: '#1f2937', borderRadius: '8px', padding: '8px' }}>
-          <div style={{ fontSize: '11px', color: '#6b7280' }}>最低价</div>
-          <div style={{ fontSize: '13px', fontWeight: '500' }}>${(lastKline.low || 0).toLocaleString('en-US', { minimumFractionDigits: 2 })}</div>
-        </div>
-        <div style={{ background: '#1f2937', borderRadius: '8px', padding: '8px' }}>
-          <div style={{ fontSize: '11px', color: '#6b7280' }}>成交量</div>
-          <div style={{ fontSize: '13px', fontWeight: '500' }}>{(lastKline.volume || 0).toFixed(2)}</div>
-        </div>
+      <div className="canvas-frame" ref={containerRef}>
+        {observable && klines.length > 0 ? (
+          <canvas ref={canvasRef} aria-label="BTCUSDT 1分钟交易所K线观察图" />
+        ) : (
+          <div className="chart-unavailable">
+            <strong>MARKET DATA UNKNOWN</strong>
+            <span>没有可验证的新鲜 K 线观察；不绘制零值图表。</span>
+          </div>
+        )}
       </div>
     </div>
   );

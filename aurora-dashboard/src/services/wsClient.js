@@ -103,7 +103,8 @@ class WSClient {
   }
 }
 
-const WS_URL = 'ws://localhost:8000';
+const defaultHost = typeof window !== 'undefined' ? window.location.hostname : '127.0.0.1';
+const WS_URL = import.meta.env.VITE_AURORA_WS_URL || `ws://${defaultHost}:8000`;
 
 export const wsClient = new WSClient(WS_URL);
 

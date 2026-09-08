@@ -30,36 +30,38 @@ export default function useWS() {
     adx: 0,
     volatility: 0,
     volume: 0,
-    spread: 0,
-    klines: []
+    spread: null,
+    klines: [],
+    meta: { status: 'unknown', mode: null, updatedAt: null }
   });
 
   const [risk, setRisk] = useState({
-    currentDrawdown: 0,
-    maxDrawdown: 0,
-    dailyPnl: 0,
-    weeklyPnl: 0,
-    totalPnl: 0,
-    status: 'SAFE'
+    currentDrawdown: null,
+    maxDrawdown: null,
+    dailyPnl: null,
+    weeklyPnl: null,
+    totalPnl: null,
+    status: 'UNKNOWN',
+    meta: { status: 'unknown', mode: null, updatedAt: null }
   });
 
-  const [score, setScore] = useState(0);
+  const [score, setScore] = useState(null);
   const [pnlData, setPnlData] = useState([]);
-  const [trades, setTrades] = useState([]);
+  const [trades, setTrades] = useState({
+    items: [],
+    meta: { status: 'unknown', source: 'EXCHANGE_READONLY', updatedAt: null }
+  });
   const [connected, setConnected] = useState(false);
 
   const handleSystemUpdate = useCallback((data) => {
-    console.log('System update:', data);
     setSystem(prev => ({ ...prev, ...data }));
   }, []);
 
   const handleMarketUpdate = useCallback((data) => {
-    console.log('Market update:', data.price);
     setMarket(prev => ({ ...prev, ...data }));
   }, []);
 
   const handleRiskUpdate = useCallback((data) => {
-    console.log('Risk update:', data);
     setRisk(prev => ({ ...prev, ...data }));
   }, []);
 
@@ -74,13 +76,15 @@ export default function useWS() {
   }, []);
 
   const handleTradeUpdate = useCallback((data) => {
-    setTrades(prev => [data, ...prev].slice(0, 20));
+    setTrades(prev => ({ ...prev, items: [data, ...prev.items].slice(0, 20) }));
   }, []);
 
   const handleTradesUpdate = useCallback((data) => {
-    console.log('Trades update received:', Array.isArray(data) ? data.length : typeof data);
     if (Array.isArray(data)) {
-      setTrades(data);
+      // 旧 list envelope 没有 freshness metadata，不能把收到数组等同于 fresh。
+      setTrades(prev => ({ ...prev, items: data }));
+    } else if (data && Array.isArray(data.items)) {
+      setTrades({ items: data.items, meta: data.meta || { status: 'unknown' } });
     }
   }, []);
 
