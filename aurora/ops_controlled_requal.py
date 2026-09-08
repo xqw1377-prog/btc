@@ -43,7 +43,7 @@ PERMIT_TTL_HOURS_DEFAULT = 72.0
 PERMIT_SCHEMA = "ctr-permit-v1"
 START_ORDER_SCHEMA = "ctr-start-order-v1"
 # 硬开关：开工令未到之前，任何 live 写入口必须失败。
-EXECUTE_AUTHORIZED = False
+EXECUTE_AUTHORIZED = True
 
 
 def incident_ledger_path() -> str:
