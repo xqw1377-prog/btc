@@ -168,7 +168,13 @@ STRATEGY / V2                 HOLD
 | Controlled TESTNET Requal | **IMPLEMENTED / EXECUTE DENIED** | 边界已冻；`ops_controlled_requal` 默认只出 PLAN；execute 旗标在构造写客户端前硬拒。真源：CONTROLLED_TESTNET_REQUAL.md |
 | Pre-Execution Conformance | **ALIGNED TO 6b2cc7c / NOT AUTHORIZED TO EXECUTE** | qty exactly 0.001；分腿 `AURORA-CTR-<session>-ENTRY/SL/CLOSE`；`qualification/<session-id>/ledger.db`；新实例 restart recovery；harness 层 QUALIFICATION CLOSE；写门在构造客户端前双检。回归：tests/test_controlled_requal.py。真源：PRE_EXECUTION_CONFORMANCE.md |
 | Execution Work Package | **BOUNDARY-FROZEN / NOT AUTHORIZED TO EXECUTE** | 正式封点 `6b2cc7c`。不得用 HEAD 反向改解释。写盘必须 `EXECUTE_AUTHORIZED` **且** scoped single-use permit。PASS-1 ≠ AUTO TESTNET ≠ SYSTEM EXECUTION。permit 未签发 |
-| G0-5 运行身份与配置隔离 | **CLOSED-OFFLINE** | 5A–5D 同前。sealed-at-the-time：370 passed（排除当时未提交 probe）。current head：441 passed（2026-09-08 离线全套）。REAL EXCHANGE CALLS = 0。不授权 probe / 清 kill / TESTNET 真跑 |
+| G0-5 运行身份与配置隔离 | **CLOSED-OFFLINE** | 5A–5D 同前。sealed-at-the-time：370 passed（排除当时未提交 probe）。pre-governance-repair：445 passed；current head：455 passed（2026-09-08 离线全套）。REAL EXCHANGE CALLS = 0。不授权 probe / 清 kill / TESTNET 真跑 |
 
 沿用既有登记的 G1/G4/G5 迁移项（启动余额不刷新、死配置、数量精度、
 内存移动止损、波动单位）不因未列入上表而消失。
+
+下一阶段顺序冻结为：
+`E0 ACCOUNTING TRUTH → E1 RISK SEMANTICS → E2 STRATEGY V2 →
+E3 BACKTEST / WALK-FORWARD / OOS`。回测主 benchmark 必须包含
+`BTC HODL`，并报告 Excess BTC、BTC-denominated NAV / drawdown /
+CAGR、fee/funding drag 与 turnover；USDT 收益仅为第二视角。
