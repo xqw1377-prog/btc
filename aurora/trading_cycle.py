@@ -127,8 +127,14 @@ class TradingCycle:
             return
         if not brain_pos.is_open:
             side = Intent.LONG if pos.signed_qty > 0 else Intent.SHORT
+            # 恢复同步的仓位没有可信保护证据：阈值 UNKNOWN，不参与价格触发，
+            # 且不得用本地历史 trailing 值回填。
             self.brain.position_mgr.open(
-                side, abs(pos.signed_qty), pos.entry_price, 0.0, 0.0, "sync from exchange")
+                side, abs(pos.signed_qty), pos.entry_price, None, None,
+                "sync from exchange",
+                stop_loss_source="EXCHANGE_SYNC",
+                protection_note="POSITION_RECOVERED_PROTECTION_UNKNOWN",
+            )
 
     def execute(self, decision: Dict[str, Any], enable: bool) -> Dict[str, Any]:
         intent: Optional[TradeIntent] = decision.get("intent")

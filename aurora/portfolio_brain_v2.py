@@ -1,5 +1,8 @@
 from typing import Dict, Any, List
-from .kernel_types import Signal, Intent, TradeIntent, RiskLevel, PositionManager
+from .kernel_types import (
+    Signal, Intent, TradeIntent, RiskLevel, PositionManager,
+    ThresholdState, valid_threshold,
+)
 from .risk_gate import RiskGate
 from .capital_objective import CapitalObjectiveLayer
 from .regime_memory import RegimeMemoryModel
@@ -209,8 +212,17 @@ class PortfolioBrainV2:
 
         if pnl_pct > 0.01:
             new_sl = pos.entry_price * (1.005 if pos.side.value == "LONG" else 0.995)
-            if (pos.side.value == "LONG" and new_sl > pos.stop_loss) or \
-               (pos.side.value == "SHORT" and new_sl < pos.stop_loss):
+            # trailing 只能更新 STRATEGY 来源的本地候选阈值；
+            # 不得把本地移动值当成交易所已确认保护，也不得覆盖 UNKNOWN。
+            if (
+                pos.stop_loss_state == ThresholdState.VALID
+                and pos.stop_loss_source == "STRATEGY"
+                and valid_threshold(pos.stop_loss)
+                and (
+                    (pos.side.value == "LONG" and new_sl > pos.stop_loss)
+                    or (pos.side.value == "SHORT" and new_sl < pos.stop_loss)
+                )
+            ):
                 self.position_mgr._position.stop_loss = new_sl
 
         return TradeIntent(
@@ -224,8 +236,14 @@ class PortfolioBrainV2:
     def execute_intent(self, intent: TradeIntent, price: float, pnl: float = 0):
         if intent.action == "OPEN":
             size_btc = (self.capital * intent.size_pct) / price if price > 0 else 0
-            sl_price = price * (1 - intent.stop_loss_pct) if intent.side == Intent.LONG else price * (1 + intent.stop_loss_pct)
-            tp_price = price * (1 + intent.take_profit_pct) if intent.side == Intent.LONG else price * (1 - intent.take_profit_pct)
+            sl_price = (
+                (price * (1 - intent.stop_loss_pct)) if intent.side == Intent.LONG
+                else (price * (1 + intent.stop_loss_pct))
+            ) if intent.stop_loss_pct > 0 else None
+            tp_price = (
+                (price * (1 + intent.take_profit_pct)) if intent.side == Intent.LONG
+                else (price * (1 - intent.take_profit_pct))
+            ) if intent.take_profit_pct > 0 else None
 
             self.position_mgr.open(
                 side=intent.side,
@@ -233,7 +251,17 @@ class PortfolioBrainV2:
                 price=price,
                 stop_loss=sl_price,
                 take_profit=tp_price,
-                reason=intent.reason
+                reason=intent.reason,
+                stop_loss_state=(
+                    ThresholdState.NOT_CONFIGURED if intent.stop_loss_pct == 0
+                    else None  # 非法/负值 → 保持 UNKNOWN，不悄悄当配置
+                ),
+                take_profit_state=(
+                    ThresholdState.NOT_CONFIGURED if intent.take_profit_pct == 0
+                    else None
+                ),
+                stop_loss_source="STRATEGY",
+                protection_note="strategy-configured thresholds",
             )
 
         elif intent.action == "CLOSE":
@@ -256,6 +284,10 @@ class PortfolioBrainV2:
                 'unrealized_pnl': pos.unrealized_pnl,
                 'stop_loss': pos.stop_loss,
                 'take_profit': pos.take_profit,
+                'stop_loss_state': pos.stop_loss_state.value,
+                'take_profit_state': pos.take_profit_state.value,
+                'protection_unknown': pos.protection_unknown,
+                'protection_note': pos.protection_note,
                 'is_open': pos.is_open,
             },
             'risk': self.risk_gate.get_state(),
