@@ -44,13 +44,14 @@ G0-5                          CLOSED-OFFLINE
 KILL                          ACTIVE
 INCIDENT_LOCK                 ACTIVE
 AUTO_TESTNET                  DENIED
+CONTROLLED_REQUAL             BOUNDARY-FROZEN / EXECUTE DENIED
 LIVE                          NO-GO
 SYSTEM_EXECUTION_QUALIFIED    NO
 P0_SAFETY_STATUS              STALE / NOT AUTHORITATIVE
 STRATEGY / V2                 HOLD
 ```
 
-证据残留可以永久 OPEN。G0-4D 只读复核已封：认证/读协议 PASS，恢复证据 PARTIAL（EXIT-PROVENANCE-01 再确认 NOT_FOUND）。`INCIDENT_LOCK` / kill / AUTO TESTNET / SYSTEM EXECUTION 均未解除。受控 TESTNET 写入资格未授权。
+证据残留可以永久 OPEN。G0-4D 只读复核已封：认证/读协议 PASS，恢复证据 PARTIAL。`CONTROLLED TESTNET REQUALIFICATION` 仅冻结写入边界，**EXECUTE DENIED**。`INCIDENT_LOCK` / 事故 kill / AUTO TESTNET / SYSTEM EXECUTION 均未解除。
 
 ## 一、运行与授权
 
@@ -97,7 +98,8 @@ STRATEGY / V2                 HOLD
 | G0-4B 执行事实真源 | **CLOSED-OFFLINE**（`1bb1ecf`） | B1 保护数量 = fills 权威聚合→仓位事实，ACK executedQty 仅为早期观察；订单投影单调收敛于 fills；`0 < protection_qty ≤ confirmed_position_qty`；保护计划价持久化于 intents（PRAGMA+ALTER 增量迁移，不改历史行）。B2 紧急平仓四态（ATTEMPTED/REJECTED/UNKNOWN/CONFIRMED），kill 理由禁"executed"假成功，仅权威事实可 CONFIRMED。B3 缺/非法 SL 价 → OPEN DENIED；99/101 哨兵废除；TP 可明确 NOT_CONFIGURED。回归：tests/test_g04b_contracts.py + tests/test_g04b_offline_probe.py（socket 绊网零出网）。交易所侧行为未验证（事故锁不变） |
 | G0-4C 保护生命周期恢复 | **CLOSED-OFFLINE** | `FILLED_UNPROTECTED` / `PROTECTION_SUBMITTING` / `PARTIALLY_FILLED` 重启进入生命周期恢复；`SUBMIT_UNKNOWN` 不重提；部分覆盖不得 VERIFIED；超额覆盖撤旧按实际仓位重建；repair 窗口仓位变化按现场数量；无平仓成交的 FLAT → `CLOSE_PROVENANCE_UNKNOWN`，禁止合成 SELL / 假 RECONCILED；FLAT+ACTIVE 保护 → `ORPHAN_PROTECTION`。回归：tests/test_g04c_contracts.py。交易所生命周期仍归 G0-4D |
 | Incident Disposition | **SEALED** | 历史证据缺口 ACCEPTED；`INCIDENT_REQUALIFICATION_ELIGIBLE=YES` 仅批准进入 G0-4D 只读复核。lock / kill / AUTO TESTNET / SYSTEM EXECUTION 未解除。真源：DISPOSITION.md |
-| G0-4D 只读 TESTNET 资格复核 | **CLOSED-READONLY** | 认证 PASS；读协议 PASS；恢复证据 PARTIAL（无 SELL，缺口再确认）。fail-closed 未触发。回归：tests/test_g04d_readonly.py。现场：g04d_readonly.json。SYSTEM EXECUTION 仍 NO；受控写入包未授权 |
+| G0-4D 只读 TESTNET 资格复核 | **CLOSED-READONLY** | 认证 PASS；读协议 PASS；恢复证据 PARTIAL（无 SELL，缺口再确认）。fail-closed 未触发。回归：tests/test_g04d_readonly.py。现场：g04d_readonly.json。SYSTEM EXECUTION 仍 NO |
+| Controlled TESTNET Requal | **BOUNDARY-FROZEN / EXECUTE DENIED** | 写入边界已冻：0.001 BTC / 120 USDT / 单 intent / 先 fill 再 sizing / SL ACTIVE_CONFIRMED / 隔离会话账本 / 事故 kill 只读不解除 / 禁止 production_main。真源：CONTROLLED_TESTNET_REQUAL.md |
 | G0-5 运行身份与配置隔离 | **CLOSED-OFFLINE** | 5A 交易相邻入口共用显式 `ConfigSource`：不 `load_dotenv` / 不向上搜索父目录、导入零副作用、不改写 `os.environ`、进程环境优先。5B `state/<mode>/<fingerprint>/` 物理隔离；事故 `state/kernel_ledger.db` 只读接管，源文件字节不变，kill 保留；显式 `AURORA_LEDGER_PATH` 不继承遗留账本。5C 缺指纹拒启；身份含 mode/fingerprint/position_mode/host/exclusivity；漂移 `ACCOUNT_IDENTITY_DRIFT` fail-closed；独占性默认 false。5D `SafeExecutor` 迁出为 OFFLINE_REFERENCE_ONLY，`BootContext.executor` 恒为 None。回归：tests/test_g05_identity_isolation.py。全套 370 passed（排除未提交 probe）。REAL EXCHANGE CALLS = 0。不授权 probe / 清 kill / TESTNET 真跑 |
 
 沿用既有登记的 G1/G4/G5 迁移项（启动余额不刷新、死配置、数量精度、

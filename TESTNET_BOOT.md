@@ -86,14 +86,14 @@ INCIDENT DISPOSITION（证据缺口 ACCEPTED；只读复核资格 YES；lock/kil
     ↓
 TESTNET_REQUALIFICATION（G0-4D CLOSED-READONLY；恢复证据 PARTIAL）
     ↓
-CONTROLLED TESTNET REQUALIFICATION（未授权）
+CONTROLLED TESTNET REQUALIFICATION（BOUNDARY-FROZEN / EXECUTE DENIED）
     ↓
 明确审批
     ↓
 TESTNET_READY   ← 下文「资格门之后」的启动 SOP 才开放
 ```
 
-当前停在 **INCIDENT_LOCKED**。仓位风险已收口为交易所 KNOWN_FLAT；证据残留 EXIT-PROVENANCE-01 仍 OPEN，且已被 disposition 接受。G0-4D 只读复核 **CLOSED-READONLY**（恢复证据 PARTIAL）。受控写入包未授权。**系统事故在 kill 解除审批前不算结束。**
+当前停在 **INCIDENT_LOCKED**。仓位风险已收口为交易所 KNOWN_FLAT；证据残留 EXIT-PROVENANCE-01 仍 OPEN。G0-4D **CLOSED-READONLY**。受控写入边界已冻，**执行未授权**。见 [CONTROLLED_TESTNET_REQUAL.md](docs/product/CONTROLLED_TESTNET_REQUAL.md)。**系统事故在 kill 解除审批前不算结束。**
 
 ```text
 INCIDENT_POSITION_STATE       RECOVERED
@@ -116,10 +116,11 @@ HISTORICAL_EVIDENCE_GAP       ACCEPTED
 INCIDENT_REQUALIFICATION_ELIGIBLE  YES
 INCIDENT_LOCK                 ACTIVE
 AUTO_TESTNET                  DENIED
+CONTROLLED_REQUAL             BOUNDARY-FROZEN / EXECUTE DENIED
 LIVE                          NO-GO
 ```
 
-证据残留可永久 OPEN。disposition 已批准进入 G0-4D 只读复核；`INCIDENT_LOCK` / kill 未解除。
+证据残留可永久 OPEN。受控写入边界已冻，执行未授权；`INCIDENT_LOCK` / 事故 kill 未解除。
 
 ---
 
