@@ -31,8 +31,8 @@ MANUAL_CLOSE_FILL             NOT_FOUND
 MANUAL_CLOSE_ORDER            NOT_FOUND
 
 G0-4A                         CLOSED-OFFLINE
-G0-4B                         CLOSED-OFFLINE（工作树未提交；见 §四）
-G0-4C                         HOLD
+G0-4B                         CLOSED-OFFLINE（1bb1ecf）
+G0-4C                         CLOSED-OFFLINE（0bfd2fe）
 G0-5                          OPEN
 KILL                          ACTIVE
 AUTO_TESTNET                  DENIED
@@ -86,8 +86,8 @@ STRATEGY / V2                 HOLD
 | G0-2 确认计数 | **CLOSED**（`ffbb17f`） | 唯一已收盘 bar |
 | G0-3 UNKNOWN | **CLOSED**（`e4af236`） | 性质测试钉死；不重造状态机 |
 | G0-4A Algo/HEDGE 协议 | **CLOSED-OFFLINE** | fake transport。ObservedPositionMode 注入、HEDGE 减仓 `side+positionSide+qty`、`-1106` 不改参重试、Algo 终态≠fill、KNOWN_FLAT+CLOSE_PROVENANCE_UNKNOWN。REAL ORDER/ALGO/MODE MUTATION/KILL CLEAR = 0 |
-| G0-4B 执行事实真源 | **CLOSED-OFFLINE**（工作树未提交） | B1 保护数量 = fills 权威聚合→仓位事实，ACK executedQty 仅为早期观察；订单投影单调收敛于 fills；`0 < protection_qty ≤ confirmed_position_qty`；保护计划价持久化于 intents（PRAGMA+ALTER 增量迁移，不改历史行）。B2 紧急平仓四态（ATTEMPTED/REJECTED/UNKNOWN/CONFIRMED），kill 理由禁"executed"假成功，仅权威事实可 CONFIRMED。B3 缺/非法 SL 价 → OPEN DENIED；99/101 哨兵废除；TP 可明确 NOT_CONFIGURED。回归：tests/test_g04b_contracts.py + tests/test_g04b_offline_probe.py（socket 绊网零出网）；全套 342 passed。交易所侧行为未验证（事故锁不变） |
-| G0-4C 保护生命周期 | **HOLD** | 需 testnet；当前 DENIED。已知待办：FILLED_UNPROTECTED 意图崩溃后 recover() 不重试保护（本轮发现）；fills 查询无时间窗/有界分页 |
+| G0-4B 执行事实真源 | **CLOSED-OFFLINE**（`1bb1ecf`） | B1 保护数量 = fills 权威聚合→仓位事实，ACK executedQty 仅为早期观察；订单投影单调收敛于 fills；`0 < protection_qty ≤ confirmed_position_qty`；保护计划价持久化于 intents（PRAGMA+ALTER 增量迁移，不改历史行）。B2 紧急平仓四态（ATTEMPTED/REJECTED/UNKNOWN/CONFIRMED），kill 理由禁"executed"假成功，仅权威事实可 CONFIRMED。B3 缺/非法 SL 价 → OPEN DENIED；99/101 哨兵废除；TP 可明确 NOT_CONFIGURED。回归：tests/test_g04b_contracts.py + tests/test_g04b_offline_probe.py（socket 绊网零出网）。交易所侧行为未验证（事故锁不变） |
+| G0-4C 保护生命周期恢复 | **CLOSED-OFFLINE**（`0bfd2fe`） | C1 FILLED_UNPROTECTED 不再被 recover() 忽略：有仓即进入生命周期恢复（识别已有保护→PROTECTED / 差额补齐 / 溢出重建 / 证据不足只报未决）。C2 保护腿重提必须以权威"确认不存在"证据为前提，SUBMIT_UNKNOWN+重启不产生第二次提交。C3 覆盖按实际仓位核对：超覆盖 = 危险合同 → 撤旧按实际仓位重建；部分覆盖不得宣称 VERIFIED。C4 仓位缩减后旧保护失配 → 重建。C5 TRIGGERED/FINISHED 无权威成交 → 持续未决，不因轮询收敛。C6 FLAT+ACTIVE 保护残留 → ORPHAN_PROTECTION 熔断发现，不自动撤销。repair 支持多入口幂等（同态不自环）。回归：tests/test_g04c_contracts.py（12 场景 + 3 Hypothesis 性质）。fills 有界查询仍归 G0-4D READ CONTRACT |
 | G0-5 配置来源 | **OPEN**（执行资格前置） | `production_main` 裸 `load_dotenv()` 必须与 safety_check / dashboard_feed 共用显式 ConfigSource；含 SafeExecutor 退休裁定（M2）：其交易方法在生产入口不可达（production_main 仅调 `executor.reconcile("timer")`，且仅 SHADOW 分支；SHADOW broker 拒写），TP 失败即平仓的旧合同与内核冲突暂为休眠，须在 G0-5 隔离或退休 |
 
 沿用既有登记的 G1/G4/G5 迁移项（启动余额不刷新、死配置、数量精度、

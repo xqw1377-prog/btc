@@ -242,6 +242,18 @@ class FakeExchange(ExchangePort):
             self._emit_fill(order["req"], remaining)
         order["status"] = "FILLED"
 
+    def mark_algo_triggered(self, client_order_id: str) -> None:
+        """G0-4C C5：模拟 Algo 终态 TRIGGERED 且无 actualOrderId/权威成交。
+
+        TRIGGERED ≠ FILLED：查询侧只见终态名，不得收敛，不得编造 fill。
+        随后若测试再注入 fills()（fire_protection），即代表 actualOrderId
+        关联的权威成交到达。
+        """
+        order = self._orders.get(client_order_id)
+        if order is None:
+            raise KeyError(client_order_id)
+        order["status"] = "TRIGGERED"
+
     def fire_protection(
         self, client_order_id: str, price: Optional[float] = None,
         qty: Optional[float] = None,

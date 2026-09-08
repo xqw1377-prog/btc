@@ -310,6 +310,19 @@ class Ledger:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def orders_in_states(
+        self, states: List[str], kinds: Optional[tuple] = None,
+    ) -> List[Dict[str, Any]]:
+        """按状态（可选按角色）列出订单行——保护残留审计（G0-4C C6）用。"""
+        marks = ",".join("?" for _ in states)
+        sql = f"SELECT * FROM orders WHERE state IN ({marks})"
+        params: List[Any] = list(states)
+        if kinds:
+            sql += f" AND order_kind IN ({','.join('?' for _ in kinds)})"
+            params.extend(kinds)
+        rows = self._conn.execute(sql + " ORDER BY created_at", params).fetchall()
+        return [dict(r) for r in rows]
+
     # ---------- 成交 ----------
 
     def insert_fill(

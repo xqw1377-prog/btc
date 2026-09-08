@@ -243,7 +243,19 @@ class Orchestrator:
         for intent in self.ledger.list_intents(
                 states=[IntentState.PROTECTION_DEGRADED.value]):
             self._repair_protection(intent["intent_id"])
+        # G0-4C C1：FILLED_UNPROTECTED 不是可忽略状态——交易所确认仍有仓位时
+        # 必须进入保护生命周期恢复（识别已有保护/补齐差额/重建或安全熔断），
+        # 重提交永远以权威"确认不存在"证据为前提（C2）。
+        for intent in self.ledger.list_intents(
+                states=[IntentState.FILLED_UNPROTECTED.value]):
+            entry = self._recover_protection_lifecycle(intent["intent_id"])
+            if entry is not None:
+                report["unresolved"].append(entry)
         self._boot_position_audit(report, pre_fact, pre_intents)
+        # G0-4C C6：仓位已空但 ACTIVE 保护腿残留 → ORPHAN_PROTECTION
+        # fail-closed。残留条件单未来可能触发并新建反向风险；本刀只保证
+        # 发现与熔断新增风险，不自动撤销（撤销属于真实协议执行阶段）。
+        self._audit_orphan_protection(report)
         # 持久化 RECOVERY_REQUIRED 本身就是尚未收敛事实。即使本轮没有
         # pending order 可查询，也不得以空 unresolved 报告制造确定性。
         for intent in self.ledger.list_intents(
@@ -970,6 +982,11 @@ class Orchestrator:
             return {"success": False, "intent_id": intent_id,
                     "reason": "exchange position UNKNOWN; protection unverifiable"}
 
+        # G0-4C C3/C4：超覆盖是危险合同，不是"保护更充分"。仓位缩减后
+        # 旧保护失配必须走降级重建（撤旧腿、按实际仓位重建），不得继续
+        # 宣称 VERIFIED，也不得保留可能反向执行的过量条件单。
+        if exchange_qty is not None and status.sl_coverage > exchange_qty + _QTY_EPS:
+            return self._repair_protection(intent_id)
         if status.protected_full:
             return {"success": True, "intent_id": intent_id,
                     "sl_coverage": status.sl_coverage,
@@ -1079,10 +1096,18 @@ class Orchestrator:
                 "protection coverage insufficient / leg fired with remainder",
                 correlation_id=intent_id)
 
-        def _recovery(reason: str) -> Dict[str, Any]:
+        # G0-4C：修复可从多个入口进入（DEGRADED / RECOVERY_REQUIRED /
+        # FILLED_UNPROTECTED 溢出恢复）。同态不自环；合法转移照常落账。
+        def _transition_idem(to_state: IntentState, reason: str) -> None:
+            cur = IntentState(self.ledger.get_intent(intent_id)["state"])
+            if cur == to_state:
+                return
             self.ledger.transition_intent(
-                intent_id, IntentState.RECOVERY_REQUIRED, reason,
-                correlation_id=intent_id)
+                intent_id, to_state, reason, correlation_id=intent_id)
+
+        def _recovery(reason: str) -> Dict[str, Any]:
+            _transition_idem(
+                IntentState.RECOVERY_REQUIRED, reason)
             self.ledger.engage_kill(f"protection repair: {reason}")
             self.ledger.set_position_fact(
                 self.symbol, PositionFactState.UNKNOWN,
@@ -1124,16 +1149,15 @@ class Orchestrator:
 
         if abs(pos.signed_qty) < 1e-12:
             # 修复期间已平仓：不重建，直接对账收敛
-            self.ledger.transition_intent(
-                intent_id, IntentState.CLOSING,
-                "flat confirmed during repair", correlation_id=intent_id)
-            self.ledger.transition_intent(
-                intent_id, IntentState.CLOSED,
-                "already flat on exchange", correlation_id=intent_id)
-            self.ledger.transition_intent(
-                intent_id, IntentState.RECONCILED,
-                "ledger matches exchange after repair-time close",
-                correlation_id=intent_id)
+            _transition_idem(
+                IntentState.CLOSING,
+                "flat confirmed during repair")
+            _transition_idem(
+                IntentState.CLOSED,
+                "already flat on exchange")
+            _transition_idem(
+                IntentState.RECONCILED,
+                "ledger matches exchange after repair-time close")
             self.ledger.set_position_fact(
                 self.symbol, PositionFactState.KNOWN_FLAT, source="repair")
             return {"success": True, "intent_id": intent_id,
@@ -1143,10 +1167,9 @@ class Orchestrator:
         side = "LONG" if pos.signed_qty > 0 else "SHORT"
 
         # 3) 先提交并确认强制腿 SL
-        self.ledger.transition_intent(
-            intent_id, IntentState.PROTECTION_SUBMITTING,
-            f"rebuild mandatory SL for remaining {remaining}",
-            correlation_id=intent_id)
+        _transition_idem(
+            IntentState.PROTECTION_SUBMITTING,
+            f"rebuild mandatory SL for remaining {remaining}")
         try:
             sl_px, tp_px = self._protect_prices(intent_id)
             if not _valid_price(sl_px):
@@ -1182,6 +1205,88 @@ class Orchestrator:
                 "sl_coverage": remaining,
                 "tp_coverage": remaining if tp_ok else 0.0,
                 "safe_but_incomplete": not tp_ok}
+
+    def _recover_protection_lifecycle(self, intent_id: str) -> Optional[Dict[str, Any]]:
+        """G0-4C C1：FILLED_UNPROTECTED 的保护生命周期恢复。
+
+        只在交易所确认仍有仓位时行动：
+        - 覆盖超限（C3/C4 失配）→ COVERAGE_OVERFLOW → degraded 重建；
+        - 覆盖不足 → sync_protection 按角色差额补齐（C2：只补差额，
+          且重提交永远以权威"确认不存在/未存在"证据为前提）；
+        - SL 已足额 → 恢复 PROTECTED 身份，绝不重挂；
+        - 查询失败/证据不足 → 只报告未决，不猜（提交重试由 pending
+          证据解析决定，不因轮询次数而增加）。
+        """
+        fact = self.ledger.get_position_fact(self.symbol)
+        if fact is None or fact["state"] == PositionFactState.UNKNOWN.value:
+            return {"intent_id": intent_id, "fact": "PROTECTION_RECOVERY",
+                    "reason": "position UNKNOWN; protection recovery blocked"}
+        if fact["state"] != PositionFactState.KNOWN_OPEN.value:
+            return None  # 仓位已不在：交给 BOOT-DRIFT / provenance 判定
+        pos = self._safe_position()
+        if pos is None:
+            return {"intent_id": intent_id, "fact": "PROTECTION_RECOVERY",
+                    "reason": "exchange position query failed; recovery blocked"}
+        exchange_qty = abs(pos.signed_qty)
+        if exchange_qty <= _QTY_EPS:
+            return None  # 事实层与交易所层不一致：boot audit 负责冻结
+
+        orders = self.ledger.orders_for_intent(intent_id)
+        status = compute_protection_status(orders, exchange_qty)
+        if status.sl_coverage > exchange_qty + _QTY_EPS:
+            # _repair_protection 自当前状态执行唯一合法转移；不得先进入
+            # PROTECTION_SUBMITTING 再由修复函数做同态转移。
+            return self._repair_protection(intent_id) or None
+
+        synced = self.sync_protection(intent_id)
+        if not synced.get("success"):
+            return {"intent_id": intent_id, "fact": "PROTECTION_RECOVERY",
+                    "reason": synced.get("reason") or "protection sync failed"}
+
+        fresh = compute_protection_status(
+            self.ledger.orders_for_intent(intent_id), exchange_qty)
+        if fresh.sl_coverage + _QTY_EPS < exchange_qty:
+            return {"intent_id": intent_id, "fact": "PROTECTION_RECOVERY",
+                    "reason": f"SL coverage insufficient after sync"
+                              f" ({fresh.sl_coverage}/{exchange_qty})"}
+        current = self.ledger.get_intent(intent_id)
+        if (current is None
+                or IntentState(current["state"]) != IntentState.FILLED_UNPROTECTED):
+            return None  # 同步过程中状态已收敛/失败，不再重复转移
+        self.ledger.transition_intent(
+            intent_id, IntentState.PROTECTION_SUBMITTING,
+            f"protection recovery: SL covers position ({fresh.sl_coverage})",
+            correlation_id=intent_id)
+        self.ledger.transition_intent(
+            intent_id, IntentState.PROTECTED,
+            "recovered from FILLED_UNPROTECTED"
+            + ("" if fresh.tp_ok else "; sl-only"),
+            correlation_id=intent_id)
+        return None
+
+    def _audit_orphan_protection(self, report: Dict[str, Any]) -> None:
+        """G0-4C C6：仓位已空但仍有 ACTIVE 保护腿 → ORPHAN_PROTECTION。
+
+        残留条件单未来可能触发并新建反向风险。本刀只负责发现与
+        fail-closed（熔断新增风险 + 报告未决）；是否撤销属于真实协议
+        执行阶段，绝不在此自动撤单。
+        """
+        fact = self.ledger.get_position_fact(self.symbol)
+        if fact is None or fact["state"] != PositionFactState.KNOWN_FLAT.value:
+            return
+        orphans = self.ledger.orders_in_states(
+            ["ACTIVE"], kinds=("STOP_LOSS", "TAKE_PROFIT"))
+        if not orphans:
+            return
+        self.ledger.engage_kill(
+            f"ORPHAN_PROTECTION: {len(orphans)} active protection leg(s)"
+            " with flat position")
+        if not any(e.get("fact") == "ORPHAN_PROTECTION" for e in report["unresolved"]):
+            report["unresolved"].append({
+                "fact": "ORPHAN_PROTECTION",
+                "reason": "flat position with active protection leg(s): "
+                          + ",".join(o["client_order_id"] for o in orphans),
+            })
 
     def _protect_prices(self, intent_id: str) -> tuple:
         """返回 (sl_px, tp_px)；缺失/非法为 None（G0-4B 哨兵废除）。
