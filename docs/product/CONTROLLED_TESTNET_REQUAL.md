@@ -132,6 +132,8 @@ INCIDENT KILL                         仍 ACTIVE
 
 一次受控试验 PASS ≠ 恢复系统交易。
 
+执行边界的正式冻结见 [EXECUTION_WORK_PACKAGE.md](EXECUTION_WORK_PACKAGE.md)。该文件仍是 **NOT AUTHORIZED TO EXECUTE**。
+
 ---
 
 ## 已落地（仍不可执行）
