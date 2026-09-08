@@ -23,6 +23,7 @@ import asyncio
 import json
 import os
 import sys
+import time
 from datetime import datetime
 from typing import Any, Dict, Iterable, List, Optional, Set
 
@@ -269,11 +270,21 @@ class DashboardFeed:
         account = self.client.futures_account()
         balance = 0.0
         equity = 0.0
+        assets = []
         for asset in account.get("assets") or []:
+            wallet = float(asset.get("walletBalance") or 0)
+            available = float(asset.get("availableBalance") or 0)
             if asset.get("asset") == "USDT":
-                balance = float(asset.get("availableBalance") or 0)
-                equity = float(asset.get("walletBalance") or 0)
-                break
+                balance = available
+                equity = wallet
+            if wallet != 0 or asset.get("asset") == "USDT":
+                assets.append({
+                    "asset": asset.get("asset"),
+                    "walletBalance": wallet,
+                    "availableBalance": available,
+                    "unrealizedPnl": float(asset.get("unrealizedProfit") or 0),
+                })
+        self.account_data["assets"] = assets
         self.account_data["balance"] = balance
         self.account_data["equity"] = equity
         positions = []

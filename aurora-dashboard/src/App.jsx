@@ -9,6 +9,7 @@ import {
   ProtectionTruth,
   RecoveryEvidence,
   TradeObservations,
+  AccountAssets,
   zhLabel,
 } from './components/ObservatoryPanels';
 import useWS from './hooks/useWS';
@@ -62,6 +63,7 @@ function App() {
 
         <div className="dashboard-grid capital-grid">
           <CapitalObjective />
+          <AccountAssets account={system} />
           <DataFreshness sections={freshnessSections} connected={connected} />
         </div>
 

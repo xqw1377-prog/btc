@@ -383,3 +383,38 @@ export function TradeObservations({ trades, meta }) {
     </Panel>
   );
 }
+
+export function AccountAssets({ account }) {
+  const meta = account.meta || {};
+  const observable = meta.status === 'ok';
+  const assets = observable && Array.isArray(account.assets) ? account.assets : [];
+  return (
+    <Panel eyebrow="L2 · 交易所资金" title="账户资产观察" meta={meta} className="assets-panel">
+      {!observable ? (
+        <div className="empty-state warning-state">
+          <strong>资产观察不可用</strong>
+          <span>查询失败不显示为零值。</span>
+        </div>
+      ) : assets.length === 0 ? (
+        <div className="empty-state"><strong>账户无可显示资产</strong></div>
+      ) : (
+        <div className="table-wrap">
+          <table>
+            <thead><tr><th>币种</th><th className="number">钱包余额</th><th className="number">可用</th><th className="number">未实现盈亏</th></tr></thead>
+            <tbody>
+              {assets.map((asset) => (
+                <tr key={asset.asset}>
+                  <td><strong>{asset.asset}</strong></td>
+                  <td className="number">{Number(asset.walletBalance).toLocaleString('en-US', { maximumFractionDigits: 8 })}</td>
+                  <td className="number">{Number(asset.availableBalance).toLocaleString('en-US', { maximumFractionDigits: 8 })}</td>
+                  <td className="number">{Number(asset.unrealizedPnl).toFixed(2)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="panel-note">币安期货测试网钱包观察 · 非链上钱包 · 账户非 AURORA 独占（EXCLUSIVITY=FALSE）。</p>
+    </Panel>
+  );
+}

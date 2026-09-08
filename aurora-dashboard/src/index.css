@@ -135,7 +135,7 @@ button, input, table { font: inherit; }
 
 .dashboard-grid { display: grid; gap: 14px; }
 .primary-grid { grid-template-columns: 1.15fr 1fr 1.15fr; }
-.capital-grid { grid-template-columns: 1.1fr 1.9fr; margin-top: 14px; }
+.capital-grid { grid-template-columns: 1.1fr 1.25fr 1.25fr; margin-top: 14px; }
 .evidence-grid { grid-template-columns: 1.8fr .9fr .9fr; align-items: stretch; }
 
 .panel { position: relative; min-width: 0; background: linear-gradient(145deg, rgba(21,28,36,.98), rgba(14,19,26,.98)); border: 1px solid var(--border); box-shadow: 0 16px 35px rgba(0,0,0,.13); }
