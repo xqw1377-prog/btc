@@ -24,8 +24,7 @@ import sys
 import time
 from typing import Any, Dict, List, Optional
 
-from dotenv import load_dotenv
-
+from aurora.config_source import ConfigSource
 from aurora.p0_boundary import (
     BrokerError,
     BootContext,
@@ -41,13 +40,15 @@ from aurora.p0_boundary import (
     effective_futures_url,
     assert_not_live_trading,
     boot,
-    default_lock_dir,
-    default_state_path,
+    namespaced_lock_dir,
+    namespaced_state_path,
+    resolve_account_fingerprint,
     resolve_mode,
 )
 
 
 FORBIDDEN_IMPORTS = ("aurora_hf_kernel", "aurora_final")
+SYMBOL = "BTCUSDT"
 
 
 class BinanceBroker:
@@ -128,7 +129,7 @@ class BinanceBroker:
             raise BrokerError(str(exc)) from exc
 
 
-def _build_network_broker(mode: RunMode) -> BinanceBroker:
+def _build_network_broker(mode: RunMode, source: Optional[ConfigSource] = None) -> BinanceBroker:
     # LIVE 未武装时必须在任何 Client 构造之前拒绝（构造主网 Client 即出网）。
     if mode == RunMode.LIVE:
         # 先查武装令牌：未武装时不得因环境未设 TRADING_MODE=LIVE 而走错门禁。
@@ -136,8 +137,9 @@ def _build_network_broker(mode: RunMode) -> BinanceBroker:
         assert_live_dual_auth()
     from binance.client import Client
 
-    api_key = os.getenv("BINANCE_API_KEY") or ""
-    api_secret = os.getenv("BINANCE_API_SECRET") or ""
+    values = source.as_environ() if source is not None else os.environ
+    api_key = (values.get("BINANCE_API_KEY") or "").strip()
+    api_secret = (values.get("BINANCE_API_SECRET") or "").strip()
     if not api_key or not api_secret:
         raise SafetyViolation("[P0] missing BINANCE_API_KEY/SECRET.")
     # 构造期即出网：先校验 SDK 将使用的目标常量，再禁跳转，再挂出站守卫。
@@ -153,38 +155,65 @@ def _build_network_broker(mode: RunMode) -> BinanceBroker:
     return BinanceBroker(client, mode)
 
 
-def run_boot() -> BootContext:
-    load_dotenv()
-    mode = resolve_mode()
+def run_boot(env_file: Optional[str] = None) -> BootContext:
+    """G0-5A/B/C：单一 ConfigSource → 命名空间状态 → 账户身份绑定。"""
+    source = ConfigSource.load(env_file=env_file)
+    mode = source.mode()
     broker = None
     if mode == RunMode.LIVE:
         # 未武装：双重授权可校验，但绝不能构造主网客户端
-        assert_live_dual_auth()
-        assert_not_live_trading(mode)
+        assert_live_dual_auth(source.as_environ())
+        assert_not_live_trading(mode, source.as_environ())
     if mode in (RunMode.TESTNET, RunMode.SHADOW, RunMode.LIVE):
-        broker = _build_network_broker(mode)
+        broker = _build_network_broker(mode, source)
+    # 指纹必须先于状态路径解析（命名空间含指纹）；缺密钥/指纹在此拒启。
+    fingerprint = resolve_account_fingerprint(
+        mode, source.get("BINANCE_API_KEY"), source.as_environ())
     return boot(
-        persist_path=os.getenv("AURORA_P0_STATE") or default_state_path(),
-        lock_dir=os.getenv("AURORA_P0_LOCK_DIR") or default_lock_dir(),
+        persist_path=(
+            source.get("AURORA_P0_STATE")
+            or namespaced_state_path(mode, fingerprint)
+        ),
+        lock_dir=(
+            source.get("AURORA_P0_LOCK_DIR")
+            or namespaced_lock_dir(mode, fingerprint)
+        ),
         broker=broker,
+        environ=source.as_environ(),
     )
 
 
-def _arm_runtime(ctx: BootContext):
+def _arm_runtime(ctx: BootContext, source: Optional[ConfigSource] = None):
     if ctx.mode not in (RunMode.TESTNET, RunMode.LIVE):
         return None
     if ctx.broker is None:
         raise SafetyViolation(f"[P0] {ctx.mode.value} arm requires a broker client.")
-    from aurora.armed_runtime import ArmedRuntime, default_ledger_path
+    from aurora.armed_runtime import ArmedRuntime, ensure_ledger_migrated
+    from aurora.p0_boundary import state_root
 
+    ledger_override = source.get("AURORA_LEDGER_PATH") if source is not None else (
+        os.getenv("AURORA_LEDGER_PATH") or "")
+    if ledger_override:
+        # 显式路径 = 隔离用途（测试/工具）：绝不继承事故遗留状态。
+        ledger_path = ledger_override
+    else:
+        ledger_path = os.path.join(
+            state_root(), ctx.mode.value.lower(), ctx.fingerprint, "kernel_ledger.db")
+        # G0-5B：命名空间账本首次启用时，从事故遗留账本安全接管（kill 保留）。
+        ensure_ledger_migrated(
+            os.path.join(state_root(), "kernel_ledger.db"), ledger_path)
     return ArmedRuntime.attach(
         ctx.mode,
         ctx.broker.client,
-        ledger_path=os.getenv("AURORA_LEDGER_PATH") or default_ledger_path(),
+        ledger_path=ledger_path,
+        expected_mode=(
+            source.get("AURORA_EXPECTED_POSITION_MODE") or "HEDGE"
+        ) if source is not None else None,
     )
 
 
-def _idle(ctx: BootContext, runtime=None, once: bool = False) -> int:
+def _idle(ctx: BootContext, runtime=None, once: bool = False,
+          source: Optional[ConfigSource] = None) -> int:
     running = True
 
     def _stop(signum, frame):
@@ -211,7 +240,8 @@ def _idle(ctx: BootContext, runtime=None, once: bool = False) -> int:
     cycle = None
     if runtime is not None and ctx.mode in (RunMode.TESTNET, RunMode.LIVE):
         cycle = TradingCycle(runtime, ctx.broker.client, mode=ctx.mode)
-    enabled = trading_enabled()
+    enabled = trading_enabled(environ=source.as_environ()) if source is not None \
+        else trading_enabled()
     if cycle is not None:
         print(f"[P0] trading_cycle attached enable={enabled}")
     while running:
@@ -225,8 +255,14 @@ def _idle(ctx: BootContext, runtime=None, once: bool = False) -> int:
             report = runtime.recover()
             if report.get("unresolved"):
                 print(f"[P0] kernel recover unresolved: {report['unresolved']}")
-        elif ctx.executor is not None:
-            rec = ctx.executor.reconcile("timer")
+        elif ctx.broker is not None:
+            # G0-5D：SHADOW 只读心跳（旧执行封装已退休）；
+            # 这里只有 query+reconcile+persist，没有任何执行能力。
+            from aurora.p0_boundary import query_position, reconcile
+
+            exchange = query_position(ctx.broker, SYMBOL)
+            rec = reconcile(ctx.store, exchange, "timer")
+            ctx.persist.save(ctx.store)
             if rec.status.value != "MATCHED":
                 print(f"[P0] timer reconcile {rec.status.value}: {rec.reason}")
         if once:
@@ -243,24 +279,35 @@ def main(argv: Optional[List[str]] = None) -> int:
         if name in sys.modules:
             print(f"[P0] forbidden module already imported: {name}")
             return 2
+    argv = list(argv if argv is not None else sys.argv[1:])
+    env_file: Optional[str] = None
+    if "--env-file" in argv:
+        idx = argv.index("--env-file")
+        try:
+            env_file = argv[idx + 1]
+        except IndexError:
+            print("[P0] --env-file requires a path")
+            return 2
+        del argv[idx:idx + 2]
     runtime = None
     try:
-        ctx = run_boot()
-        runtime = _arm_runtime(ctx)
+        ctx = run_boot(env_file=env_file)
+        runtime = _arm_runtime(ctx, source=ConfigSource.load(env_file=env_file))
     except SafetyViolation as exc:
         print(exc)
         return 1
     except Exception as exc:
         print(f"[P0] boot crashed; refuse trading loop: {exc}")
         return 1
-    argv = argv or sys.argv[1:]
     if "--boot-only" in argv:
         if runtime is not None:
             runtime.close()
         ctx.lock.release()
         print("[P0] --boot-only: exiting after successful safety boot.")
         return 0
-    return _idle(ctx, runtime, once="--once" in argv)
+    return _idle(
+        ctx, runtime, once="--once" in argv,
+        source=ConfigSource.load(env_file=env_file))
 
 
 if __name__ == "__main__":

@@ -53,15 +53,6 @@ class PositionQueryKind(str, Enum):
     UNKNOWN = "UNKNOWN"
 
 
-class OrderState(str, Enum):
-    PENDING = "PENDING"
-    ACKED = "ACKED"
-    FILLED = "FILLED"
-    FAILED = "FAILED"
-    CANCELLED = "CANCELLED"
-    UNKNOWN = "UNKNOWN"
-
-
 class PositionMode(str, Enum):
     HEDGE = "HEDGE"
     ONE_WAY = "ONE_WAY"
@@ -348,17 +339,9 @@ class BrainPosition:
     entry_price: float = 0.0
 
 
-@dataclass
-class OrderRecord:
-    client_order_id: str
-    state: OrderState
-    side: str
-    quantity: float
-    reduce_only: bool = False
-    order_type: str = "MARKET"
-    exchange_order_id: Optional[str] = None
-    error: Optional[str] = None
-    created_at: str = field(default_factory=utc_now)
+# G0-5D：OrderRecord / SafeExecutor 已迁往 aurora/legacy_safe_executor.py
+# （OFFLINE_REFERENCE_ONLY）。生产执行路径不得引用；禁入守卫见
+# tests/test_g05_identity_isolation.py。
 
 
 @dataclass
@@ -374,6 +357,7 @@ class SafetyStore:
     account_fingerprint: str = ""
     brain: BrainPosition = field(default_factory=BrainPosition)
     last_reconcile: str = ReconcileStatus.UNKNOWN.value
+    account_identity: Dict[str, Any] = field(default_factory=dict)
     updated_at: str = field(default_factory=utc_now)
 
     def to_dict(self) -> Dict[str, Any]:
@@ -401,6 +385,7 @@ class SafetyStore:
                 entry_price=float(brain.get("entry_price", 0.0)),
             ),
             last_reconcile=data.get("last_reconcile", ReconcileStatus.UNKNOWN.value),
+            account_identity=dict(data.get("account_identity") or {}),
             updated_at=data.get("updated_at", utc_now()),
         )
 
@@ -566,198 +551,8 @@ def can_open(store: SafetyStore, rec: ReconcileResult) -> bool:
     return rec.status == ReconcileStatus.MATCHED
 
 
-class SafeExecutor:
-    def __init__(self, broker: Broker, store: SafetyStore, persist: Persistence, symbol: str = "BTCUSDT"):
-        self.broker = broker
-        self.store = store
-        self.persist = persist
-        self.symbol = symbol
-        self.orders: Dict[str, OrderRecord] = {}
-        self.cancel_all_calls = 0
-
-    def _cid(self, prefix: str) -> str:
-        return f"AURORA_{prefix}_{uuid.uuid4().hex[:8]}"
-
-    def _place(self, client_order_id: str, **params: Any) -> OrderRecord:
-        existing = self.orders.get(client_order_id)
-        if existing and existing.state == OrderState.FILLED:
-            return existing
-        record = existing or OrderRecord(
-            client_order_id=client_order_id,
-            state=OrderState.PENDING,
-            side=params.get("side", ""),
-            quantity=float(params.get("quantity", 0)),
-            reduce_only=bool(params.get("reduceOnly", False)),
-            order_type=params.get("type", "MARKET"),
-        )
-        self.orders[client_order_id] = record
-        try:
-            raw = self.broker.create_order(symbol=self.symbol, newClientOrderId=client_order_id, **params)
-            record.state = OrderState.FILLED
-            record.exchange_order_id = str(raw.get("orderId", client_order_id))
-        except Exception as exc:
-            try:
-                seen = self.broker.get_order(self.symbol, client_order_id)
-                if seen.get("status") in ("FILLED", "NEW", "PARTIALLY_FILLED"):
-                    record.state = OrderState.FILLED if seen.get("status") == "FILLED" else OrderState.ACKED
-                    record.exchange_order_id = str(seen.get("orderId", client_order_id))
-                    return record
-            except Exception:
-                record.state = OrderState.UNKNOWN
-                record.error = str(exc)
-                return record
-            record.state = OrderState.FAILED
-            record.error = str(exc)
-        return record
-
-    def cancel_order(self, order_id: str) -> None:
-        if not order_id:
-            raise SafetyViolation("[P0] refuse cancel without exact order id.")
-        self.broker.cancel_order(self.symbol, order_id)
-
-    def cancel_all_orders(self) -> None:
-        self.cancel_all_calls += 1
-        raise SafetyViolation("[P0] cancel-all is forbidden; cancel by order id only.")
-
-    def reconcile(self, trigger: str) -> ReconcileResult:
-        exchange = query_position(self.broker, self.symbol)
-        result = reconcile(self.store, exchange, trigger)
-        self.persist.save(self.store)
-        return result
-
-    def execute_open(self, side: str, quantity: float, stop_loss: float, take_profit: float) -> Dict[str, Any]:
-        rec = self.reconcile("before_open")
-        if not can_open(self.store, rec):
-            return {"success": False, "reason": f"open blocked: halt={self.store.halt.value} rec={rec.status.value} close_failed={self.store.close_failed}"}
-
-        open_cid = self._cid("OPEN")
-        order_side = "BUY" if side == "LONG" else "SELL"
-        opened = self._place(
-            open_cid,
-            side=order_side,
-            positionSide=side,
-            type="MARKET",
-            quantity=quantity,
-            reduceOnly=False,
-        )
-        if opened.state == OrderState.UNKNOWN:
-            self.reconcile("order_unknown")
-            return {"success": False, "reason": "open result UNKNOWN", "client_order_id": open_cid}
-        if opened.state != OrderState.FILLED:
-            return {"success": False, "reason": opened.error or "open failed", "client_order_id": open_cid}
-
-        self.store.brain = BrainPosition(True, side, quantity, 0.0)
-        self.store.pending_orders.append({"id": open_cid, "type": "OPEN"})
-        self.persist.save(self.store)
-
-        protect = self._confirm_protection(side, quantity, stop_loss, take_profit)
-        self.reconcile("after_open")
-        return protect
-
-    def _confirm_protection(self, side: str, quantity: float, stop_loss: float, take_profit: float) -> Dict[str, Any]:
-        close_side = "SELL" if side == "LONG" else "BUY"
-        sl_cid = self._cid("SL")
-        tp_cid = self._cid("TP")
-        sl = self._place(
-            sl_cid, side=close_side, positionSide=side, type="STOP_MARKET",
-            quantity=quantity, stopPrice=stop_loss, reduceOnly=True,
-        )
-        tp = self._place(
-            tp_cid, side=close_side, positionSide=side, type="TAKE_PROFIT_MARKET",
-            quantity=quantity, stopPrice=take_profit, reduceOnly=True,
-        )
-        sl_ok = self._protection_confirmed(sl)
-        tp_ok = self._protection_confirmed(tp)
-        if sl_ok and tp_ok:
-            self.store.pending_orders.extend([
-                {"id": sl_cid, "type": "SL"},
-                {"id": tp_cid, "type": "TP"},
-            ])
-            self.persist.save(self.store)
-            return {"success": True, "sl": sl_cid, "tp": tp_cid}
-
-        return self._emergency_flatten("protection unconfirmed")
-
-    def _protection_confirmed(self, record: OrderRecord) -> bool:
-        if record.state not in (OrderState.FILLED, OrderState.ACKED):
-            return False
-        try:
-            seen = self.broker.get_order(self.symbol, record.client_order_id)
-        except Exception:
-            return False
-        return seen.get("status") in ("NEW", "FILLED", "PARTIALLY_FILLED")
-
-    def _emergency_flatten(self, reason: str) -> Dict[str, Any]:
-        pos = query_position(self.broker, self.symbol)
-        if pos.kind == PositionQueryKind.UNKNOWN:
-            self.store.halt = HaltState.RECOVERY_REQUIRED
-            self.store.halt_reason = f"{reason}; flatten position UNKNOWN"
-            self.persist.save(self.store)
-            return {"success": False, "halt": self.store.halt.value, "reason": self.store.halt_reason}
-
-        if pos.kind == PositionQueryKind.FLAT:
-            self.store.brain = BrainPosition()
-            self.store.halt = HaltState.HALTED
-            self.store.halt_reason = f"{reason}; already flat"
-            self.persist.save(self.store)
-            return {"success": False, "halt": self.store.halt.value, "reason": self.store.halt_reason}
-
-        flatten_cid = self._cid("FLAT")
-        close_side = "SELL" if pos.side == "LONG" else "BUY"
-        flat = self._place(
-            flatten_cid,
-            side=close_side,
-            positionSide=pos.side,
-            type="MARKET",
-            quantity=pos.size,
-            reduceOnly=True,
-        )
-        confirm = query_position(self.broker, self.symbol)
-        if confirm.kind == PositionQueryKind.FLAT:
-            self.store.brain = BrainPosition()
-            self.store.halt = HaltState.HALTED
-            self.store.halt_reason = f"{reason}; emergency reduceOnly flattened"
-            self.persist.save(self.store)
-            return {"success": False, "halt": self.store.halt.value, "reason": self.store.halt_reason}
-
-        self.store.halt = HaltState.RECOVERY_REQUIRED
-        self.store.halt_reason = (
-            f"{reason}; flatten state={flat.state.value} confirm={confirm.kind.value}"
-        )
-        self.persist.save(self.store)
-        return {"success": False, "halt": self.store.halt.value, "reason": self.store.halt_reason}
-
-    def execute_close(self) -> Dict[str, Any]:
-        pos = query_position(self.broker, self.symbol)
-        if pos.kind == PositionQueryKind.UNKNOWN:
-            self.store.close_failed = True
-            self.persist.save(self.store)
-            return {"success": False, "reason": "close blocked: position UNKNOWN"}
-        if pos.kind == PositionQueryKind.FLAT:
-            self.store.brain = BrainPosition()
-            self.store.close_failed = False
-            self.persist.save(self.store)
-            self.reconcile("after_close")
-            return {"success": True, "reason": "already flat"}
-
-        cid = self._cid("CLOSE")
-        close_side = "SELL" if pos.side == "LONG" else "BUY"
-        closed = self._place(
-            cid, side=close_side, positionSide=pos.side, type="MARKET",
-            quantity=pos.size, reduceOnly=True,
-        )
-        confirm = query_position(self.broker, self.symbol)
-        if closed.state == OrderState.FILLED and confirm.kind == PositionQueryKind.FLAT:
-            self.store.brain = BrainPosition()
-            self.store.close_failed = False
-            self.persist.save(self.store)
-            self.reconcile("after_close")
-            return {"success": True, "client_order_id": cid}
-
-        self.store.close_failed = True
-        self.persist.save(self.store)
-        return {"success": False, "reason": "close unconfirmed; reverse open forbidden"}
-
+# G0-5D：SafeExecutor 迁往 aurora/legacy_safe_executor.py（OFFLINE_REFERENCE_ONLY）。
+# 生产执行路径不得实例化；第二套保护语义就此失去成为生产路径的机会。
 
 def verify_position_mode(broker: Broker, expected: PositionMode) -> PositionMode:
     try:
@@ -835,9 +630,21 @@ def boot(
     if store.account_fingerprint and store.account_fingerprint != fp:
         raise SafetyViolation("[P0] persisted fingerprint does not match this account.")
     store.account_fingerprint = fp
+
+    # G0-5C：账户身份绑定与漂移 fail-closed。任何环境/指纹/持仓模式/
+    # 交易所主机/独占性变化都必须被显式处置，不能静默沿用旧身份。
+    identity = build_account_identity(
+        mode=mode,
+        fingerprint=fp,
+        position_mode=expected_position_mode(src),
+        exchange_host=_endpoint_host(broker.futures_url) if broker is not None else "",
+        account_exclusivity=(src.get("AURORA_ACCOUNT_EXCLUSIVITY") or "false")
+        .strip().lower() in ("true", "1", "yes", "on"),
+    )
+    check_account_identity_drift(store, identity)
+    store.account_identity = identity
     persist.save(store)
 
-    executor = None
     if broker is not None:
         assert_endpoint(broker.futures_url, mode)
         try:
@@ -845,8 +652,8 @@ def boot(
         except Exception as exc:
             raise SafetyViolation(f"[P0] account probe failed: {exc}")
         verify_position_mode(broker, expected_position_mode(src))
-        executor = SafeExecutor(broker, store, persist, symbol)
-        rec = executor.reconcile("boot")
+        exchange = query_position(broker, symbol)
+        rec = reconcile(store, exchange, "boot")
         if rec.status not in (ReconcileStatus.MATCHED, ReconcileStatus.DRIFT_DETECTED):
             raise SafetyViolation(f"[P0] boot reconcile {rec.status.value}: {rec.reason}")
         if rec.status == ReconcileStatus.DRIFT_DETECTED:
@@ -862,16 +669,80 @@ def boot(
         persist=persist,
         lock=lock,
         broker=broker,
-        executor=executor,
+        executor=None,
         status="SAFE_IDLE",
     )
 
 
-def default_state_path() -> str:
+def build_account_identity(
+    mode: RunMode,
+    fingerprint: str,
+    position_mode: PositionMode,
+    exchange_host: str,
+    account_exclusivity: bool,
+) -> Dict[str, Any]:
+    """G0-5C：账户身份五要素 + 独占性声明 + 稳定哈希。
+
+    ACCOUNT_EXCLUSIVITY 当前冻结为 FALSE（共享测试网账户是已登记事实）：
+    账户级状态不得自动解释为 AURORA 独占事实。
+    """
+    identity = {
+        "mode": mode.value,
+        "account_fingerprint": fingerprint,
+        "position_mode": position_mode.value,
+        "exchange_host": exchange_host,
+        "account_exclusivity": bool(account_exclusivity),
+    }
+    canonical = json.dumps(identity, sort_keys=True, separators=(",", ":"))
+    identity["identity_hash"] = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:16]
+    return identity
+
+
+def check_account_identity_drift(store: SafetyStore, identity: Dict[str, Any]) -> None:
+    """持久化身份存在且不一致 → ACCOUNT_IDENTITY_DRIFT，拒启。"""
+    stored = store.account_identity or {}
+    if not stored:
+        return  # 首次引导：写入身份（旧状态文件无身份块不算漂移）
+    if stored.get("identity_hash") != identity.get("identity_hash"):
+        changed = [
+            k for k in identity
+            if k != "identity_hash" and stored.get(k) != identity.get(k)
+        ]
+        raise SafetyViolation(
+            "[P0] ACCOUNT_IDENTITY_DRIFT: stored="
+            f"{stored.get('identity_hash')} current={identity.get('identity_hash')}"
+            f" changed={changed}; explicit disposition required."
+        )
+
+
+def state_root() -> str:
     root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(root, "state", "p0_safety.json")
+    return os.path.join(root, "state")
+
+
+def namespaced_state_dir(mode: RunMode, fingerprint: str) -> str:
+    """G0-5B：state/<mode>/<fingerprint>/ 物理状态命名空间。
+
+    PAPER ≠ TESTNET ≠ LIVE 不仅逻辑不同，状态文件物理隔离。
+    """
+    if not fingerprint:
+        raise SafetyViolation("[P0] state namespace requires account fingerprint.")
+    return os.path.join(state_root(), mode.value.lower(), fingerprint)
+
+
+def namespaced_state_path(mode: RunMode, fingerprint: str) -> str:
+    return os.path.join(namespaced_state_dir(mode, fingerprint), "p0_safety.json")
+
+
+def namespaced_lock_dir(mode: RunMode, fingerprint: str) -> str:
+    return os.path.join(namespaced_state_dir(mode, fingerprint), "locks")
+
+
+def default_state_path() -> str:
+    """遗留（事故封存）路径：state/p0_safety.json。新引导一律走
+    namespaced_state_path()；本函数仅保留给归档工具与旧测试。"""
+    return os.path.join(state_root(), "p0_safety.json")
 
 
 def default_lock_dir() -> str:
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    return os.path.join(root, "state", "locks")
+    return os.path.join(state_root(), "locks")

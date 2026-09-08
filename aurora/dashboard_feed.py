@@ -106,16 +106,17 @@ class DashboardFeed:
         port: int = 8000,
         client: Any = None,
         mode: Optional[RunMode] = None,
+        environ: Optional[Dict[str, str]] = None,
     ):
         self.host = host
         self.port = port
-        self.mode = mode or resolve_mode()
+        self.mode = mode or resolve_mode(environ if environ is not None else None)
         if self.mode not in (RunMode.TESTNET, RunMode.SHADOW):
             raise SafetyViolation(
                 f"[P0] dashboard feed only allowed in TESTNET/SHADOW, got {self.mode.value}."
             )
         self.clients: Set[Any] = set()
-        base = client if client is not None else read_only_client()
+        base = client if client is not None else read_only_client(environ=environ)
         self.client = ReadOnlyClient(base)
         self.feature_engine = FeatureEngine()
         self.state_engine = MarketStateEngineV2()
@@ -401,16 +402,18 @@ def main(argv=None) -> int:
     )
     args = ap.parse_args(argv)
 
-    from dotenv import load_dotenv
+    from aurora.config_source import ConfigSource
 
-    env_file = os.path.abspath(args.env_file)
-    if os.path.isfile(env_file):
-        load_dotenv(dotenv_path=env_file, override=False)
-    else:
-        print(f"[feed] config source: {env_file} NOT FOUND; process env only", flush=True)
+    # G0-5A：与 production_main / safety_check / ops 共用同一 ConfigSource，
+    # 不再各自加载环境文件，也不改写 os.environ。
+    source = ConfigSource.load(env_file=os.path.abspath(args.env_file))
+    if not source.loaded_from_disk:
+        print(f"[feed] config source: {source.env_file} NOT FOUND; process env only",
+              flush=True)
 
     try:
-        asyncio.run(DashboardFeed().start())
+        feed = DashboardFeed(environ=source.as_environ())
+        asyncio.run(feed.start())
     except SafetyViolation as exc:
         print(exc)
         return 1

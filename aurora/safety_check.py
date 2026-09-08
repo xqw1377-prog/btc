@@ -39,20 +39,20 @@ def main(argv=None):
     ap.add_argument("--probe", action="store_true", help="unused; probes belong to production_main")
     args = ap.parse_args(argv)
 
-    from dotenv import load_dotenv
+    from aurora.config_source import ConfigSource
 
-    env_file = os.path.abspath(args.env_file)
-    if os.path.isfile(env_file):
-        # 进程环境优先于文件同名键；不覆盖既有环境变量。
-        load_dotenv(dotenv_path=env_file, override=False)
-        print(f"[P0] config source: {env_file} (loaded; process env takes precedence)")
+    # G0-5A：与 production_main / dashboard_feed / ops 共用同一 ConfigSource；
+    # 不再各自加载环境文件，也不改写 os.environ。
+    source = ConfigSource.load(env_file=os.path.abspath(args.env_file))
+    if source.loaded_from_disk:
+        print(f"[P0] config source: {source.env_file} (loaded; process env takes precedence)")
     else:
-        print(f"[P0] config source: {env_file} NOT FOUND; using process environment only")
+        print(f"[P0] config source: {source.env_file} NOT FOUND; using process environment only")
 
     try:
-        mode = resolve_mode()
+        mode = source.mode()
         if mode == RunMode.LIVE:
-            assert_live_dual_auth()
+            assert_live_dual_auth(source.as_environ())
     except SafetyViolation as e:
         print(f"[P0] config consistency: REJECTED — {e}")
         sys.exit(1)
@@ -65,7 +65,7 @@ def main(argv=None):
     if mode == RunMode.PAPER:
         print("[P0] PAPER: no exchange connection.")
     if mode == RunMode.LIVE:
-        if live_execution_armed():
+        if live_execution_armed(source.as_environ()):
             print(
                 "[P0] LIVE dual-auth + arm token fields present. This is a"
                 " config finding only, NOT live approval: LIVE remains NO-GO"

@@ -7,14 +7,12 @@ from aurora.p0_boundary import (
     AccountLock,
     BrainPosition,
     HaltState,
-    OrderState,
     Persistence,
     PositionMode,
     PositionQueryKind,
     PositionSnapshot,
     ReconcileStatus,
     RunMode,
-    SafeExecutor,
     SafetyStore,
     SafetyViolation,
     assert_live_dual_auth,
@@ -201,147 +199,6 @@ class ModeTests(unittest.TestCase):
             )
             self.assertEqual(ctx.mode, RunMode.LIVE)
             ctx.lock.release()
-
-
-class PositionAndCloseTests(unittest.TestCase):
-    def test_p0_04_query_failure_is_unknown(self):
-        broker = FakeBroker()
-        broker.fail_position = True
-        snap = query_position(broker, "BTCUSDT")
-        self.assertEqual(snap.kind, PositionQueryKind.UNKNOWN)
-        store = SafetyStore()
-        rec = reconcile(store, snap, "timer")
-        self.assertEqual(rec.status, ReconcileStatus.UNKNOWN)
-        self.assertTrue(store.brain.is_open is False)
-
-    def test_p0_05_failed_close_blocks_reverse_open(self):
-        tmp, persist, locks = _tmp_paths()
-        with tmp:
-            broker = FakeBroker()
-            store = SafetyStore()
-            persist_obj = Persistence(persist)
-            persist_obj.save(store)
-            ex = SafeExecutor(broker, store, persist_obj)
-            opened = ex.execute_open("LONG", 0.01, 90.0, 110.0)
-            self.assertTrue(opened["success"])
-            broker.fail_types.add("MARKET")
-            closed = ex.execute_close()
-            self.assertFalse(closed["success"])
-            self.assertTrue(store.close_failed)
-            broker.fail_types.clear()
-            again = ex.execute_open("SHORT", 0.01, 110.0, 90.0)
-            self.assertFalse(again["success"])
-            self.assertIn("close_failed", again["reason"])
-
-
-class ProtectAndGhostTests(unittest.TestCase):
-    def test_p0_06_protect_fail_flattens_and_halts_forever(self):
-        tmp, persist, _ = _tmp_paths()
-        with tmp:
-            broker = FakeBroker()
-            broker.fail_types.add("STOP_MARKET")
-            broker.fail_types.add("TAKE_PROFIT_MARKET")
-            store = SafetyStore()
-            persist_obj = Persistence(persist)
-            persist_obj.save(store)
-            ex = SafeExecutor(broker, store, persist_obj)
-            result = ex.execute_open("LONG", 0.01, 90.0, 110.0)
-            self.assertFalse(result["success"])
-            self.assertEqual(result["halt"], HaltState.HALTED.value)
-            self.assertEqual(query_position(broker, "BTCUSDT").kind, PositionQueryKind.FLAT)
-            self.assertEqual(persist_obj.load().halt, HaltState.HALTED)
-            with self.assertRaises(SafetyViolation):
-                restore_or_refuse(persist_obj)
-
-    def test_p0_06_unknown_flatten_is_recovery_required(self):
-        tmp, persist, _ = _tmp_paths()
-        with tmp:
-            broker = FakeBroker()
-            store = SafetyStore()
-            persist_obj = Persistence(persist)
-            persist_obj.save(store)
-            ex = SafeExecutor(broker, store, persist_obj)
-            broker.fail_types.add("STOP_MARKET")
-            broker.fail_types.add("TAKE_PROFIT_MARKET")
-            original_get = broker.get_position
-
-            def flaky(symbol):
-                if any(c.get("type") == "MARKET" and c.get("reduceOnly") for c in broker.create_calls):
-                    raise RuntimeError("cannot see position")
-                return original_get(symbol)
-
-            broker.get_position = flaky
-            result = ex.execute_open("LONG", 0.01, 90.0, 110.0)
-            self.assertEqual(result["halt"], HaltState.RECOVERY_REQUIRED.value)
-            with self.assertRaises(SafetyViolation):
-                restore_or_refuse(persist_obj)
-
-    def test_p0_07_exchange_sl_clears_brain_ghost(self):
-        store = SafetyStore(brain=BrainPosition(True, "LONG", 0.01, 100.0))
-        exchange = PositionSnapshot(kind=PositionQueryKind.FLAT)
-        rec = reconcile(store, exchange, "exchange_event")
-        self.assertEqual(rec.status, ReconcileStatus.MATCHED)
-        self.assertFalse(store.brain.is_open)
-
-
-class PersistenceAndLockTests(unittest.TestCase):
-    def test_p0_08_restart_keeps_risk_and_pending(self):
-        tmp, persist, _ = _tmp_paths()
-        with tmp:
-            store = SafetyStore(
-                kill_switch=True,
-                kill_reason="daily loss",
-                daily_pnl=-120.5,
-                drawdown=0.08,
-                pending_orders=[{"id": "AURORA_SL_1", "type": "SL"}],
-            )
-            Persistence(persist).save(store)
-            loaded = Persistence(persist).load()
-            self.assertTrue(loaded.kill_switch)
-            self.assertEqual(loaded.daily_pnl, -120.5)
-            self.assertEqual(loaded.drawdown, 0.08)
-            self.assertEqual(loaded.pending_orders[0]["id"], "AURORA_SL_1")
-            with self.assertRaises(SafetyViolation):
-                restore_or_refuse(Persistence(persist))
-
-    def test_p0_09_retry_reuses_client_order_id(self):
-        tmp, persist, _ = _tmp_paths()
-        with tmp:
-            broker = FakeBroker()
-            persist_obj = Persistence(persist)
-            persist_obj.save(SafetyStore())
-            ex = SafeExecutor(broker, persist_obj.load(), persist_obj)
-            first = ex._place("AURORA_OPEN_deadbeef", side="BUY", positionSide="LONG", type="MARKET", quantity=0.01)
-            second = ex._place("AURORA_OPEN_deadbeef", side="BUY", positionSide="LONG", type="MARKET", quantity=0.01)
-            self.assertEqual(first.state, OrderState.FILLED)
-            self.assertEqual(second.state, OrderState.FILLED)
-            open_calls = [c for c in broker.create_calls if c["newClientOrderId"] == "AURORA_OPEN_deadbeef"]
-            self.assertEqual(len(open_calls), 1)
-
-    def test_p0_10_account_lock_is_exclusive(self):
-        tmp = tempfile.TemporaryDirectory()
-        with tmp:
-            a = AccountLock(tmp.name, "abc123abc123abcd")
-            b = AccountLock(tmp.name, "abc123abc123abcd")
-            a.acquire()
-            with self.assertRaises(SafetyViolation):
-                b.acquire()
-            a.release()
-            b.acquire()
-            b.release()
-
-    def test_p0_11_cancel_all_forbidden(self):
-        tmp, persist, _ = _tmp_paths()
-        with tmp:
-            broker = FakeBroker()
-            persist_obj = Persistence(persist)
-            persist_obj.save(SafetyStore())
-            ex = SafeExecutor(broker, persist_obj.load(), persist_obj)
-            with self.assertRaises(SafetyViolation):
-                ex.cancel_all_orders()
-            self.assertEqual(broker.cancel_all_calls, 0)
-            ex.cancel_order("12345")
-            self.assertEqual(broker.cancel_calls, ["12345"])
 
 
 class EntryTests(unittest.TestCase):

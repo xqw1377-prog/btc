@@ -80,6 +80,10 @@ regime_stats.json
 state/*.json
 state/*.tmp
 state/locks/
+# G0-5B 命名空间状态（mode/fingerprint 物理隔离）
+state/paper/
+state/testnet/
+state/live/
 
 # Hypothesis property-test cache
 .hypothesis/

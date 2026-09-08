@@ -39,10 +39,11 @@ def probe_account(client):
     return account
 
 
-def build_client(mode, purpose):
+def build_client(mode, purpose, environ=None):
     from binance.client import Client
     import os
 
+    src = os.environ if environ is None else environ
     if isinstance(mode, RunMode):
         mode_name = mode.value
         mode_enum = mode
@@ -53,10 +54,10 @@ def build_client(mode, purpose):
         raise SafetyViolation("[P0] PAPER must not open an exchange client.")
     # LIVE：双重授权 + 武装令牌都通过后才允许构造主网 Client。
     if mode_enum == RunMode.LIVE:
-        assert_live_dual_auth()
+        assert_live_dual_auth(environ if environ is not None else None)
         assert_not_live_trading(mode_enum)
-    api_key = os.getenv("BINANCE_API_KEY")
-    api_secret = os.getenv("BINANCE_API_SECRET")
+    api_key = src.get("BINANCE_API_KEY")
+    api_secret = src.get("BINANCE_API_SECRET")
     if not api_key or not api_secret:
         raise SafetyViolation("[P0] missing BINANCE_API_KEY/SECRET.")
     # 构造期即出网：先校验 SDK 将使用的目标常量，再禁跳转，再挂出站守卫。
@@ -72,7 +73,7 @@ def build_client(mode, purpose):
         raise SafetyViolation(f"[P0] exchange connect failed ({purpose}): {str(e)[:200]}")
     install_outbound_guard(client, mode_enum)
     assert_client_endpoint(client, mode_enum)
-    resolve_account_fingerprint(mode_enum, api_key)
+    resolve_account_fingerprint(mode_enum, api_key, environ)
     return client
 
 
@@ -89,10 +90,10 @@ def trading_client():
     )
 
 
-def read_only_client():
-    mode = resolve_mode()
+def read_only_client(environ=None):
+    mode = resolve_mode(environ if environ is not None else None)
     if mode == RunMode.PAPER:
         raise SafetyViolation("[P0] PAPER forbids exchange connections, including read-only.")
     if mode == RunMode.LIVE:
         raise SafetyViolation("[P0] LIVE remains NO-GO, including read-only clients.")
-    return build_client(mode, "read-only")
+    return build_client(mode, "read-only", environ=environ)

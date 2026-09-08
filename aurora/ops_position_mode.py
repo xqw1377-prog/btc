@@ -11,18 +11,19 @@ from __future__ import annotations
 import argparse
 import sys
 
-from dotenv import load_dotenv
-
+from aurora.config_source import ConfigSource
 from aurora.p0_boundary import PositionQueryKind, RunMode, SafetyViolation, resolve_mode
 from aurora.production_main import _build_network_broker
 
 
 def main(argv=None) -> int:
-    load_dotenv()
     parser = argparse.ArgumentParser(description="Change account position mode (ops only).")
     parser.add_argument("--target", required=True, choices=("HEDGE", "ONE_WAY"))
     parser.add_argument("--symbol", default="BTCUSDT")
     parser.add_argument("--i-understand-account-wide", action="store_true")
+    parser.add_argument(
+        "--env-file", default=None,
+        help="explicit dotenv path; defaults to repo-root .env, no parent search")
     args = parser.parse_args(argv)
 
     if not args.i_understand_account_wide:
@@ -30,12 +31,13 @@ def main(argv=None) -> int:
         return 2
 
     try:
-        mode = resolve_mode()
+        source = ConfigSource.load(env_file=args.env_file)
+        mode = source.mode()
         if mode == RunMode.PAPER:
             raise SafetyViolation("[OPS] PAPER has no exchange account.")
         if mode == RunMode.LIVE:
             raise SafetyViolation("[OPS] LIVE remains NO-GO; will not mutate a live account.")
-        broker = _build_network_broker(mode)
+        broker = _build_network_broker(mode, source)
         pos = broker.get_position(args.symbol)
         if pos.kind == PositionQueryKind.UNKNOWN:
             raise SafetyViolation("[OPS] position query UNKNOWN; refuse mode change.")
