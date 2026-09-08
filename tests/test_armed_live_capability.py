@@ -32,19 +32,43 @@ class ArmGateTests(unittest.TestCase):
                     ArmedRuntime.attach(RunMode.LIVE, client, os.path.join(tmp, "l.db"))
                 self.assertIn("NO-GO", str(ctx.exception))
 
+    def test_position_mode_mismatch_or_unknown_refuses_before_ledger(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "nested", "l.db")
+            hedge = RecordingClient()
+            hedge.dual_side = "true"
+            with mock.patch.dict(
+                    os.environ, {"AURORA_EXPECTED_POSITION_MODE": "ONE_WAY"}):
+                with self.assertRaises(SafetyViolation):
+                    ArmedRuntime.attach(RunMode.TESTNET, hedge, path)
+            self.assertFalse(os.path.exists(os.path.dirname(path)))
+
+            class UnknownMode(RecordingClient):
+                def futures_get_position_mode(self):
+                    raise RuntimeError("query unavailable")
+
+            with mock.patch.dict(
+                    os.environ, {"AURORA_EXPECTED_POSITION_MODE": "ONE_WAY"}):
+                with self.assertRaises(SafetyViolation):
+                    ArmedRuntime.attach(RunMode.TESTNET, UnknownMode(), path)
+            self.assertFalse(os.path.exists(os.path.dirname(path)))
+
 
 class ArmedKernelTests(unittest.TestCase):
     def test_testnet_open_protect_close(self):
         client = RecordingClient()
-        with tempfile.TemporaryDirectory() as tmp:
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+                os.environ, {"AURORA_EXPECTED_POSITION_MODE": "ONE_WAY"}):
             rt = ArmedRuntime.attach(
                 RunMode.TESTNET, client, os.path.join(tmp, "l.db"))
             try:
                 opened = rt.open_position("LONG", 0.01, intent_id="LIVE1")
                 self.assertTrue(opened["success"])
                 self.assertEqual(opened["state"], "PROTECTED")
-                types = [c["type"] for c in client.creates]
-                self.assertEqual(types, ["MARKET", "STOP_MARKET", "TAKE_PROFIT_MARKET"])
+                self.assertEqual([c["type"] for c in client.creates], ["MARKET"])
+                algo_types = [c[3]["data"]["type"] for c in client.algo_calls
+                              if c[0] == "post"]
+                self.assertEqual(algo_types, ["STOP_MARKET", "TAKE_PROFIT_MARKET"])
                 self.assertEqual(
                     rt.ledger.get_intent("LIVE1")["state"], IntentState.PROTECTED.value)
                 closed = rt.close_position("capability close")
@@ -61,6 +85,7 @@ class ArmedKernelTests(unittest.TestCase):
             "ALLOW_LIVE_TRADING": "true",
             "AURORA_LIVE_CONFIRM": "I_UNDERSTAND_LIVE_RISK",
             "TRADING_MODE": "LIVE",
+            "AURORA_EXPECTED_POSITION_MODE": "ONE_WAY",
         }
         with mock.patch.dict(os.environ, env, clear=False):
             with tempfile.TemporaryDirectory() as tmp:
@@ -69,8 +94,11 @@ class ArmedKernelTests(unittest.TestCase):
                 try:
                     opened = rt.open_position("LONG", 0.01, intent_id="LIVE2")
                     self.assertTrue(opened["success"])
-                    kinds = [c["type"] for c in client.creates]
-                    self.assertIn("STOP_MARKET", kinds)
+                    self.assertNotIn(
+                        "STOP_MARKET", [c["type"] for c in client.creates])
+                    self.assertIn(
+                        "STOP_MARKET",
+                        [c[3]["data"]["type"] for c in client.algo_calls])
                 finally:
                     rt.close()
 
@@ -98,7 +126,10 @@ class ProductionArmWiringTests(unittest.TestCase):
             broker = Broker()
 
         with tempfile.TemporaryDirectory() as tmp:
-            with mock.patch.dict(os.environ, {"AURORA_LEDGER_PATH": os.path.join(tmp, "k.db")}):
+            with mock.patch.dict(os.environ, {
+                "AURORA_LEDGER_PATH": os.path.join(tmp, "k.db"),
+                "AURORA_EXPECTED_POSITION_MODE": "ONE_WAY",
+            }):
                 rt = production_main._arm_runtime(Ctx())
             try:
                 self.assertIsNotNone(rt)

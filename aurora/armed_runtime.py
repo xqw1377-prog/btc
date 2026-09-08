@@ -11,7 +11,9 @@ from typing import Any, Dict, Optional
 from aurora.kernel.binance_exchange import BinanceExchange
 from aurora.kernel.ledger import Ledger
 from aurora.kernel.orchestrator import Orchestrator
-from aurora.p0_boundary import RunMode, SafetyViolation, assert_not_live_trading
+from aurora.p0_boundary import (
+    RunMode, SafetyViolation, assert_not_live_trading, expected_position_mode,
+)
 
 
 def default_ledger_path() -> str:
@@ -50,9 +52,11 @@ class ArmedRuntime:
             assert_not_live_trading(mode)
         if mode not in (RunMode.TESTNET, RunMode.LIVE):
             raise SafetyViolation(f"[P0] cannot arm execution in mode={mode}")
+        exchange = BinanceExchange(client, symbol=symbol, allow_mutate=True)
+        expected = expected_position_mode().value
+        exchange.verify_position_mode(expected)
         path = ledger_path or os.getenv("AURORA_LEDGER_PATH") or default_ledger_path()
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
-        exchange = BinanceExchange(client, symbol=symbol, allow_mutate=True)
         ledger = Ledger(path)
         orch = Orchestrator(ledger, exchange, symbol=symbol)
         report = orch.recover()

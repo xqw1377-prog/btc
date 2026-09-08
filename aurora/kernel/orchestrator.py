@@ -108,19 +108,42 @@ class Orchestrator:
                         self._emergency_close(intent_id, trigger="recovery protection missing")
                     elif state == IntentState.RECOVERY_REQUIRED and not self._exchange_flat():
                         self._emergency_close(intent_id, trigger="recovery protection missing")
-                else:
-                    self.ledger.update_order(
-                        cid,
-                        state="ACTIVE" if fact.status == "NEW" else "FILLED",
-                        filled_qty=fact.filled_qty if fact.status != "NEW" else None,
-                        avg_price=fact.avg_price if fact.status != "NEW" else None)
-                    if fact.status in ("FILLED", "PARTIALLY_FILLED"):
-                        self._apply_fills(cid)
+                elif fact.status == "NEW":
+                    self.ledger.update_order(cid, state="ACTIVE")
                     if state == IntentState.PROTECTION_SUBMITTING:
                         self.ledger.transition_intent(
                             intent_id, IntentState.PROTECTED,
                             f"recovery: protection confirmed {cid}", correlation_id=intent_id)
-                report["resolved"].append(entry)
+                    report["resolved"].append(entry)
+                elif fact.status in ("FILLED", "PARTIALLY_FILLED"):
+                    self.ledger.update_order(
+                        cid, state="FILLED",
+                        filled_qty=fact.filled_qty, avg_price=fact.avg_price)
+                    self._apply_fills(cid)
+                    if state == IntentState.PROTECTION_SUBMITTING:
+                        self.ledger.transition_intent(
+                            intent_id, IntentState.PROTECTED,
+                            f"recovery: protection confirmed {cid}", correlation_id=intent_id)
+                    report["resolved"].append(entry)
+                elif fact.status in ("TRIGGERED", "FINISHED"):
+                    self._apply_fills(cid)
+                    fill_state = self._protection_fill_state(order)
+                    if fill_state is not None:
+                        self.ledger.update_order(cid, state=fill_state)
+                    report["unresolved"].append({
+                        **entry,
+                        "reason": ("authoritative fill recorded; awaits position reconciliation"
+                                   if fill_state else
+                                   "algo terminal/triggered without authoritative fill"),
+                    })
+                else:
+                    # TRIGGERED / FINISHED / EXPIRED / CANCELLED / UNKNOWN：
+                    # 状态名不等于成交或平仓事实；保持未决，等待 fill/position 证据。
+                    self.ledger.update_order(cid, state=fact.status)
+                    report["unresolved"].append({
+                        **entry,
+                        "reason": "non-fill status; protection leg awaits fill/position evidence",
+                    })
 
             elif order["order_kind"] == "CLOSE":
                 if fact.status == "FILLED" or self._exchange_flat():
@@ -183,6 +206,17 @@ class Orchestrator:
                 states=[IntentState.PROTECTION_DEGRADED.value]):
             self._repair_protection(intent["intent_id"])
         self._boot_position_audit(report, pre_fact, pre_intents)
+        # 持久化 RECOVERY_REQUIRED 本身就是尚未收敛事实。即使本轮没有
+        # pending order 可查询，也不得以空 unresolved 报告制造确定性。
+        for intent in self.ledger.list_intents(
+                states=[IntentState.RECOVERY_REQUIRED.value]):
+            if not any(e.get("intent_id") == intent["intent_id"]
+                       for e in report["unresolved"]):
+                report["unresolved"].append({
+                    "intent_id": intent["intent_id"],
+                    "fact": "RECOVERY_REQUIRED",
+                    "reason": "persisted recovery state has not converged",
+                })
         kill = self.ledger.kill_state()
         report["kill_engaged"] = bool(kill["engaged"])
         fact = self.ledger.get_position_fact(self.symbol)
@@ -605,6 +639,17 @@ class Orchestrator:
                         cid, state="FILLED", filled_qty=fact.filled_qty,
                         avg_price=fact.avg_price)
                     fired.append(order["order_kind"])
+                elif fact.status in ("TRIGGERED", "FINISHED"):
+                    self._apply_fills(cid)
+                    fill_state = self._protection_fill_state(order)
+                    if fill_state is None:
+                        self.ledger.update_order(cid, state=fact.status)
+                        self.ledger.engage_kill(
+                            f"protection execution unverified {cid}: {fact.status}")
+                        cancel_unknown = True
+                    else:
+                        self.ledger.update_order(cid, state=fill_state)
+                        fired.append(order["order_kind"])
                 elif fact.status == "NEW":
                     # OCO 兄弟腿撤销：仓位已平，残留保护单成为孤儿挂单。
                     # 撤单结果未知时无法确认孤儿已清除 → 熔断（fail-safe）
@@ -615,6 +660,11 @@ class Orchestrator:
                         self.ledger.engage_kill(
                             f"sibling cancel unknown after exchange close {cid}")
                         cancel_unknown = True
+                elif fact.status not in ("CANCELLED", "NOT_FOUND"):
+                    self.ledger.update_order(cid, state=fact.status)
+                    self.ledger.engage_kill(
+                        f"protection execution unverified {cid}: {fact.status}")
+                    cancel_unknown = True
             if cancel_unknown:
                 self.ledger.transition_intent(
                     iid, IntentState.RECOVERY_REQUIRED,
@@ -690,8 +740,34 @@ class Orchestrator:
                 self.ledger.update_order(
                     order["client_order_id"], state=pf.status,
                     filled_qty=pf.filled_qty, avg_price=pf.avg_price)
+            elif pf.status in ("TRIGGERED", "FINISHED"):
+                self._apply_fills(order["client_order_id"])
+                fill_state = self._protection_fill_state(order)
+                if fill_state is None:
+                    cid = order["client_order_id"]
+                    self.ledger.update_order(cid, state=pf.status)
+                    self.ledger.set_position_fact(
+                        self.symbol, PositionFactState.UNKNOWN,
+                        source="protection-sync",
+                        note=f"protection execution unverified {cid}: {pf.status}")
+                    return {"success": False, "intent_id": intent_id,
+                            "reason": f"protection execution unverified {cid}: {pf.status}"}
+                any_fired = True
+                self.ledger.update_order(
+                    order["client_order_id"], state=fill_state)
             elif pf.status == "CANCELLED":
                 self.ledger.update_order(order["client_order_id"], state="CANCELLED")
+            elif pf.status == "NEW":
+                self.ledger.update_order(order["client_order_id"], state="ACTIVE")
+            else:
+                cid = order["client_order_id"]
+                self.ledger.update_order(cid, state=pf.status)
+                self.ledger.set_position_fact(
+                    self.symbol, PositionFactState.UNKNOWN,
+                    source="protection-sync",
+                    note=f"protection execution unverified {cid}: {pf.status}")
+                return {"success": False, "intent_id": intent_id,
+                        "reason": f"protection execution unverified {cid}: {pf.status}"}
 
         pos = self._safe_position()
         exchange_qty = abs(pos.signed_qty) if pos is not None else None
@@ -939,8 +1015,15 @@ class Orchestrator:
         )
         try:
             ack = self.exchange.submit_order(req)
+            if ack.status == "NEW":
+                state = "ACTIVE"
+            elif ack.status in ("FILLED", "PARTIALLY_FILLED"):
+                state = ack.status
+            else:
+                raise SubmitUnknownError(
+                    f"protection ack status not authoritative: {ack.status}")
             self.ledger.update_order(
-                cid, state="ACTIVE" if ack.status == "NEW" else "FILLED",
+                cid, state=state,
                 exchange_order_id=ack.exchange_order_id,
                 filled_qty=ack.filled_qty, avg_price=ack.avg_price)
         except SubmitUnknownError:
@@ -1088,8 +1171,9 @@ class Orchestrator:
         sign = 1.0 if order["side"] == "SELL" else -1.0
         return round((fill.price - entry_avg) * fill.qty * sign, 10)
 
-    def _apply_fills(self, client_order_id: str) -> None:
+    def _apply_fills(self, client_order_id: str) -> int:
         order = self.ledger.get_order(client_order_id)
+        inserted_count = 0
         for fill in self.exchange.fills(client_order_id):
             realized = self._realized_pnl(order, fill) if order else 0.0
             inserted = self.ledger.insert_fill(
@@ -1097,6 +1181,16 @@ class Orchestrator:
                 fill.fee, fill.side, fill.filled_at, realized_pnl=realized)
             if not inserted:
                 continue  # 重复 Fill 事件不重复记账
+            inserted_count += 1
+        return inserted_count
+
+    def _protection_fill_state(self, order: Dict[str, Any]) -> Optional[str]:
+        fills = self.ledger.fills_for_order(order["client_order_id"])
+        filled_qty = sum(float(f["qty"]) for f in fills)
+        if filled_qty <= 1e-12:
+            return None
+        return ("FILLED" if filled_qty + 1e-12 >= float(order["quantity"])
+                else "PARTIALLY_FILLED")
 
     def _safe_query_order(self, client_order_id: str):
         try:

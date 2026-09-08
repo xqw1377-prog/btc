@@ -5,9 +5,9 @@ docs/baseline/reference_tests/）验证已退役 BinancePort 的 raw→typed 映
 同一业务合同在当前内核适配器上仍然成立：本文件针对
 aurora/kernel/binance_exchange.py 重写，使用 MagicMock client，不触网。
 
-仍为 G0-4 的部分（不在本批实现，仅登记）：workingType/closePosition/
-timeInForce/price 等条件单字段、HEDGE 与 ONE_WAY 账户模式核对、错误码与
-限频语义、真实 testnet 协议验证。
+G0-4A 已落地的部分：条件保护腿迁移 Algo API（见 test_binance_exchange.py）、
+workingType/closePosition 互斥合同、HEDGE/ONE_WAY 参数映射、-4120/限频
+错误码分类。仍留 G0-4B/C：真实 testnet 端点探测与 Algo 生命周期实证。
 """
 import os
 import sys
@@ -22,7 +22,9 @@ from aurora.kernel.port import OrderKind, OrderRequest  # noqa: E402
 
 class BinanceExchangeMappingTests(unittest.TestCase):
     def _adapter(self, client):
-        return BinanceExchange(client, symbol="BTCUSDT", allow_mutate=True)
+        return BinanceExchange(
+            client, symbol="BTCUSDT", allow_mutate=True,
+            position_mode="ONE_WAY")
 
     def test_submit_query_cancel_mapping(self):
         client = MagicMock()

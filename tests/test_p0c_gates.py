@@ -263,5 +263,76 @@ class G10GhostAndUnknownEnterRecovery(KernelHarness):
         self.assertEqual(rec.status, ReconcileStatus.DRIFT_DETECTED)
 
 
+class G4AlgoLegNotAutoFill(KernelHarness):
+    """G0-4A：Algo 状态名不是成交事实——TRIGGERED/FINISHED 保护腿保持未决。"""
+
+    def test_triggered_protection_leg_stays_unresolved(self):
+        self.orch.open_position("LONG", 0.01, intent_id="G4T")
+        # 模拟 Algo 状态迁移到 TRIGGERED（尚未有实际订单/成交证据）
+        self.exchange._orders["G4T-SL"]["status"] = "TRIGGERED"
+        report = self.orch.recover()
+        order = self.ledger.get_order("G4T-SL")
+        self.assertEqual(order["state"], "TRIGGERED")
+        self.assertNotEqual(order["state"], "FILLED")
+        self.assertEqual(self.ledger.fills_for_order("G4T-SL"), [])
+        self.assertTrue(any("G4T-SL" in e.get("cid", "")
+                            or "G4T-SL" in str(e) for e in report["unresolved"]))
+        submits = list(self.exchange.submit_log)
+        for _ in range(3):
+            repeated = self.orch.recover()
+            self.assertTrue(repeated["unresolved"])
+            self.assertEqual(self.ledger.fills_for_order("G4T-SL"), [])
+            self.assertEqual(self.exchange.submit_log, submits)
+            self.assertEqual(self.ledger.get_position_fact("BTCUSDT")["state"],
+                             PositionFactState.UNKNOWN.value)
+        self.assertFalse(self.orch.open_position("LONG", 0.01)["success"])
+
+    def test_finished_protection_leg_not_treated_as_close(self):
+        self.orch.open_position("LONG", 0.01, intent_id="G4F")
+        self.exchange._orders["G4F-SL"]["status"] = "FINISHED"
+        report = self.orch.recover()
+        order = self.ledger.get_order("G4F-SL")
+        self.assertEqual(order["state"], "FINISHED")
+        # FINISHED ≠ 平仓事实：仓位仍是 open，无 fill 入账
+        self.assertEqual(self.ledger.fills_for_order("G4F-SL"), [])
+        pos = self.exchange.position("BTCUSDT")
+        self.assertNotEqual(pos.signed_qty, 0.0)
+        self.assertTrue(report["unresolved"])
+
+    def test_triggered_plus_authoritative_fill_and_flat_can_reconcile(self):
+        self.orch.open_position("LONG", 0.01, intent_id="G4E")
+        self.exchange.fire_protection("G4E-SL", price=98.0)
+        # Algo 查询返回 TRIGGERED，不返回 FILLED；真实 fill 独立存在。
+        self.exchange._orders["G4E-SL"]["status"] = "TRIGGERED"
+        report = self.orch.recover()
+        self.assertEqual(len(self.ledger.fills_for_order("G4E-SL")), 1)
+        self.assertEqual(self.ledger.get_order("G4E-SL")["state"], "FILLED")
+        self.assertEqual(self.ledger.get_intent("G4E")["state"],
+                         IntentState.RECONCILED.value)
+        self.assertEqual(report["unresolved"], [])
+
+    def test_flat_snapshot_and_algo_terminal_state_do_not_prove_fills(self):
+        for status in ("TRIGGERED", "FINISHED", "UNKNOWN", "EXPIRED"):
+            with self.subTest(status=status), tempfile.TemporaryDirectory() as tmp:
+                ledger = Ledger(os.path.join(tmp, "ledger.db"))
+                exchange = FakeExchange()
+                orch = Orchestrator(ledger, exchange, instance_id="algo-test")
+                try:
+                    orch.recover()
+                    self.assertTrue(orch.open_position(
+                        "LONG", 0.01, intent_id="flat-algo")["success"])
+                    exchange.seed_external_position(-0.01, 100.0)
+                    exchange._orders["flat-algo-SL"]["status"] = status
+                    for _ in range(3):
+                        report = orch.recover()
+                        self.assertTrue(report["unresolved"], status)
+                        self.assertTrue(report["kill_engaged"])
+                        self.assertNotEqual(ledger.get_intent("flat-algo")["state"],
+                                            IntentState.RECONCILED.value)
+                        self.assertEqual(ledger.fills_for_order("flat-algo-SL"), [])
+                finally:
+                    ledger.close()
+
+
 if __name__ == "__main__":
     unittest.main()
