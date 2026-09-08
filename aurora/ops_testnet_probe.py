@@ -20,7 +20,11 @@ import os
 import sys
 from typing import Any, Dict, Optional
 
-from aurora.kernel.binance_exchange import ALGO_WORKING_TYPE, BinanceExchange
+from aurora.kernel.binance_exchange import (
+    ALGO_LIST_REQUIRED_FIELDS,
+    ALGO_WORKING_TYPE,
+    BinanceExchange,
+)
 from aurora.p0_boundary import (
     RunMode,
     SafetyViolation,
@@ -33,10 +37,20 @@ _READ_PATHS = frozenset((
     "accountConfig", "openAlgoOrders", "algoOrder", "rateLimit/order",
     "userTrades", "allOrders",
 ))
-_ALGO_FIELDS = frozenset((
-    "algoId", "clientAlgoId", "symbol", "side", "positionSide", "type",
-    "triggerPrice", "quantity", "closePosition", "workingType", "algoStatus",
-))
+# G0-4D-R1：列表行必备字段直接采用内核合同（orderType 别名感知）
+_ALGO_FIELDS = ALGO_LIST_REQUIRED_FIELDS
+_ORDER_TYPE_ALIASES = ("orderType", "type")
+
+
+def _missing_fields(row: Dict[str, Any], required: Any) -> list:
+    missing = []
+    for field in required:
+        if field == "orderType":
+            if not any(alias in row for alias in _ORDER_TYPE_ALIASES):
+                missing.append("orderType")
+        elif field not in row:
+            missing.append(field)
+    return sorted(missing)
 _TRADES_FIELDS = frozenset((
     "symbol", "orderId", "qty", "price", "realizedPnl", "commission", "time",
 ))
@@ -70,7 +84,8 @@ def _schema(rows: Any, required: frozenset) -> Dict[str, Any]:
         return {"status": "CONTRACT_INCOMPLETE", "reason": "response is not a list"}
     if not rows:
         return {"status": "EMPTY", "count": 0, "schema": "NOT_OBSERVED"}
-    missing = sorted(required - set(rows[0]))
+    missing = _missing_fields(rows[0], required) if isinstance(rows[0], dict) \
+        else sorted(required)
     if missing:
         return {"status": "CONTRACT_INCOMPLETE", "count": len(rows), "missing": missing}
     return {"status": "PASS", "count": len(rows), "schema": "OBSERVED"}

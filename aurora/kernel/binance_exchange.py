@@ -48,6 +48,60 @@ ALGO_ORDER_PATH = "algoOrder"
 ALGO_WORKING_TYPE = "MARK_PRICE"
 _ALGO_LEG_ID = re.compile(r"-(?:SL|TP)(?:$|\d+$|-(?:TOPUP|R)\d*$)")
 
+# ---------------------------------------------------------------------------
+# G0-4D-R1 Algo schema 兼容合同（依据 2026-09-08 真实 TESTNET 只读探测，
+# 证据 evidence/g0-4d/）：
+#
+# 真实 wire 事实：
+# - 单条查询与列表行的订单类型字段名都是 `orderType`，没有 `type`；
+# - `actualOrderId` 是条件字段（单查/触发后出现，列表行可为空串）；
+# - 列表行与单条响应**不是**同构 schema，必须分开定义必备字段。
+#
+# 领域模型统一为 order_type；wire 别名只存在于本 adapter 层。
+# ---------------------------------------------------------------------------
+
+# wire 订单类型字段别名（规范名在前）：提交响应/单查/列表统一走此规范化。
+_ORDER_TYPE_WIRE_ALIASES = ("orderType", "type")
+
+# 列表行必备字段（openAlgoOrders 行）：安全判断所需的最小集合。
+ALGO_LIST_REQUIRED_FIELDS = (
+    "algoId", "clientAlgoId", "symbol", "side", "positionSide",
+    "orderType", "triggerPrice", "quantity", "workingType", "algoStatus",
+)
+# 单条查询必备字段（algoOrder by clientAlgoId；提交 echo 同口径）。
+ALGO_SINGLE_REQUIRED_FIELDS = (
+    "algoId", "clientAlgoId", "symbol", "side", "positionSide",
+    "orderType", "triggerPrice", "quantity", "closePosition", "workingType",
+    "algoStatus",
+)
+# 条件字段：actualOrderId 仅在触发后/单查详情出现；缺失本身不是错误，
+# 但它链接的权威 fill 才能落账（TRIGGERED ≠ FILLED）。
+ALGO_CONDITIONAL_FIELDS = ("actualOrderId",)
+
+
+def _wire_order_type(raw: dict) -> Optional[str]:
+    """R1.1：wire `orderType`/`type` → 领域 order_type 的唯一规范化入口。
+
+    - 只有一个别名 → 取值；
+    - 两个别名都在且一致 → 取规范名 orderType 的值；
+    - 两个别名都在但值冲突 → fail closed（禁止 or 静默吞掉）；
+    - 都缺 → None（由调用方按必备字段合同报错）。
+    """
+    observed = []
+    for name in _ORDER_TYPE_WIRE_ALIASES:
+        if name in raw and raw[name] is not None:
+            observed.append((name, str(raw[name]).upper()))
+    if not observed:
+        return None
+    canonical = observed[0][1]
+    for _name, value in observed[1:]:
+        if value != canonical:
+            raise RuntimeError(
+                "algo wire orderType conflict: "
+                + ", ".join(f"{n}={v}" for n, v in observed)
+                + "; refusing silent alias fallback")
+    return canonical
+
 
 @dataclass(frozen=True)
 class AlgoOrderFact:
@@ -76,6 +130,18 @@ def _required(raw: dict, field: str):
     return raw[field]
 
 
+def _required_wire(raw: dict, field: str):
+    """必备字段检查：orderType 走别名规范化，其余按精确名。"""
+    if field == "orderType":
+        value = _wire_order_type(raw)
+        if value is None:
+            raise RuntimeError(
+                "algo response missing orderType (wire aliases: "
+                + "|".join(_ORDER_TYPE_WIRE_ALIASES) + ")")
+        return value
+    return _required(raw, field)
+
+
 def _bool_field(raw: dict, field: str) -> bool:
     value = _required(raw, field)
     if isinstance(value, bool):
@@ -94,7 +160,7 @@ def _algo_fact(raw: dict) -> AlgoOrderFact:
         symbol=str(_required(raw, "symbol")),
         side=str(_required(raw, "side")).upper(),
         position_side=str(_required(raw, "positionSide")).upper(),
-        order_type=str(_required(raw, "type")).upper(),
+        order_type=str(_required_wire(raw, "orderType")).upper(),
         trigger_price=float(_required(raw, "triggerPrice")),
         qty=float(_required(raw, "quantity")),
         close_position=_bool_field(raw, "closePosition"),
@@ -374,6 +440,10 @@ class BinanceExchange(ExchangePort):
         except (KeyError, TypeError, ValueError, RuntimeError) as exc:
             raise SubmitUnknownError(f"algo submit response incomplete: {exc}") from exc
         expected = self._algo_params(req)
+        # R1 审计（三条 wire path）：SEND 侧参数名 `type` 来自 4A 冻结
+        # 合同，未经真实写验证（受控写入阶段首个 ACK 现场核验）；
+        # RESPONSE 侧经 _required_wire 规范化，orderType/type 双别名
+        # 兼容、冲突 fail closed。不假设 SEND/RESPOND 同构。
         if (
             fact.client_algo_id != req.client_order_id
             or fact.symbol != expected["symbol"]

@@ -5,6 +5,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from aurora.kernel import binance_exchange  # noqa: E402
 from aurora.kernel.binance_exchange import BinanceExchange  # noqa: E402
 from aurora.kernel.port import (  # noqa: E402
     CancelUnknownError,
@@ -534,3 +535,82 @@ class BinanceExchangeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class G04DR1AlgoSchemaCompatibilityTests(unittest.TestCase):
+    """G0-4D-R1：真实 TESTNET schema 兼容合同（脱敏 fixture）。
+
+    fixture 来自 2026-09-08 真实只读探测（evidence/g0-4d/）：
+    单条 Algo 响应无 wire `type`，订单类型字段为 `orderType`。
+    """
+
+    REAL_SINGLE_ALGO_RESPONSE = {
+        "actualOrderId": "", "actualPrice": "0.00000",
+        "algoId": 1000000192798918, "algoStatus": "NEW",
+        "algoType": "CONDITIONAL",
+        "clientAlgoId": "V5S_XRP_1788567120000_0001",
+        "closePosition": False, "createTime": 1788567331558,
+        "goodTillDate": 0, "icebergQuantity": None,
+        "orderType": "STOP_MARKET", "positionSide": "SHORT",
+        "price": "0.0000", "priceMatch": "NONE", "priceProtect": False,
+        "quantity": "3222.3", "reduceOnly": True,
+        "selfTradePreventionMode": "EXPIRE_MAKER", "side": "BUY",
+        "symbol": "XRPUSDT", "timeInForce": "GTC", "tpOrderType": "",
+        "triggerPrice": "1.4380", "triggerTime": 0,
+        "updateTime": 1788567331563, "workingType": "CONTRACT_PRICE",
+    }
+
+    def _fact(self, raw):
+        return binance_exchange._algo_fact(raw)
+
+    def test_real_testnet_single_payload_maps(self):
+        fact = self._fact(dict(self.REAL_SINGLE_ALGO_RESPONSE))
+        self.assertEqual(fact.order_type, "STOP_MARKET")
+        self.assertEqual(fact.status, "NEW")
+        self.assertEqual(fact.working_type, "CONTRACT_PRICE")
+        self.assertEqual(fact.symbol, "XRPUSDT")
+        self.assertIsNone(fact.actual_order_id)  # 条件字段：空串 = 未触发
+
+    def test_order_type_wire_alias_type_also_accepted(self):
+        raw = dict(self.REAL_SINGLE_ALGO_RESPONSE)
+        del raw["orderType"]
+        raw["type"] = "STOP_MARKET"
+        self.assertEqual(self._fact(raw).order_type, "STOP_MARKET")
+
+    def test_both_aliases_agree_maps_once(self):
+        raw = dict(self.REAL_SINGLE_ALGO_RESPONSE)
+        raw["type"] = "STOP_MARKET"  # 与 orderType 一致
+        self.assertEqual(self._fact(raw).order_type, "STOP_MARKET")
+
+    def test_both_aliases_conflict_fails_closed(self):
+        raw = dict(self.REAL_SINGLE_ALGO_RESPONSE)
+        raw["type"] = "TAKE_PROFIT_MARKET"  # 与 orderType 冲突
+        with self.assertRaises(RuntimeError) as ctx:
+            self._fact(raw)
+        self.assertIn("conflict", str(ctx.exception))
+
+    def test_both_aliases_absent_fails_closed(self):
+        raw = dict(self.REAL_SINGLE_ALGO_RESPONSE)
+        del raw["orderType"]
+        with self.assertRaises(RuntimeError) as ctx:
+            self._fact(raw)
+        self.assertIn("missing orderType", str(ctx.exception))
+
+    def test_list_and_single_contracts_are_separate(self):
+        # R1.2：列表/单条不是同构 schema；wire `type` 不在任何合同里
+        # （规范化后统一为 orderType）；closePosition 仅单查必备；
+        # actualOrderId 永远是条件字段。
+        for contract in (binance_exchange.ALGO_LIST_REQUIRED_FIELDS,
+                         binance_exchange.ALGO_SINGLE_REQUIRED_FIELDS):
+            self.assertNotIn("type", contract)
+            self.assertIn("orderType", contract)
+        self.assertIn("closePosition", binance_exchange.ALGO_SINGLE_REQUIRED_FIELDS)
+        self.assertNotIn("closePosition", binance_exchange.ALGO_LIST_REQUIRED_FIELDS)
+        self.assertEqual(binance_exchange.ALGO_CONDITIONAL_FIELDS,
+                         ("actualOrderId",))
+
+    def test_real_payload_fits_list_contract_shape(self):
+        # 单查字段是列表字段的超集（列表行已观察到的字段更少）
+        self.assertTrue(
+            set(binance_exchange.ALGO_LIST_REQUIRED_FIELDS)
+            <= set(binance_exchange.ALGO_SINGLE_REQUIRED_FIELDS))
