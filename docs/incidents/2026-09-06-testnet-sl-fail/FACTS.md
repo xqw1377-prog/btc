@@ -31,7 +31,9 @@ KILL                           ACTIVE
 AUTO_TESTNET                   DENIED
 LIVE                           NO-GO
 G0-4A                          CLOSED-OFFLINE
-G0-4B / G0-4C                  HOLD
+G0-4B                          CLOSED-OFFLINE
+G0-4B_COMMIT                   1bb1ecf
+G0-4C                          HOLD
 ```
 
 事故调查 **不是 CLOSED-CLEAN**。仓位风险可关；证据残留保持 OPEN。
@@ -42,8 +44,9 @@ G0-4B / G0-4C                  HOLD
 P0-1 当时（2026-09-08T02:18Z）交易所仍持有 LONG 0.007。该快照保留在「六问」；现行仓位以文末「人工平仓复核」为准。
 
 ```text
-HEAD_BASELINE                 8026c69
-WORKTREE                      G0-4A 封口（禁止对交易所运行）
+G0-4A_COMMIT                  7a10302
+G0-4B_COMMIT                  1bb1ecf
+WORKTREE                      禁止对交易所运行
 P0-1_POSITION_SNAPSHOT        LONG 0.007 UNPROTECTED（历史）
 CURRENT_POSITION              KNOWN_FLAT
 PROTECTION                    NONE
@@ -93,7 +96,7 @@ KNOWN_FLAT + CLOSE_PROVENANCE_UNKNOWN
 
 不是 CLOSED-CLEAN，不是「已找到 SELL」。不得为账本平衡补造 synthetic SELL / fee / pnl / manual order id。
 
-账本订单行把 FILLED 记成 PARTIALLY_FILLED / filled_qty=0，保护提交时还用了 `filled qty=0.0`。这是同一事故里的第二层记账错误，G0-4B/C 必须一起收，但不能用自动代码去「修复」这笔仓。
+账本订单行把 FILLED 记成 PARTIALLY_FILLED / filled_qty=0，保护提交时还用了 `filled qty=0.0`。G0-4B 已在离线内核钉死「fills 聚合才是保护数量真源、ACK 只是早期观察」；**不得**用自动代码改写本 intent 的旧订单行。
 
 Kill 原因必须改成描述事实的词（后续代码冻结，不在本收口改 live ledger）：
 

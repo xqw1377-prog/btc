@@ -9,7 +9,9 @@
 ## 当前正式状态（2026-09-08）
 
 ```text
-HEAD_BASELINE                 8026c69
+G0-4A_COMMIT                  7a10302
+G0-4B_COMMIT                  1bb1ecf
+HEAD                          cd93850
 TESTNET INCIDENT              INCIDENT_LOCKED
                               INCIDENT_POSITION_STATE = RECOVERED
                               INCIDENT_EVIDENCE_STATE = OPEN_RESIDUAL
@@ -24,7 +26,8 @@ TESTNET INCIDENT              INCIDENT_LOCKED
 
 G0-1A / G0-1B / G0-2 / G0-3   CLOSED
 G0-4A                         CLOSED-OFFLINE
-G0-4B / G0-4C                 HOLD
+G0-4B                         CLOSED-OFFLINE
+G0-4C                         HOLD
 G0-5                          OPEN（执行资格前置）
 AUTOMATIC_TESTNET_RESUME      DENIED
 LIVE                          NO-GO

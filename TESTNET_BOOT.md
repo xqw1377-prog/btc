@@ -98,7 +98,9 @@ EXIT_MECHANISM                UNKNOWN
 SYSTEM_EXECUTION_QUALIFIED    NO
 KILL                          ACTIVE
 G0-4A                         CLOSED-OFFLINE
-G0-4B / G0-4C                 HOLD
+G0-4B                         CLOSED-OFFLINE
+G0-4B_COMMIT                  1bb1ecf
+G0-4C                         HOLD
 AUTO_TESTNET                  DENIED
 LIVE                          NO-GO
 ```
