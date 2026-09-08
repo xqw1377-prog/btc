@@ -78,17 +78,28 @@ EXECUTION BOUNDARY            FROZEN      6b2cc7c
 EXECUTE_AUTHORIZED            FALSE
 EXECUTION AUTHORIZATION       NOT ISSUED
 REAL WRITE PATH               DENIED
-NEXT STAGE                    E1 RISK SEMANTICS（HOLD）
+NEXT STAGE                    E2 STRATEGY V2（HOLD）
 STRATEGY V2 / BACKTEST        HOLD
 PASS-2 / THIRD SESSION        HOLD / DENIED
 E0 ACCOUNTING TRUTH           CLOSED-OFFLINE
   FILLS → PNL → CAPITAL       PASS
   FEES IN NET PNL             PASS
-  FUNDING                     NOT YET AUTHORITATIVE / E1
-  EQUITY LABEL                fills+fees authoritative; not full economic NAV
+  FUNDING                     AUTHORITATIVE（income_events → equity）
+  EQUITY LABEL                fills+fees+funding authoritative; not full economic NAV
   RESTART WATERMARK           PASS（derivative cache；ledger rebuild 为 oracle）
   BAR-PRICE CLOSE PNL         PROHIBITED
 E0 ≠ STRATEGY PROFITABILITY   账可信 ≠ 策略赚钱
+E1 RISK SEMANTICS             CLOSED-OFFLINE
+  VOL UNITS                   vol_atr_pct authoritative
+  SL/TP AUTHORITY             RiskGate final
+  RISK-BUDGET SIZING          risk_budget/stop_distance
+  FUNDING RATE VETO           wired
+  FUNDING LEDGER              income_events
+  FUNDING INCOMPLETE          OPEN denied / CLOSE allowed
+E1 ≠ STRATEGY EDGE            风险语义冻结 ≠ 策略盈利证据
+ACCOUNTING TRUTH              ESTABLISHED-OFFLINE
+RISK SEMANTICS                ESTABLISHED-OFFLINE
+STRATEGY EDGE                 NO-EVIDENCE
                               仍是写盘前门 ≠ legacy dead-man
 CTR-20260908-01               STOP AT P2 / NO EXCHANGE WRITE
 EXECUTION AUTHORIZATION       NOT ISSUED
@@ -108,7 +119,7 @@ P0-GOVERNANCE-REPAIR          CLOSED          f0efb2b
   GATE-2  production_main → cannot bypass incident governance
   GATE-3  incident authority missing/unreadable/invalid → UNKNOWN
           → deny boot → never synthesize CLEAR
-OFFLINE REGRESSION            465 PASS
+OFFLINE REGRESSION            480 PASS
 REAL EXCHANGE WRITES          0
 EXECUTE_AUTHORIZED            FALSE
 INCIDENT KILL / LOCK          ACTIVE
@@ -187,8 +198,9 @@ STRATEGY / V2                 HOLD
 内存移动止损、波动单位）不因未列入上表而消失。
 
 下一阶段顺序冻结为：
-`E1 RISK SEMANTICS → E2 STRATEGY V2 → E3 BACKTEST / WALK-FORWARD / OOS`。
+`E2 STRATEGY V2 → E3 BACKTEST / WALK-FORWARD / OOS`。
 E0 已 CLOSED-OFFLINE（账从 fills 重建；**不等于策略盈利证据**）。
+E1 已 CLOSED-OFFLINE（风险语义冻结；**不等于策略 edge 证据**）。
 回测主 benchmark 必须包含 `BTC HODL`，并报告 Excess BTC、
 BTC-denominated NAV / drawdown / CAGR、fee/funding drag 与 turnover；
 USDT 收益仅为第二视角。

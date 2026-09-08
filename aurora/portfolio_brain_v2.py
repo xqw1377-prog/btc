@@ -7,6 +7,7 @@ from .risk_gate import RiskGate
 from .capital_objective import CapitalObjectiveLayer
 from .regime_memory import RegimeMemoryModel
 from .signal_orthogonalizer import SignalOrthogonalizer
+from .risk_semantics import VolatilityUnits, proposed_sl_tp_pct, VOL_ATR_HIGH, VOL_ATR_MID
 
 class PortfolioBrainV2:
     def __init__(self, total_capital: float):
@@ -32,9 +33,13 @@ class PortfolioBrainV2:
 
     def process(self, signals: List[Signal], regime: str, confidence: float,
                 volatility: float, price: float, atr: float, current_ts: float,
-                features: Dict[str, Any] = None, bar_id=None) -> TradeIntent:
+                features: Dict[str, Any] = None, bar_id=None,
+                funding_rate: float = 0.0, spread_pct: float = 0.001) -> TradeIntent:
 
         self.position_mgr.update_price(price)
+        feats = features or {}
+        vol_units = VolatilityUnits.from_features({**feats, "close": price, "atr": atr})
+        vol_atr_pct = vol_units.vol_atr_pct if vol_units.vol_atr_pct > 0 else 0.0
 
         regime_state = self.regime_memory.update(
             regime, confidence, features or {}, bar_id=bar_id)
@@ -61,24 +66,29 @@ class PortfolioBrainV2:
                     confidence=0, risk_level=RiskLevel.LOW,
                     reason=f"Regime not stable ({regime_state['duration']}/{self.regime_memory.confirmation_count})"
                 )
-            intent = self._evaluate_entry(orthogonal_signals, effective_regime, effective_confidence, volatility, price, atr)
+            intent = self._evaluate_entry(
+                orthogonal_signals, effective_regime, effective_confidence,
+                vol_atr_pct, price, atr)
+
+        signal_size_pct = intent.size_pct if intent.action == "OPEN" else 0.0
+        objective_mult = self.capital_objective.get_position_multiplier()
+        regime_weight = self.regime_memory.get_regime_weight()
 
         intent = self.risk_gate.approve(
             intent, self.position_mgr.position,
-            volatility=volatility, regime=effective_regime, confidence=effective_confidence,
-            current_ts=current_ts
+            vol_atr_pct=vol_atr_pct, regime=effective_regime,
+            confidence=effective_confidence,
+            funding_rate=funding_rate, spread_pct=spread_pct,
+            current_ts=current_ts,
+            objective_mult=objective_mult,
+            regime_weight=regime_weight,
+            signal_size_pct=signal_size_pct,
         )
-
-        if intent.action == "OPEN":
-            objective_mult = self.capital_objective.get_position_multiplier()
-            regime_weight = self.regime_memory.get_regime_weight()
-            intent.size_pct *= objective_mult * regime_weight
-            intent.size_pct = max(0.02, min(0.35, intent.size_pct))
 
         return intent
 
     def _evaluate_entry(self, signals: List[Signal], regime: str,
-                        confidence: float, volatility: float,
+                        confidence: float, vol_atr_pct: float,
                         price: float, atr: float) -> TradeIntent:
 
         weights = self.regime_weights.get(regime, self.regime_weights["TRANSITION"])
@@ -127,27 +137,16 @@ class PortfolioBrainV2:
 
         side = Intent.LONG if net_score > 0 else Intent.SHORT
 
-        vol_adj = 1.0 / (1.0 + volatility * 3)
+        vol_adj = 1.0 / (1.0 + vol_atr_pct * 30)
         size_pct = min(abs(net_score) * vol_adj * agreement, 0.40)
         size_pct = max(size_pct, 0.03)
 
-        if regime == "TREND":
-            sl_mult = 2.0
-            tp_mult = 3.0
-        elif regime == "RANGE":
-            sl_mult = 1.0
-            tp_mult = 1.5
-        else:
-            sl_mult = 1.5
-            tp_mult = 2.0
-
-        sl_pct = (atr * sl_mult) / price if price > 0 else 0.02
-        tp_pct = (atr * tp_mult) / price if price > 0 else 0.04
+        sl_pct, tp_pct = proposed_sl_tp_pct(regime, atr, price)
 
         risk_level = RiskLevel.LOW
-        if volatility > 0.04:
+        if vol_atr_pct >= VOL_ATR_HIGH:
             risk_level = RiskLevel.HIGH
-        elif volatility > 0.025:
+        elif vol_atr_pct >= VOL_ATR_MID:
             risk_level = RiskLevel.MID
 
         return TradeIntent(
