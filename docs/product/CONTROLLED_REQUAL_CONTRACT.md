@@ -150,3 +150,31 @@ LIVE                                 仍 NO-GO
 实施本合同 = 按 DESIGN REVIEW 的 A–F 修复预构建文件并补齐 P0/P1
 两阶段，单独提交；随后由用户单独发出第一次受控写入开工令
 （含 permit 签发）。本合同本身不构成执行授权。
+
+---
+
+## 附录：运行时范围授权（R2 最终形态，取代源码常量翻转）
+
+EXECUTE_AUTHORIZED 源码常量降级为 dead-man 记录（保持 False，不参与门）。
+真实写路径的三条件门（`check_execution_conditions`）：
+
+```text
+C1  EXECUTION START ORDER      state/testnet/<fp>/execution_start_order.json
+                               schema=ctr-start-order-v1，status=OPEN，
+                               未过期，含 session_id/scope/上限
+C2  RUNTIME SCOPED PERMIT      qualification_permit.json，
+                               session_id 必须等于 C1 的 session_id，
+                               未作废、未过期；bind 即预占并持久化
+C3  OPERATOR FLAG              同一次调用显式给出
+                               --i-execute-controlled-requal
+```
+
+签发通道唯一：`--issue-execution-window --session-id <id> --issued-by
+<操作员> --valid-hours <N>` —— 同一窗口写 START ORDER + scoped permit，
+不存在独立于开工令的 permit。
+
+会话终态（一票终结）：`sessions/<session_id>.final.json` ——
+COMPLETE 与 STOP 均写入；存在终态的 session 永久拒绝再次执行；
+STOP 同时作废 permit（P1 WIRE ACK 不一致 → 无第二次 entry）。
+端到端 AURORA 形态 Algo 单查（workingType=MARK_PRICE 的完整
+query_algo_order PASS）在受控会话 P3 现场核验，R1 的解析层合同不变。

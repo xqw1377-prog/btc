@@ -43,10 +43,28 @@ G0-4D EXECUTION               COMPLETE
 G0-4D EVIDENCE                SEALED
 G0-4D QUALIFICATION GATE      UNBLOCKED（EXECUTE 仍 DENIED）
 G0-5                          CLOSED-OFFLINE
+
+CONTROLLED TESTNET IMPLEMENTATION   CLOSED-OFFLINE
+CONTROLLED HARNESS            READY
+PERMIT TOOLING                READY（签发仅随开工窗口）
+P0-P5 LIFECYCLE               IMPLEMENTED
+WIRE ACK EVIDENCE             IMPLEMENTED
+ACTIVE_CONFIRMED CONTRACT     IMPLEMENTED
+MARK_PRICE NOTIONAL GATE      IMPLEMENTED
+IDENTITY GATE                 IMPLEMENTED
+EXECUTION AUTHORIZATION       RUNTIME-SCOPED / NOT ISSUED
+EXECUTION START ORDER         NOT ISSUED
+SCOPED PERMIT                 NOT ISSUED
+REAL TESTNET WRITE            DENIED
 KILL                          ACTIVE
 INCIDENT_LOCK                 ACTIVE
 AUTO_TESTNET                  DENIED
-CONTROLLED_REQUAL             HARNESS-READY / EXECUTE DENIED
+CONTROLLED_REQUAL             IMPLEMENTATION SEALED 5336467
+                              EXECUTION AUTHORIZATION  NOT ISSUED
+                              REAL TESTNET WRITE  DENIED
+EXECUTION GATE (R2)           code-default-false + START ORDER(OPEN)
+                              + exact-session permit + operator flag
+                              三者同时满足才可写；会话终态一票终结
 EXECUTION_WP                  BOUNDARY-FROZEN / NOT AUTHORIZED TO EXECUTE
                               SEALED 6b2cc7c
                               PERMIT NOT ISSUED

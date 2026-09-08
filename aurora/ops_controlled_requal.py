@@ -41,6 +41,7 @@ FORBIDDEN_INTENT_MARK = "0650a39f56e3"
 CLIENT_ID_NS = "AURORA-CTR-"
 PERMIT_TTL_HOURS_DEFAULT = 72.0
 PERMIT_SCHEMA = "ctr-permit-v1"
+START_ORDER_SCHEMA = "ctr-start-order-v1"
 # 硬开关：开工令未到之前，任何 live 写入口必须失败。
 EXECUTE_AUTHORIZED = False
 
@@ -178,17 +179,20 @@ def qualification_permit_path(
 
 def issue_permit(
     issued_by: str,
+    session_id: str,
     ttl_hours: float = PERMIT_TTL_HOURS_DEFAULT,
     fingerprint: str = INCIDENT_FINGERPRINT,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """签发一次性许可并持久化。签发 ≠ 执行：执行还需开工令。"""
+    """签发绑定精确 session 的一次性许可并持久化。签发 ≠ 执行。"""
     if not issued_by or not issued_by.strip():
         raise SafetyViolation("[CTR] permit requires issued_by.")
+    assert_session_id(session_id)
     issued_at = (now or datetime.now(timezone.utc))
     expires_at = issued_at + timedelta(hours=float(ttl_hours))
     permit = {
         "schema": PERMIT_SCHEMA,
+        "session_id": session_id,
         "scope": {"env": "TESTNET", "symbol": SYMBOL, "side": SIDE},
         "max_qty": MAX_QTY,
         "max_notional_usdt": MAX_NOTIONAL_USDT,
@@ -199,6 +203,7 @@ def issue_permit(
         "issued_at": issued_at.isoformat(),
         "issued_by": issued_by.strip(),
         "expires_at": expires_at.isoformat(),
+        "voided": False,
     }
     path = qualification_permit_path(fingerprint)
     os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -210,7 +215,9 @@ def issue_permit(
 
 
 def load_permit(fingerprint: str = INCIDENT_FINGERPRINT,
-                now: Optional[datetime] = None) -> Dict[str, Any]:
+                now: Optional[datetime] = None,
+                expected_session_id: Optional[str] = None,
+                ) -> Dict[str, Any]:
     path = qualification_permit_path(fingerprint)
     if not os.path.exists(path):
         raise SafetyViolation(
@@ -219,6 +226,10 @@ def load_permit(fingerprint: str = INCIDENT_FINGERPRINT,
         permit = json.load(fh)
     if permit.get("schema") != PERMIT_SCHEMA:
         raise SafetyViolation("[CTR] permit schema mismatch.")
+    if permit.get("voided"):
+        raise SafetyViolation(
+            "[CTR] permit voided by a terminated session; "
+            "no second entry under this window.")
     scope = permit.get("scope") or {}
     if (scope.get("env") != "TESTNET" or scope.get("symbol") != SYMBOL
             or scope.get("side") != SIDE):
@@ -228,7 +239,164 @@ def load_permit(fingerprint: str = INCIDENT_FINGERPRINT,
     expires = datetime.fromisoformat(permit["expires_at"])
     if (now or datetime.now(timezone.utc)) >= expires:
         raise SafetyViolation("[CTR] permit expired.")
+    if expected_session_id is not None and \
+            permit.get("session_id") != expected_session_id:
+        raise SafetyViolation(
+            "[CTR] PERMIT_SESSION_MISMATCH: permit is scoped to "
+            f"{permit.get('session_id')}, order demands {expected_session_id}.")
     return permit
+
+
+# ---------------------------------------------------------------------------
+# Execution Start Order + 会话终态（运行时范围授权三条件之二/之三）
+# 代码默认 false（EXECUTE_AUTHORIZED 常量仅作 dead-man 记录，不再是门）；
+# 真实写路径 = START ORDER（OPEN、未过期）
+# + 精确 session 的 runtime permit（未作废、同 session_id）
+# + 操作员在调用中显式给出 --i-execute-controlled-requal。
+# ---------------------------------------------------------------------------
+
+def start_order_path(fingerprint: str = INCIDENT_FINGERPRINT) -> str:
+    return os.path.join(
+        state_root(), "testnet", fingerprint, "execution_start_order.json")
+
+
+def session_final_path(session_id: str,
+                       fingerprint: str = INCIDENT_FINGERPRINT) -> str:
+    return os.path.join(state_root(), "testnet", fingerprint,
+                        "sessions", f"{session_id}.final.json")
+
+
+def assert_session_id(session_id: str) -> None:
+    if not session_id or not session_id.strip():
+        raise SafetyViolation("[CTR] session_id required.")
+    if any(ch.isspace() for ch in session_id) or "/" in session_id:
+        raise SafetyViolation("[CTR] session_id must be a bare token.")
+    if FORBIDDEN_INTENT_MARK in session_id:
+        raise SafetyViolation("[CTR] session_id must not embed incident id.")
+
+
+def issue_execution_window(
+    session_id: str,
+    issued_by: str,
+    valid_hours: float = PERMIT_TTL_HOURS_DEFAULT,
+    fingerprint: str = INCIDENT_FINGERPRINT,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """同一受控窗口：冻结 session + 发 START ORDER + 签发 scoped permit。
+
+    这是 permit 的唯一签发通道——不存在独立于开工令的 permit。
+    """
+    assert_session_id(session_id)
+    if not issued_by or not issued_by.strip():
+        raise SafetyViolation("[CTR] execution window requires issued_by.")
+    issued_at = (now or datetime.now(timezone.utc))
+    expires_at = issued_at + timedelta(hours=float(valid_hours))
+    order = {
+        "schema": START_ORDER_SCHEMA,
+        "session_id": session_id,
+        "status": "OPEN",
+        "scope": {"env": "TESTNET", "symbol": SYMBOL, "side": SIDE},
+        "max_qty": MAX_QTY,
+        "max_notional_usdt": MAX_NOTIONAL_USDT,
+        "client_id_ns": CLIENT_ID_NS,
+        "account_fingerprint": fingerprint,
+        "issued_at": issued_at.isoformat(),
+        "issued_by": issued_by.strip(),
+        "expires_at": expires_at.isoformat(),
+    }
+    order_path = start_order_path(fingerprint)
+    os.makedirs(os.path.dirname(order_path), exist_ok=True)
+    tmp = f"{order_path}.tmp"
+    with open(tmp, "w") as fh:
+        json.dump(order, fh, indent=2, sort_keys=True)
+    os.replace(tmp, order_path)
+    permit = issue_permit(
+        issued_by=issued_by, session_id=session_id, ttl_hours=valid_hours,
+        fingerprint=fingerprint, now=now)
+    return {"order": order, "permit": permit}
+
+
+def load_start_order(
+    fingerprint: str = INCIDENT_FINGERPRINT,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    path = start_order_path(fingerprint)
+    if not os.path.exists(path):
+        raise SafetyViolation(
+            "[CTR] no EXECUTION START ORDER; writes stay denied.")
+    with open(path) as fh:
+        order = json.load(fh)
+    if order.get("schema") != START_ORDER_SCHEMA:
+        raise SafetyViolation("[CTR] start order schema mismatch.")
+    if order.get("status") != "OPEN":
+        raise SafetyViolation(
+            f"[CTR] start order status {order.get('status')} != OPEN.")
+    expires = datetime.fromisoformat(order["expires_at"])
+    if (now or datetime.now(timezone.utc)) >= expires:
+        raise SafetyViolation("[CTR] execution window expired.")
+    return order
+
+
+def check_execution_conditions(
+    fingerprint: str = INCIDENT_FINGERPRINT,
+    now: Optional[datetime] = None,
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """三条件门：START ORDER（OPEN 未过期）+ 精确 session 的 runtime
+    permit（未作废未过期、session 匹配）+ 会话无终态记录。
+    操作员显式调用旗标由调用方保证。返回 (order, permit)。"""
+    order = load_start_order(fingerprint, now=now)
+    sid = session_id or order["session_id"]
+    if sid != order["session_id"]:
+        raise SafetyViolation(
+            f"[CTR] session_id {sid} != start order {order['session_id']}.")
+    permit = load_permit(fingerprint, now=now, expected_session_id=sid)
+    final = read_session_final(sid, fingerprint)
+    if final is not None:
+        raise SafetyViolation(
+            f"[CTR] session {sid} already terminated "
+            f"({final.get('outcome')}); no second entry.")
+    return {"order": order, "permit": permit, "session_id": sid}
+
+
+def read_session_final(session_id: str,
+                       fingerprint: str = INCIDENT_FINGERPRINT,
+                       ) -> Optional[Dict[str, Any]]:
+    path = session_final_path(session_id, fingerprint)
+    if not os.path.exists(path):
+        return None
+    with open(path) as fh:
+        return json.load(fh)
+
+
+def write_session_final(session_id: str, payload: Dict[str, Any],
+                        fingerprint: str = INCIDENT_FINGERPRINT) -> None:
+    path = session_final_path(session_id, fingerprint)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    payload = {"schema": "ctr-session-final-v1", "session_id": session_id,
+               **payload, "at": datetime.now(timezone.utc).isoformat()}
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as fh:
+        json.dump(payload, fh, indent=2, sort_keys=True)
+    os.replace(tmp, path)
+
+
+def void_permit(reason: str,
+                fingerprint: str = INCIDENT_FINGERPRINT) -> None:
+    """会话失败即作废 permit：同一窗口内绝不允许第二次 entry。"""
+    path = qualification_permit_path(fingerprint)
+    if not os.path.exists(path):
+        return
+    with open(path) as fh:
+        permit = json.load(fh)
+    if permit.get("voided"):
+        return
+    permit["voided"] = True
+    permit["voided_reason"] = reason
+    tmp = f"{path}.tmp"
+    with open(tmp, "w") as fh:
+        json.dump(permit, fh, indent=2, sort_keys=True)
+    os.replace(tmp, path)
 
 
 def bind_permit(
@@ -505,6 +673,7 @@ def run_session(
     incident_path: Optional[str] = None,
     wire_log: Optional[Any] = None,
     baseline: Optional[Dict[str, Any]] = None,
+    session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
     """六阶段受控会话（供离线 FakeExchange；真实路径经 execute_live）。
 
@@ -591,6 +760,7 @@ def run_session(
     return {
         "success": True,
         "phase": "COMPLETE",
+        "sessionId": session_id,
         "intentId": intent,
         "opened": {"state": opened.get("state"),
                    "protected_qty": protected_qty},
@@ -604,10 +774,86 @@ def run_session(
     }
 
 
-def execute_live(**_kwargs: Any) -> Dict[str, Any]:
-    """真实写入口。开工令未翻转 EXECUTE_AUTHORIZED 之前恒拒。"""
-    raise SafetyViolation(
-        "[CTR] EXECUTE_AUTHORIZED=false; refuse all TESTNET writes.")
+def execute_live(
+    *,
+    source: Optional[ConfigSource] = None,
+    client: Optional[Any] = None,
+    orch: Optional[Any] = None,
+    baseline: Optional[Dict[str, Any]] = None,
+    wire_log: Optional[Any] = None,
+    incident_path: Optional[str] = None,
+    qty: float = MAX_QTY,
+    stop_price: Optional[float] = None,
+    mark_price: Optional[float] = None,
+    now: Optional[datetime] = None,
+) -> Dict[str, Any]:
+    """真实受控写入入口（三条件门满足时才可能走到真实请求）。
+
+    三条件：START ORDER（OPEN 未过期）+ 精确 session 的 runtime permit
+    （未作废未过期、session 匹配）+ 调用方显式执行指令。
+    代码常量 EXECUTE_AUTHORIZED 只是 dead-man 记录，不再是门；
+    结束（无论 COMPLETE/STOP）写会话终态，STOP 同时作废 permit——
+    同一 session 绝无第二次 entry。
+    """
+    if source is None or stop_price is None:
+        raise SafetyViolation(
+            "[CTR] execute requires config source and stop price; "
+            "and a valid execution window (START ORDER + scoped permit).")
+    conditions = check_execution_conditions(now=now)
+    session_id = conditions["session_id"]
+    permit = conditions["permit"]
+    if orch is None:
+        from aurora.armed_runtime import namespaced_ledger_path
+        from aurora.kernel.binance_exchange import BinanceExchange
+        from aurora.kernel.ledger import Ledger
+        from aurora.kernel.orchestrator import Orchestrator
+
+        if client is None:
+            raise SafetyViolation(
+                "[CTR] execute requires an exchange client "
+                "(network path) — none provided.")
+        observed_mark: Optional[float] = None
+        if mark_price is None:
+            try:
+                raw = client.futures_mark_price(symbol=SYMBOL)
+                observed_mark = float((raw or {}).get("markPrice") or 0)
+            except Exception as exc:
+                raise SafetyViolation(
+                    f"[CTR] mark price observation failed: "
+                    f"{type(exc).__name__}") from exc
+            mark_price = observed_mark
+        exchange = BinanceExchange(client, symbol=SYMBOL, allow_mutate=True)
+        exchange.verify_position_mode(
+            source.get("AURORA_EXPECTED_POSITION_MODE") or "HEDGE")
+        ledger = Ledger(namespaced_ledger_path(
+            RunMode.TESTNET, INCIDENT_FINGERPRINT))
+        orch = Orchestrator(ledger, exchange, symbol=SYMBOL)
+    try:
+        out = run_session(
+            orch, permit=permit, qty=qty, mark_price=mark_price,
+            stop_price=stop_price, incident_path=incident_path,
+            wire_log=wire_log, baseline=baseline, session_id=session_id)
+    except SafetyViolation as exc:
+        write_session_final(session_id, {"outcome": "STOP",
+                                         "reason": str(exc)[:200]})
+        void_permit(f"session {session_id} STOP: {exc}")
+        raise
+    if out.get("success"):
+        write_session_final(session_id, {"outcome": "COMPLETE",
+                                         "intentId": out.get("intentId")})
+        permit["voided"] = True
+        permit["voided_reason"] = "session COMPLETE; one lifecycle only"
+        path = qualification_permit_path(INCIDENT_FINGERPRINT)
+        tmp = f"{path}.tmp"
+        with open(tmp, "w") as fh:
+            json.dump(permit, fh, indent=2, sort_keys=True)
+        os.replace(tmp, path)
+    else:
+        write_session_final(session_id, {"outcome": "STOP",
+                                         "phase": out.get("phase"),
+                                         "reason": out.get("reason")})
+        void_permit(f"session {session_id} STOP at {out.get('phase')}")
+    return out
 
 
 def main(argv=None) -> int:
@@ -616,11 +862,14 @@ def main(argv=None) -> int:
     parser.add_argument("--env-file", default=None)
     parser.add_argument("--qty", type=float, default=MAX_QTY)
     parser.add_argument("--mark-price", type=float, default=None)
+    parser.add_argument("--stop-price", type=float, default=None)
     parser.add_argument(
-        "--issue-permit", action="store_true",
-        help="issue the one-time qualification permit (does NOT execute)")
+        "--issue-execution-window", action="store_true",
+        help="同一受控窗口：冻结 session_id + 发 START ORDER + "
+             "签发 scoped permit（不执行）")
+    parser.add_argument("--session-id", default=None)
     parser.add_argument("--issued-by", default=None)
-    parser.add_argument("--ttl-hours", type=float,
+    parser.add_argument("--valid-hours", type=float,
                         default=PERMIT_TTL_HOURS_DEFAULT)
     parser.add_argument(
         "--i-execute-controlled-requal", action="store_true",
@@ -639,13 +888,22 @@ def main(argv=None) -> int:
     source = ConfigSource.load(env_file=env_file)
 
     try:
-        if args.issue_permit:
-            if not args.issued_by:
-                raise SafetyViolation("[CTR] --issue-permit requires --issued-by")
-            permit = issue_permit(
-                issued_by=args.issued_by, ttl_hours=args.ttl_hours)
-            print(json.dumps({"issued": True, "permit": permit},
-                             sort_keys=True, indent=2))
+        if args.issue_execution_window:
+            if not args.session_id or not args.issued_by:
+                raise SafetyViolation(
+                    "[CTR] --issue-execution-window requires "
+                    "--session-id and --issued-by")
+            window = issue_execution_window(
+                session_id=args.session_id, issued_by=args.issued_by,
+                valid_hours=args.valid_hours)
+            print(json.dumps({
+                "windowIssued": True,
+                "orderId": window["order"]["session_id"],
+                "permitSessionId": window["permit"]["session_id"],
+                "expiresAt": window["order"]["expires_at"],
+                "execute": "STILL DENIED — requires "
+                           "--i-execute-controlled-requal under this window",
+            }, sort_keys=True, indent=2))
             return 0
         report = plan(source, qty=args.qty, mark_price=args.mark_price)
     except SafetyViolation as exc:
@@ -659,12 +917,24 @@ def main(argv=None) -> int:
         return 2
 
     if args.i_execute_controlled_requal:
-        report["execute"] = "DENIED"
-        report["reason"] = (
-            "EXECUTE_AUTHORIZED=false; 开工令必须以单独提交翻转，"
-            "且需要有效 qualification permit。")
-        print(json.dumps(report, sort_keys=True, indent=2))
-        return 3
+        # 三条件门：START ORDER + 精确 session permit + 本显式旗标。
+        # 任一不满足 → DENIED(3)；全部满足 → 真实受控写入（P0-P5）。
+        from aurora.safety import build_client
+        try:
+            client = build_client(source.mode(), "controlled requal session",
+                                  environ=source.as_environ())
+            out = execute_live(source=source, client=client, qty=args.qty,
+                               stop_price=args.stop_price)
+        except SafetyViolation as exc:
+            print(json.dumps({
+                "package": "CONTROLLED_TESTNET_REQUAL",
+                "execute": "DENIED",
+                "status": "BLOCKED",
+                "reason": str(exc)[:200],
+            }, sort_keys=True, indent=2))
+            return 3
+        print(json.dumps(out, sort_keys=True, indent=2))
+        return 0 if out.get("success") else 1
 
     report["status"] = "PLAN"
     print(json.dumps(report, sort_keys=True, indent=2))

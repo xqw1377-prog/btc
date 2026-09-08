@@ -20,7 +20,11 @@ from aurora.kernel.fake_exchange import FakeExchange  # noqa: E402
 from aurora.kernel.ledger import Ledger  # noqa: E402
 from aurora.kernel.orchestrator import Orchestrator  # noqa: E402
 from aurora.ops_controlled_requal import (  # noqa: E402
+    check_execution_conditions,
     EXECUTE_AUTHORIZED,
+    issue_execution_window,
+    read_session_final,
+    write_session_final,
     FORBIDDEN_INTENT_MARK,
     INCIDENT_INTENT,
     MAX_NOTIONAL_USDT,
@@ -101,13 +105,27 @@ class CtrTestBase(unittest.TestCase):
         self.before = open(self.incident, "rb").read()
         self.permit_file = os.path.join(self._tmp.name,
                                         "qualification_permit.json")
-        patcher = mock.patch.object(
-            __import__("aurora.ops_controlled_requal", fromlist=["x"]),
-            "qualification_permit_path",
-            lambda *a, **k: self.permit_file)
-        patcher.start()
-        self.addCleanup(patcher.stop)
-        self.permit = issue_permit(issued_by="operator", fingerprint=FP)
+        import aurora.ops_controlled_requal as ocr
+        self.ocr = ocr
+        self._patches = [
+            mock.patch.object(ocr, "qualification_permit_path",
+                              lambda *a, **k: self.permit_file),
+            mock.patch.object(ocr, "start_order_path",
+                              lambda *a, **k: os.path.join(
+                                  self._tmp.name,
+                                  "execution_start_order.json")),
+            mock.patch.object(ocr, "session_final_path",
+                              lambda sid, *a, **k: os.path.join(
+                                  self._tmp.name, "sessions",
+                                  f"{sid}.final.json")),
+        ]
+        for p in self._patches:
+            p.start()
+            self.addCleanup(p.stop)
+        window = issue_execution_window(
+            session_id="CTR-TEST-001", issued_by="operator", fingerprint=FP)
+        self.order = window["order"]
+        self.permit = window["permit"]
 
     def _orch(self, exchange=None, ledger_name="controlled_requal.db"):
         ledger = Ledger(os.path.join(self._tmp.name, ledger_name))
@@ -200,7 +218,8 @@ class PlanGateTests(CtrTestBase):
 
 class PermitTests(CtrTestBase):
     def test_issue_load_and_expiry(self):
-        permit = issue_permit(issued_by="operator", ttl_hours=1.0,
+        permit = issue_permit(issued_by="operator", session_id="CTR-TEST-001",
+                              ttl_hours=1.0,
                               fingerprint=FP,
                               now=datetime(2026, 9, 8, tzinfo=timezone.utc))
         self.assertEqual(permit["scope"]["symbol"], "BTCUSDT")
@@ -371,12 +390,50 @@ class OfflineSessionTests(CtrTestBase):
                 planned_qty=MAX_QTY)
 
     def test_expired_permit_denies_session(self):
-        expired = issue_permit(issued_by="op", fingerprint=FP,
+        expired = issue_permit(issued_by="op", session_id="CTR-TEST-001",
+                               fingerprint=FP,
                                now=datetime(2026, 1, 1, tzinfo=timezone.utc))
         orch = self._orch()
         with self.assertRaises(SafetyViolation):
             run_session(orch, permit=expired, qty=MAX_QTY,
                         mark_price=100.0, stop_price=99.0)
+
+    def test_conditions_require_start_order(self):
+        os.remove(self.ocr.start_order_path(FP))
+        with self.assertRaises(SafetyViolation):
+            check_execution_conditions(fingerprint=FP,
+                                       session_id="CTR-TEST-001")
+
+    def test_conditions_refuse_permit_session_mismatch(self):
+        with open(self.permit_file) as fh:
+            permit = json.load(fh)
+        permit["session_id"] = "CTR-TAMPERED"
+        with open(self.permit_file, "w") as fh:
+            json.dump(permit, fh)
+        with self.assertRaises(SafetyViolation) as hc:
+            check_execution_conditions(fingerprint=FP,
+                                       session_id="CTR-TEST-001")
+        self.assertIn("PERMIT_SESSION_MISMATCH", str(hc.exception))
+
+    def test_session_final_blocks_second_run(self):
+        write_session_final("CTR-TEST-001",
+                            {"outcome": "COMPLETE"}, fingerprint=FP)
+        with self.assertRaises(SafetyViolation):
+            check_execution_conditions(fingerprint=FP,
+                                       session_id="CTR-TEST-001")
+
+    def test_issue_execution_window_cli(self):
+        env_file = os.path.join(self._tmp.name, "ctr.env")
+        with open(env_file, "w") as fh:
+            fh.write(f"TRADING_MODE=TESTNET\nTESTNET=true\n"
+                     f"BINANCE_API_KEY={KEY}\nBINANCE_API_SECRET=s\n"
+                     f"AURORA_ACCOUNT_FINGERPRINT={FP}\n")
+        code = main(["--env-file", env_file,
+                     "--issue-execution-window",
+                     "--session-id", "CTR-CLI-001",
+                     "--issued-by", "operator", "--valid-hours", "1"])
+        self.assertEqual(code, 0)
+        self.assertTrue(os.path.exists(self.ocr.start_order_path(FP)))
 
 
 class MainAndSourceTests(CtrTestBase):
@@ -385,17 +442,6 @@ class MainAndSourceTests(CtrTestBase):
 
     def test_main_execute_flag_still_denied(self):
         self.assertEqual(main(["--i-execute-controlled-requal"]), 3)
-
-    def test_issue_permit_cli(self):
-        env_file = os.path.join(self._tmp.name, "ctr.env")
-        with open(env_file, "w") as fh:
-            fh.write(f"TRADING_MODE=TESTNET\nTESTNET=true\n"
-                     f"BINANCE_API_KEY={KEY}\nBINANCE_API_SECRET=s\n"
-                     f"AURORA_ACCOUNT_FINGERPRINT={FP}\n")
-        code = main(["--env-file", env_file, "--issue-permit",
-                     "--issued-by", "operator", "--ttl-hours", "1"])
-        self.assertEqual(code, 0)
-        self.assertTrue(os.path.exists(self.permit_file))
 
     def test_missing_env_blocks(self):
         code = main(["--env-file",
