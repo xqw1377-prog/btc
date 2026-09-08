@@ -12,8 +12,7 @@
   ops_position_mode / ArmedRuntime 的调用方）必须从同一 ConfigSource
   取值，禁止各自加载环境文件到进程环境。
 
-未落地说明：aurora/ops_testnet_probe.py 属并行会话文件，落地时必须
-改为消费 ConfigSource（登记于 CAPABILITY_STATUS）。
+ops_testnet_probe 不在本包范围，不得借 G0-5 一并落地。
 """
 from __future__ import annotations
 

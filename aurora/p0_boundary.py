@@ -586,7 +586,7 @@ class BootContext:
     persist: Persistence
     lock: AccountLock
     broker: Optional[Broker]
-    executor: Optional[SafeExecutor]
+    executor: Optional[Any] = None  # G0-5D：恒为 None；旧 SafeExecutor 已退休
     status: str = "SAFE_IDLE"
 
 

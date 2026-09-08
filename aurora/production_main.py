@@ -131,13 +131,12 @@ class BinanceBroker:
 
 def _build_network_broker(mode: RunMode, source: Optional[ConfigSource] = None) -> BinanceBroker:
     # LIVE 未武装时必须在任何 Client 构造之前拒绝（构造主网 Client 即出网）。
-    if mode == RunMode.LIVE:
-        # 先查武装令牌：未武装时不得因环境未设 TRADING_MODE=LIVE 而走错门禁。
-        assert_not_live_trading(mode)
-        assert_live_dual_auth()
-    from binance.client import Client
-
     values = source.as_environ() if source is not None else os.environ
+    if mode == RunMode.LIVE:
+        # 门禁必须读同一份 ConfigSource，禁止再偷偷回落一份未审计的进程环境。
+        assert_not_live_trading(mode, values)
+        assert_live_dual_auth(values)
+    from binance.client import Client
     api_key = (values.get("BINANCE_API_KEY") or "").strip()
     api_secret = (values.get("BINANCE_API_SECRET") or "").strip()
     if not api_key or not api_secret:

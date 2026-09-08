@@ -34,7 +34,9 @@ G0-4A                          CLOSED-OFFLINE
 G0-4B                          CLOSED-OFFLINE
 G0-4B_COMMIT                   1bb1ecf
 G0-4C                          CLOSED-OFFLINE
+G0-4C_COMMIT                   5bfa311
 G0-4D                          HOLD
+G0-5                           CLOSED-OFFLINE
 ```
 
 事故调查 **不是 CLOSED-CLEAN**。仓位风险可关；证据残留保持 OPEN。

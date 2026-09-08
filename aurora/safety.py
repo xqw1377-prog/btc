@@ -54,8 +54,8 @@ def build_client(mode, purpose, environ=None):
         raise SafetyViolation("[P0] PAPER must not open an exchange client.")
     # LIVE：双重授权 + 武装令牌都通过后才允许构造主网 Client。
     if mode_enum == RunMode.LIVE:
-        assert_live_dual_auth(environ if environ is not None else None)
-        assert_not_live_trading(mode_enum)
+        assert_live_dual_auth(src)
+        assert_not_live_trading(mode_enum, src)
     api_key = src.get("BINANCE_API_KEY")
     api_secret = src.get("BINANCE_API_SECRET")
     if not api_key or not api_secret:

@@ -104,6 +104,10 @@ class ArmedRuntime:
             assert_not_live_trading(mode)
         if mode not in (RunMode.TESTNET, RunMode.LIVE):
             raise SafetyViolation(f"[P0] cannot arm execution in mode={mode}")
+        if not ledger_path:
+            raise SafetyViolation(
+                "[P0] attach requires an explicit namespaced ledger_path."
+            )
         probe = BinanceExchange(client, symbol=symbol, allow_mutate=False)
         observed = probe.position_mode_read()
         # G0-5A：期望模式必须由 ConfigSource 显式传入；仅当调用方完全
@@ -117,7 +121,7 @@ class ArmedRuntime:
                 f"[P0] position mode {observed} != approved {expected}; refuse attach.")
         exchange = BinanceExchange(
             client, symbol=symbol, allow_mutate=True, position_mode=observed)
-        path = ledger_path or namespaced_ledger_path(mode, "unbound")
+        path = ledger_path
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         ledger = Ledger(path)
         orch = Orchestrator(ledger, exchange, symbol=symbol)

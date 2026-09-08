@@ -179,7 +179,7 @@ class BuildClientRefusalTests(unittest.TestCase):
         from aurora.safety import build_client
 
         source = Path(safety_mod.__file__).read_text()
-        live_idx = source.find("assert_not_live_trading(mode_enum)")
+        live_idx = source.find("assert_not_live_trading(mode_enum")
         client_idx = source.find("Client(")
         self.assertGreater(live_idx, 0)
         self.assertGreater(client_idx, live_idx)

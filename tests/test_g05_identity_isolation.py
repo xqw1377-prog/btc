@@ -150,15 +150,46 @@ class StateIsolationTests(unittest.TestCase):
     def test_PAPER_STATE_ISOLATED(self):
         root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         legacy = os.path.join(root, "state", "p0_safety.json")
+        repo_paper = os.path.join(root, "state", "paper", "paper-local", "p0_safety.json")
         before = open(legacy, "rb").read() if os.path.exists(legacy) else None
-        env = {"TRADING_MODE": "PAPER"}
-        with mock.patch.dict(os.environ, env, clear=True):
-            from aurora import production_main
-            production_main.run_boot()
-        paper_path = namespaced_state_path(RunMode.PAPER, "paper-local")
-        self.assertTrue(os.path.exists(paper_path))
+        repo_paper_mtime = os.path.getmtime(repo_paper) if os.path.exists(repo_paper) else None
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_root = os.path.join(tmp, "state")
+            os.makedirs(fake_root)
+            with mock.patch("aurora.p0_boundary.state_root", return_value=fake_root):
+                with mock.patch.dict(os.environ, {"TRADING_MODE": "PAPER"}, clear=True):
+                    from aurora import production_main
+                    ctx = production_main.run_boot()
+                    try:
+                        paper_path = namespaced_state_path(RunMode.PAPER, "paper-local")
+                        self.assertTrue(os.path.exists(paper_path))
+                        self.assertTrue(paper_path.startswith(fake_root))
+                        self.assertFalse(os.path.exists(os.path.join(fake_root, "p0_safety.json")))
+                        self.assertFalse(os.path.exists(os.path.join(fake_root, "testnet")))
+                        self.assertFalse(os.path.exists(os.path.join(fake_root, "live")))
+                    finally:
+                        ctx.lock.release()
         after = open(legacy, "rb").read() if os.path.exists(legacy) else None
         self.assertEqual(before, after)  # PAPER 绝不修改遗留/TESTNET 状态
+        repo_paper_after = os.path.getmtime(repo_paper) if os.path.exists(repo_paper) else None
+        self.assertEqual(repo_paper_mtime, repo_paper_after)
+
+    def test_LIVE_STATE_ISOLATED(self):
+        live = namespaced_state_dir(RunMode.LIVE, "fp-live")
+        testnet = namespaced_state_dir(RunMode.TESTNET, "fp-live")
+        paper = namespaced_state_dir(RunMode.PAPER, "fp-live")
+        self.assertNotEqual(live, testnet)
+        self.assertNotEqual(live, paper)
+        self.assertIn(os.path.join("state", "live", "fp-live"), live)
+        self.assertNotEqual(
+            namespaced_ledger_path(RunMode.LIVE, "fp-live"),
+            namespaced_ledger_path(RunMode.TESTNET, "fp-live"))
+        with tempfile.TemporaryDirectory() as tmp:
+            ctx, persist, _env = _boot_testnet(tmp)
+            _legacy_close(ctx)
+            self.assertTrue(os.path.exists(persist))
+            self.assertNotIn(os.path.sep + "live" + os.path.sep, persist)
+            self.assertFalse(os.path.exists(os.path.join(tmp, "live")))
 
     def test_TESTNET_STATE_ISOLATED_cross_fingerprint_refused(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -271,6 +302,7 @@ class SafeExecutorRetirementTests(unittest.TestCase):
         boundary = Path("aurora/p0_boundary.py").read_text()
         self.assertNotIn("class SafeExecutor", boundary)
         self.assertNotIn("class OrderRecord", boundary)
+        self.assertNotIn("Optional[SafeExecutor]", boundary)
         # 导入层面：生产模块命名空间中没有执行器残留
         import aurora.production_main as pm
         import aurora.kernel.orchestrator as orch
@@ -278,14 +310,27 @@ class SafeExecutorRetirementTests(unittest.TestCase):
         self.assertFalse(hasattr(orch, "SafeExecutor"))
 
     def test_boot_context_executor_is_none(self):
-        with mock.patch.dict(os.environ, {"TRADING_MODE": "PAPER"}, clear=True):
-            from aurora import production_main
-            ctx = production_main.run_boot()
-            self.assertIsNone(ctx.executor)
-            ctx.lock.release()
+        with tempfile.TemporaryDirectory() as tmp:
+            fake_root = os.path.join(tmp, "state")
+            os.makedirs(fake_root)
+            with mock.patch("aurora.p0_boundary.state_root", return_value=fake_root):
+                with mock.patch.dict(os.environ, {"TRADING_MODE": "PAPER"}, clear=True):
+                    from aurora import production_main
+                    ctx = production_main.run_boot()
+                    try:
+                        self.assertIsNone(ctx.executor)
+                    finally:
+                        ctx.lock.release()
 
     def test_legacy_reference_still_importable(self):
         self.assertTrue(callable(LegacySafeExecutor.execute_open))
+
+    def test_attach_refuses_unbound_ledger(self):
+        from aurora.armed_runtime import ArmedRuntime
+
+        with self.assertRaises(SafetyViolation) as ctx:
+            ArmedRuntime.attach(RunMode.TESTNET, object(), ledger_path=None)
+        self.assertIn("explicit namespaced ledger_path", str(ctx.exception))
 
 
 if __name__ == "__main__":
