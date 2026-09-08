@@ -98,6 +98,30 @@ CREATE TABLE IF NOT EXISTS transitions (
     reason          TEXT NOT NULL,
     correlation_id  TEXT NOT NULL
 );
+
+-- E0：资本事实表。baseline 是单行不可变事实（一经写入不得改写，
+-- 换 baseline = 显式新事实，不允许静默漂移）；income_events 是账户级
+-- 资金费/收入事实（有符号金额，交易所事件时间为 cursor 真源）。
+CREATE TABLE IF NOT EXISTS capital_baseline (
+    id          INTEGER PRIMARY KEY CHECK (id = 1),
+    symbol      TEXT NOT NULL,
+    amount      REAL NOT NULL,
+    asset       TEXT NOT NULL DEFAULT 'USDT',
+    source      TEXT NOT NULL,        -- wallet_snapshot | backderived | constructor_fallback
+    note        TEXT DEFAULT '',
+    recorded_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS income_events (
+    income_id   TEXT PRIMARY KEY,     -- f"{tranId}:{time}:{symbol}"
+    symbol      TEXT NOT NULL,
+    income_type TEXT NOT NULL,        -- E0 只写 FUNDING_FEE
+    amount      REAL NOT NULL,        -- 有符号：正=收到，负=支付
+    asset       TEXT NOT NULL,
+    time_ms     INTEGER NOT NULL,     -- 交易所事件时间（cursor 真源）
+    recorded_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_income_events_time ON income_events(time_ms);
 """
 
 
@@ -424,8 +448,90 @@ class Ledger:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def set_baseline(
+        self,
+        symbol: str,
+        amount: float,
+        asset: str = "USDT",
+        source: str = "wallet_snapshot",
+        note: str = "",
+    ) -> bool:
+        """E0：写入资本基线（单行不可变事实）。
+
+        INSERT OR IGNORE：已存在 baseline 时二次写入不覆盖、返回 False。
+        换 baseline = 显式新事实（先人工处理旧行），禁止静默漂移。
+        """
+        with self._conn:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO capital_baseline"
+                " (id, symbol, amount, asset, source, note, recorded_at)"
+                " VALUES (1, ?, ?, ?, ?, ?, ?)",
+                (symbol, float(amount), asset, source, note, utc_now()),
+            )
+        return cur.rowcount > 0
+
+    def get_baseline(self) -> Optional[Dict[str, Any]]:
+        row = self._conn.execute(
+            "SELECT * FROM capital_baseline WHERE id = 1"
+        ).fetchone()
+        return dict(row) if row else None
+
+    def insert_income_event(
+        self,
+        income_id: str,
+        symbol: str,
+        income_type: str,
+        amount: float,
+        time_ms: int,
+        asset: str = "USDT",
+    ) -> bool:
+        """E0：幂等写入 funding / income 事实（有符号 amount）。"""
+        try:
+            with self._conn:
+                self._conn.execute(
+                    "INSERT INTO income_events"
+                    " (income_id, symbol, income_type, amount, asset, time_ms, recorded_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (income_id, symbol, income_type, amount, asset, time_ms, utc_now()),
+                )
+        except sqlite3.IntegrityError:
+            return False
+        return True
+
+    def list_income_events(self, income_type: Optional[str] = None) -> List[Dict[str, Any]]:
+        if income_type:
+            rows = self._conn.execute(
+                "SELECT * FROM income_events WHERE income_type = ? ORDER BY time_ms, income_id",
+                (income_type,),
+            ).fetchall()
+        else:
+            rows = self._conn.execute(
+                "SELECT * FROM income_events ORDER BY time_ms, income_id"
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def max_income_time_ms(self, income_type: Optional[str] = None) -> int:
+        if income_type:
+            row = self._conn.execute(
+                "SELECT COALESCE(MAX(time_ms), 0) AS m FROM income_events WHERE income_type = ?",
+                (income_type,),
+            ).fetchone()
+        else:
+            row = self._conn.execute(
+                "SELECT COALESCE(MAX(time_ms), 0) AS m FROM income_events"
+            ).fetchone()
+        return int(row["m"])
+
+    def sum_funding_net(self, income_type: str = "FUNDING_FEE") -> float:
+        """Signed funding sum (Binance: negative = paid out)."""
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(amount), 0.0) AS s FROM income_events WHERE income_type = ?",
+            (income_type,),
+        ).fetchone()
+        return float(row["s"])
+
     def accounting_aggregate(self) -> Dict[str, Any]:
-        """E0：fills 表聚合（不含 funding；funding 列预留）。"""
+        """E0/E1：fills + funding income 聚合。"""
         row = self._conn.execute(
             "SELECT COALESCE(SUM(realized_pnl), 0.0) AS gross,"
             " COALESCE(SUM(fee), 0.0) AS fees,"
@@ -436,10 +542,13 @@ class Ledger:
         ).fetchone()
         gross = float(row["gross"])
         fees = float(row["fees"])
+        funding_net = self.sum_funding_net()
         return {
             "gross_realized_pnl": gross,
             "total_fees": fees,
-            "net_pnl": gross - fees,
+            "funding_net": funding_net,
+            "funding_paid": -funding_net,
+            "net_pnl": gross - fees + funding_net,
             "fill_count": int(row["n"]),
         }
 

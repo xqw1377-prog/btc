@@ -107,5 +107,53 @@ class TransitionAuditTests(LedgerHarness):
         self.assertEqual(fact["qty"], 0.01)
 
 
+class CapitalFactsTests(LedgerHarness):
+    """E0 C1：capital_baseline / income_events 事实表。"""
+
+    def test_baseline_written_once_is_immutable(self):
+        # 首次写入成功；二次写入（即使金额不同）不得覆盖
+        self.assertTrue(self.ledger.set_baseline("BTCUSDT", 10000.0))
+        self.assertFalse(self.ledger.set_baseline("BTCUSDT", 99999.0))
+        row = self.ledger.get_baseline()
+        self.assertEqual(row["amount"], 10000.0)
+        self.assertEqual(row["source"], "wallet_snapshot")
+        self.assertEqual(row["symbol"], "BTCUSDT")
+
+    def test_baseline_survives_reopen(self):
+        self.ledger.set_baseline("BTCUSDT", 10000.0, source="backderived")
+        self.ledger.close()
+        reopened = Ledger(self.path)
+        row = reopened.get_baseline()
+        self.assertIsNotNone(row)
+        self.assertEqual(row["amount"], 10000.0)
+        self.assertEqual(row["source"], "backderived")
+        reopened.close()
+
+    def test_income_event_idempotent(self):
+        ok1 = self.ledger.insert_income_event(
+            "t1:1000:BTCUSDT", "BTCUSDT", "FUNDING_FEE", -0.37, 1000)
+        ok2 = self.ledger.insert_income_event(
+            "t1:1000:BTCUSDT", "BTCUSDT", "FUNDING_FEE", -0.37, 1000)
+        self.assertTrue(ok1)
+        self.assertFalse(ok2)  # 重复事实不重复记账
+        self.assertEqual(len(self.ledger.list_income_events()), 1)
+
+    def test_income_cursor_and_signed_sum(self):
+        self.ledger.insert_income_event("a:100:BTCUSDT", "BTCUSDT", "FUNDING_FEE", -0.5, 100)
+        self.ledger.insert_income_event("b:200:BTCUSDT", "BTCUSDT", "FUNDING_FEE", 0.25, 200)
+        self.ledger.insert_income_event("c:300:BTCUSDT", "BTCUSDT", "OTHER", 1.0, 300)
+        # cursor 取全部类型最大值（拉取游标不区分类型）
+        self.assertEqual(self.ledger.max_income_time_ms(), 300)
+        # funding 汇总只吃 FUNDING_FEE 且有符号
+        self.assertAlmostEqual(self.ledger.sum_funding_net(), -0.25)
+        # 按类型过滤列表
+        self.assertEqual(len(self.ledger.list_income_events("FUNDING_FEE")), 2)
+
+    def test_empty_income_state(self):
+        self.assertIsNone(self.ledger.get_baseline())
+        self.assertEqual(self.ledger.max_income_time_ms(), 0)
+        self.assertEqual(self.ledger.sum_funding_net(), 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()
