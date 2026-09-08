@@ -73,17 +73,20 @@ AUTO_TESTNET                  DENIED
 OFFLINE CONTRACTS             PROVEN
 READ-ONLY TESTNET             SEALED
 CONTROLLED REQUAL HARNESS     IMPLEMENTED
-PRE_EXECUTION_CONFORMANCE     ALIGNED TO 6b2cc7c
-EXECUTION BOUNDARY            FROZEN
+PRE_EXECUTION_CONFORMANCE     ALIGNED     eb0536b / 6ed46be
+EXECUTION BOUNDARY            FROZEN      6b2cc7c
+EXECUTE_AUTHORIZED            FALSE
+                              仍是写盘前门 ≠ legacy dead-man
 EXECUTION AUTHORIZATION       NOT ISSUED
 SCOPED PERMIT                 NOT ISSUED
 REAL WRITE PATH               DENIED
 CONTROLLED_REQUAL             IMPLEMENTATION SEALED 5336467
                               EXECUTION AUTHORIZATION  NOT ISSUED
                               REAL TESTNET WRITE  DENIED
-EXECUTION GATE (R2)           code-default-false + START ORDER(OPEN)
-                              + exact-session permit + operator flag
-                              三者同时满足才可写；会话终态一票终结
+WRITE GATES                   EXECUTE_AUTHORIZED
+                              + scoped permit（session/single_use/exact 0.001/未过期）
+                              + Execution Start Order
+                              构造写客户端之前同时满足；当前一项都未放行
 EXECUTION_WP                  BOUNDARY-FROZEN / NOT AUTHORIZED TO EXECUTE
                               SEALED 6b2cc7c
                               PERMIT NOT ISSUED

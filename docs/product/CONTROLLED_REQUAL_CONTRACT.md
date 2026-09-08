@@ -153,10 +153,12 @@ LIVE                                 仍 NO-GO
 
 ---
 
-## 附录：运行时范围授权（R2 最终形态，取代源码常量翻转）
+## 附录：运行时范围授权（R2 草案，**已作废对 EXECUTE_AUTHORIZED 的降级**）
 
-EXECUTE_AUTHORIZED 源码常量降级为 dead-man 记录（保持 False，不参与门）。
-真实写路径的三条件门（`check_execution_conditions`）：
+> 2026-09-08 用户裁定：`EXECUTE_AUTHORIZED` **仍是写盘前门**，不是 legacy dead-man。  
+> 本附录不得反向解释 `6b2cc7c`。真实写路径必须在构造写客户端之前同时满足布尔前门 + scoped permit + Start Order。
+
+真实写路径的条件（`assert_write_gates` / `check_execution_conditions`）：
 
 ```text
 C1  EXECUTION START ORDER      state/testnet/<fp>/execution_start_order.json
