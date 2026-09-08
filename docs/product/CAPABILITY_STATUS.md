@@ -78,8 +78,8 @@ EXECUTION BOUNDARY            FROZEN      6b2cc7c
 EXECUTE_AUTHORIZED            FALSE
 EXECUTION AUTHORIZATION       NOT ISSUED
 REAL WRITE PATH               DENIED
-NEXT STAGE                    E2 STRATEGY V2（HOLD）
-STRATEGY V2 / BACKTEST        HOLD
+NEXT STAGE                    E3 BACKTEST / WALK-FORWARD / OOS（HOLD）
+STRATEGY V2 / BACKTEST        V2 CLOSED-OFFLINE / BACKTEST HOLD
 PASS-2 / THIRD SESSION        HOLD / DENIED
 E0 ACCOUNTING TRUTH           CLOSED-OFFLINE
   FILLS → PNL → CAPITAL       PASS
@@ -89,7 +89,7 @@ E0 ACCOUNTING TRUTH           CLOSED-OFFLINE
   RESTART WATERMARK           PASS（derivative cache；ledger rebuild 为 oracle）
   BAR-PRICE CLOSE PNL         PROHIBITED
 E0 ≠ STRATEGY PROFITABILITY   账可信 ≠ 策略赚钱
-E1 RISK SEMANTICS             CLOSED-OFFLINE
+E1 RISK SEMANTICS             CLOSED-OFFLINE    89248f7
   VOL UNITS                   vol_atr_pct authoritative
   SL/TP AUTHORITY             RiskGate final
   RISK-BUDGET SIZING          risk_budget/stop_distance
@@ -100,6 +100,16 @@ E1 ≠ STRATEGY EDGE            风险语义冻结 ≠ 策略盈利证据
 ACCOUNTING TRUTH              ESTABLISHED-OFFLINE
 RISK SEMANTICS                ESTABLISHED-OFFLINE
 STRATEGY EDGE                 NO-EVIDENCE
+E2 STRATEGY V2                CLOSED-OFFLINE
+  NUMERAIRE                   BTC
+  CORE                        HOLD BTC
+  OVERLAY                     HTF daily LONG only
+  1M SIGNALS                  DIAGNOSTIC / NOT AUTHORITY
+  NET SHORT                   FORBIDDEN
+  STRATEGY IDENTITY           FROZEN
+E2 ≠ STRATEGY EDGE            身份冻结 ≠ excess BTC 证据
+E3 WALK-FORWARD/OOS           HOLD
+  NO OOS RETUNE               Strategy V2 不得边看 OOS 边改参数
                               仍是写盘前门 ≠ legacy dead-man
 CTR-20260908-01               STOP AT P2 / NO EXCHANGE WRITE
 EXECUTION AUTHORIZATION       NOT ISSUED
@@ -119,7 +129,7 @@ P0-GOVERNANCE-REPAIR          CLOSED          f0efb2b
   GATE-2  production_main → cannot bypass incident governance
   GATE-3  incident authority missing/unreadable/invalid → UNKNOWN
           → deny boot → never synthesize CLEAR
-OFFLINE REGRESSION            480 PASS
+OFFLINE REGRESSION            497 PASS
 REAL EXCHANGE WRITES          0
 EXECUTE_AUTHORIZED            FALSE
 INCIDENT KILL / LOCK          ACTIVE
@@ -138,7 +148,7 @@ EXECUTION_WP                  BOUNDARY-FROZEN / NOT AUTHORIZED TO EXECUTE
 LIVE                          NO-GO
 SYSTEM_EXECUTION_QUALIFIED    NO
 P0_SAFETY_STATUS              STALE / NOT AUTHORITATIVE
-STRATEGY / V2                 HOLD
+STRATEGY / V2                 CLOSED-OFFLINE / NO EDGE CLAIM
 ```
 
 证据残留可以永久 OPEN。G0-4D 只读复核：认证 PASS、普通读取 PASS、恢复证据 PARTIAL（EXIT-PROVENANCE-01 再确认 NOT_FOUND）；Algo 单查 schema 不匹配（真实字段 orderType）已经 **G0-4D-R1（95ece99）离线修复**：_algo_fact 双别名规范化（冲突 fail-closed）、list/single 分开合同、真实 fixture 回归；R1 后复测列表 PASS + 真实单查解析 PASS + workingType/身份守卫按合同工作 → 读协议升 PASS。修正附录 G0-4D-AMENDMENT.md。`CONTROLLED TESTNET REQUALIFICATION` 仅冻结写入边界，**EXECUTE DENIED**（且在 G0-4D 阻塞修复前不得解封）。`INCIDENT_LOCK` / 事故 kill / AUTO TESTNET / SYSTEM EXECUTION 均未解除。
@@ -198,9 +208,10 @@ STRATEGY / V2                 HOLD
 内存移动止损、波动单位）不因未列入上表而消失。
 
 下一阶段顺序冻结为：
-`E2 STRATEGY V2 → E3 BACKTEST / WALK-FORWARD / OOS`。
+`E3 BACKTEST / WALK-FORWARD / OOS`。
 E0 已 CLOSED-OFFLINE（账从 fills 重建；**不等于策略盈利证据**）。
 E1 已 CLOSED-OFFLINE（风险语义冻结；**不等于策略 edge 证据**）。
+E2 已 CLOSED-OFFLINE（BTC 本位身份冻结；**不等于 excess BTC 证据**）。
 回测主 benchmark 必须包含 `BTC HODL`，并报告 Excess BTC、
 BTC-denominated NAV / drawdown / CAGR、fee/funding drag 与 turnover；
 USDT 收益仅为第二视角。

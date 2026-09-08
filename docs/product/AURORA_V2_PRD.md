@@ -1,8 +1,9 @@
-# AURORA 2.0 产品方向（PROPOSED — 未获执行授权）
+# AURORA 2.0 产品方向（E2-R0 CONTRACT — 未获执行授权）
 
-> 状态：提案。本文不构成交易授权、不批准任何执行范围、不宣称
-> 所列能力已实现。当前真实能力以
+> 状态：E2 策略身份合同。本文不构成交易授权、不批准任何执行范围、
+> 不宣称已有 STRATEGY EDGE。当前真实能力以
 > [CAPABILITY_STATUS.md](CAPABILITY_STATUS.md) 为准。
+> 细则：[E2_STRATEGY_V2.md](E2_STRATEGY_V2.md)
 
 ## 定位
 

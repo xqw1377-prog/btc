@@ -66,9 +66,8 @@ Full offline regression (465+ prior + E1 new)
 Exchange writes: 0
 ```
 
-## Explicit non-goals (remain E2+)
+## Explicit non-goals (remain E3+)
 
-- Strategy V2 signal redesign
 - Backtest / walk-forward / BTC HODL benchmark
 - LIVE / AUTO TESTNET authorization
 - Trailing stop exchange sync

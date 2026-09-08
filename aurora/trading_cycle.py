@@ -29,6 +29,7 @@ from aurora.risk_semantics import (
     fetch_funding_rate,
     qty_from_authorized_intent,
 )
+from aurora.strategy_v2 import decide_overlay, horizon_from_frame
 from aurora.signal_providers import (
     BreakoutSignalProvider,
     MeanReversionSignalProvider,
@@ -163,6 +164,15 @@ class TradingCycle:
         rows = self.client.futures_klines(symbol=self.symbol, interval="1m", limit=limit)
         return klines_to_frame(rows)
 
+    def fetch_horizon_klines(self, limit: int = 120) -> Optional[pd.DataFrame]:
+        """Read-only daily bars for Strategy V2. Failure → incomplete HTF, not a write."""
+        try:
+            rows = self.client.futures_klines(
+                symbol=self.symbol, interval="1d", limit=limit)
+            return klines_to_frame(rows)
+        except Exception:
+            return None
+
     def decide(self, df: pd.DataFrame) -> Dict[str, Any]:
         feats = self.features.get_latest_features(df, exclude_forming=True)
         if not feats or not feats.get("close"):
@@ -174,12 +184,16 @@ class TradingCycle:
             self._arm_evidence(bar_id)
             bar_id = None
         regime = self.state_engine.identify_regime(feats, bar_id=bar_id)
+        # 1m signals remain diagnostic only; they are not OPEN/CLOSE authority.
         signals = [
             self.trend.generate(feats, regime["regime"]),
             self.breakout.generate(feats, df),
             self.momentum.generate(feats),
             self.mr.generate(feats),
         ]
+        horizon = horizon_from_frame(self.fetch_horizon_klines(), self.features)
+        directive = decide_overlay(
+            horizon, overlay_open=self.brain.position_mgr.position.is_open)
         funding_rate = fetch_funding_rate(self.client, self.symbol)
         if funding_rate is None:
             funding_rate = 0.0
@@ -196,6 +210,7 @@ class TradingCycle:
             bar_id=bar_id,
             funding_rate=funding_rate,
             spread_pct=spread_pct,
+            strategy_directive=directive,
         )
         if bar_id is not None and regime.get("bar_status") == "NEW_CLOSED_BAR":
             self._save_evidence(bar_id)
@@ -207,6 +222,12 @@ class TradingCycle:
             "regime": regime,
             "bar_id": bar_id,
             "bar_status": regime.get("bar_status"),
+            "strategy": {
+                "sleeve": directive.sleeve,
+                "thesis": directive.thesis,
+                "htf_complete": directive.htf_complete,
+                "numeraire": "BTC",
+            },
         }
 
     def _sync_accounting(self, *, full_replay: bool = False) -> None:

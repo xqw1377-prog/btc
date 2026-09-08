@@ -8,6 +8,7 @@ from .capital_objective import CapitalObjectiveLayer
 from .regime_memory import RegimeMemoryModel
 from .signal_orthogonalizer import SignalOrthogonalizer
 from .risk_semantics import VolatilityUnits, proposed_sl_tp_pct, VOL_ATR_HIGH, VOL_ATR_MID
+from .strategy_v2 import StrategyDirective, reject_short
 
 class PortfolioBrainV2:
     def __init__(self, total_capital: float):
@@ -34,19 +35,30 @@ class PortfolioBrainV2:
     def process(self, signals: List[Signal], regime: str, confidence: float,
                 volatility: float, price: float, atr: float, current_ts: float,
                 features: Dict[str, Any] = None, bar_id=None,
-                funding_rate: float = 0.0, spread_pct: float = 0.001) -> TradeIntent:
+                funding_rate: float = 0.0, spread_pct: float = 0.001,
+                strategy_directive: StrategyDirective = None) -> TradeIntent:
+        """E2: Strategy V2 is OPEN/CLOSE thesis authority; 1m signals are diagnostic."""
 
         self.position_mgr.update_price(price)
         feats = features or {}
-        vol_units = VolatilityUnits.from_features({**feats, "close": price, "atr": atr})
+        directive = strategy_directive or StrategyDirective.core_hold(
+            "Strategy V2 directive required; default CORE HOLD BTC")
+
+        overlay_atr = directive.overlay_atr if directive.overlay_atr > 0 else atr
+        vol_units = VolatilityUnits.from_features({
+            **feats, "close": price, "atr": overlay_atr,
+            "vol_atr_pct": directive.overlay_vol_atr_pct or feats.get("vol_atr_pct") or 0.0,
+        })
         vol_atr_pct = vol_units.vol_atr_pct if vol_units.vol_atr_pct > 0 else 0.0
 
         regime_state = self.regime_memory.update(
             regime, confidence, features or {}, bar_id=bar_id)
-        effective_regime = regime_state['regime']
-        effective_confidence = regime_state['confidence']
+        effective_regime = "TREND" if directive.thesis == "OVERLAY_LONG" else regime_state["regime"]
+        effective_confidence = (
+            directive.confidence if directive.action == "OPEN" else regime_state["confidence"]
+        )
 
-        if not self.capital_objective.should_trade():
+        if not self.capital_objective.should_trade() and not self.position_mgr.position.is_open:
             return TradeIntent(
                 action="HOLD", side=Intent.FLAT, size_pct=0,
                 stop_loss_pct=0, take_profit_pct=0,
@@ -54,21 +66,19 @@ class PortfolioBrainV2:
                 reason="Capital objective blocked"
             )
 
-        orthogonal_signals = self.orthogonalizer.orthogonalize(signals)
-
         if self.position_mgr.position.is_open:
-            intent = self._manage_position(orthogonal_signals, effective_regime, price, atr, effective_confidence)
+            intent = self._manage_overlay(directive, price, overlay_atr)
         else:
-            if not regime_state['is_stable']:
-                return TradeIntent(
-                    action="HOLD", side=Intent.FLAT, size_pct=0,
-                    stop_loss_pct=0, take_profit_pct=0,
-                    confidence=0, risk_level=RiskLevel.LOW,
-                    reason=f"Regime not stable ({regime_state['duration']}/{self.regime_memory.confirmation_count})"
-                )
-            intent = self._evaluate_entry(
-                orthogonal_signals, effective_regime, effective_confidence,
-                vol_atr_pct, price, atr)
+            intent = self._evaluate_overlay_entry(
+                directive, effective_regime, vol_atr_pct, price, overlay_atr)
+
+        if reject_short(intent.side, intent.action):
+            return TradeIntent(
+                action="HOLD", side=Intent.FLAT, size_pct=0,
+                stop_loss_pct=0, take_profit_pct=0,
+                confidence=0, risk_level=RiskLevel.BLOCKED,
+                reason="V2 forbids NET SHORT; BTC identity is HODL not fade",
+            )
 
         signal_size_pct = intent.size_pct if intent.action == "OPEN" else 0.0
         objective_mult = self.capital_objective.get_position_multiplier()
@@ -86,6 +96,75 @@ class PortfolioBrainV2:
         )
 
         return intent
+
+    def _evaluate_overlay_entry(
+        self, directive: StrategyDirective, regime: str,
+        vol_atr_pct: float, price: float, atr: float,
+    ) -> TradeIntent:
+        if directive.action != "OPEN" or directive.side != Intent.LONG:
+            return TradeIntent(
+                action="HOLD", side=Intent.FLAT, size_pct=0,
+                stop_loss_pct=0, take_profit_pct=0,
+                confidence=directive.confidence,
+                risk_level=RiskLevel.LOW,
+                reason=directive.reason,
+            )
+        sl_pct, tp_pct = proposed_sl_tp_pct(regime, atr, price)
+        if sl_pct <= 0:
+            return TradeIntent(
+                action="HOLD", side=Intent.FLAT, size_pct=0,
+                stop_loss_pct=0, take_profit_pct=0,
+                confidence=0, risk_level=RiskLevel.BLOCKED,
+                reason="HTF stop distance unknown; overlay OPEN denied",
+            )
+        risk_level = RiskLevel.LOW
+        if vol_atr_pct >= VOL_ATR_HIGH:
+            risk_level = RiskLevel.HIGH
+        elif vol_atr_pct >= VOL_ATR_MID:
+            risk_level = RiskLevel.MID
+        return TradeIntent(
+            action="OPEN",
+            side=Intent.LONG,
+            size_pct=directive.signal_size_pct or 0.10,
+            stop_loss_pct=sl_pct,
+            take_profit_pct=tp_pct,
+            confidence=directive.confidence,
+            risk_level=risk_level,
+            reason=directive.reason,
+        )
+
+    def _manage_overlay(
+        self, directive: StrategyDirective, price: float, atr: float,
+    ) -> TradeIntent:
+        if self.position_mgr.should_stop_loss(price):
+            return TradeIntent(
+                action="CLOSE", side=Intent.FLAT, size_pct=0,
+                stop_loss_pct=0, take_profit_pct=0,
+                confidence=1.0, risk_level=RiskLevel.HIGH,
+                reason=f"Stop loss hit @ ${price:,.2f}"
+            )
+        if self.position_mgr.should_take_profit(price):
+            return TradeIntent(
+                action="CLOSE", side=Intent.FLAT, size_pct=0,
+                stop_loss_pct=0, take_profit_pct=0,
+                confidence=1.0, risk_level=RiskLevel.LOW,
+                reason=f"Take profit hit @ ${price:,.2f}"
+            )
+        if directive.action == "CLOSE":
+            return TradeIntent(
+                action="CLOSE", side=Intent.FLAT, size_pct=0,
+                stop_loss_pct=0, take_profit_pct=0,
+                confidence=directive.confidence,
+                risk_level=RiskLevel.MID,
+                reason=directive.reason,
+            )
+        return TradeIntent(
+            action="HOLD", side=Intent.FLAT, size_pct=0,
+            stop_loss_pct=0, take_profit_pct=0,
+            confidence=directive.confidence,
+            risk_level=RiskLevel.LOW,
+            reason=directive.reason,
+        )
 
     def _evaluate_entry(self, signals: List[Signal], regime: str,
                         confidence: float, vol_atr_pct: float,
