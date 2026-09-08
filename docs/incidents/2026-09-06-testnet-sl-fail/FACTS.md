@@ -8,6 +8,8 @@
 
 运行真源：`kernel_ledger` > `p0_safety.json`。后者在本事故中为 STALE，不得单独宣称 MATCHED / healthy。
 
+处置裁定：[DISPOSITION.md](DISPOSITION.md)（2026-09-08）。本表不因 disposition 改写任何 `NOT_FOUND`。
+
 原始快照：`FREEZE.txt`、`HEAD`、`worktree.diff`、`kernel_ledger.dump.json`、`exchange_readonly.json`、`raw/`。
 
 ---
@@ -37,12 +39,18 @@ G0-4C                          CLOSED-OFFLINE
 G0-4C_COMMIT                   5bfa311
 G0-4D                          HOLD
 G0-5                           CLOSED-OFFLINE
+G0-5_COMMIT                    d0863ee
+
+HISTORICAL_EVIDENCE_GAP        ACCEPTED
+INCIDENT_REQUALIFICATION_ELIGIBLE  YES
+INCIDENT_LOCK                  ACTIVE
 ```
 
 事故调查 **不是 CLOSED-CLEAN**。仓位风险可关；证据残留保持 OPEN。
 未来若 Testnet API / 账户历史给出新解释，**只能追加，不得覆盖** 本日 `NOT_FOUND`。
 
-证据残留可以永久 OPEN，但事故运行锁必须经单独 incident disposition 才能解除。`CLOSE_PROVENANCE_UNKNOWN` ≠ 永久禁止账户未来交易。当前未批准解除。
+2026-09-08 disposition 已封：`HISTORICAL_EVIDENCE_GAP=ACCEPTED`，`INCIDENT_REQUALIFICATION_ELIGIBLE=YES`。  
+这只批准进入 G0-4D 只读资格复核。`INCIDENT_LOCK` / kill / AUTO TESTNET / SYSTEM EXECUTION 均未解除。
 
 P0-1 当时（2026-09-08T02:18Z）交易所仍持有 LONG 0.007。该快照保留在「六问」；现行仓位以文末「人工平仓复核」为准。
 
@@ -198,6 +206,7 @@ synthetic SELL / fee / realized pnl / manual order id
 
 没有来源就没有财务事实。旧 ENTRY 订单行 `PARTIALLY_FILLED / filled_qty=0` **保持原样**。
 
-当前 incident 未完成处置审批 → new risk DENIED。未来经明确 disposition，EXIT provenance 可以继续 UNKNOWN，仓位/账户状态独立对账后允许进入新的 qualification cycle。证据残留可永久 OPEN；运行锁须单独审批。现在还不到解除的时候。
+2026-09-08 disposition 已接受历史证据缺口，并批准进入只读 qualification cycle（G0-4D）。  
+EXIT provenance 继续 UNKNOWN / OPEN。new risk 仍 DENIED：kill ACTIVE，INCIDENT_LOCK ACTIVE。详见 [DISPOSITION.md](DISPOSITION.md)。
 
 原始探针：`exchange_manual_close_probe.json`（仍开仓）、`exchange_post_manual_close.json`、`exchange_post_manual_close_hunt.json`、`MANUAL_RECOVERY_ACTION.json`（处置记录，非成交事实）。

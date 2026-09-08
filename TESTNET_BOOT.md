@@ -7,6 +7,7 @@
 运行事实真源：**kernel ledger**。`state/p0_safety.json` 不得单独宣称 MATCHED / healthy，也不得靠删除或改写该文件恢复运行。
 
 事故档案：[docs/incidents/2026-09-06-testnet-sl-fail/FACTS.md](docs/incidents/2026-09-06-testnet-sl-fail/FACTS.md)  
+处置裁定：[docs/incidents/2026-09-06-testnet-sl-fail/DISPOSITION.md](docs/incidents/2026-09-06-testnet-sl-fail/DISPOSITION.md)  
 手工平仓步骤（网页，非 AURORA）：[OPERATOR_CLOSE_CHECKLIST.md](docs/incidents/2026-09-06-testnet-sl-fail/OPERATOR_CLOSE_CHECKLIST.md)
 
 LIVE = **NO-GO**。不要设 `TRADING_MODE=LIVE`，不要设 `AURORA_ARM_LIVE`。
@@ -36,6 +37,8 @@ MANUAL_CLOSE_FILL      NOT_FOUND
 MANUAL_CLOSE_ORDER     NOT_FOUND
 INCIDENT_POSITION      RECOVERED
 INCIDENT_EVIDENCE      OPEN_RESIDUAL (EXIT-PROVENANCE-01)
+HISTORICAL_EVIDENCE_GAP ACCEPTED
+INCIDENT_REQUALIFICATION_ELIGIBLE  YES
 KILL                   ACTIVE
 p0_safety              STALE
 
@@ -59,7 +62,7 @@ Exit criteria (all required):
 1. incident position reconciled/closed (exchange FLAT + 人工干预事实)
 2. G0-4A / G0-4B / G0-4C protocol qualification
 3. G0-5 config-source qualification
-4. dedicated TESTNET requalification (not “watch one HOLD cycle”)
+4. dedicated TESTNET requalification (G0-4D read-only; not “watch one HOLD cycle”)
 5. explicit resume approval
 
 LIVE:
@@ -79,14 +82,16 @@ PROTOCOL_VALIDATION
     ↓
 G0-4A / 4B / 4C + G0-5 通过
     ↓
-TESTNET_REQUALIFICATION
+INCIDENT DISPOSITION（证据缺口 ACCEPTED；只读复核资格 YES；lock/kill 仍 ACTIVE）
+    ↓
+TESTNET_REQUALIFICATION（G0-4D 只读，尚未开始）
     ↓
 明确审批
     ↓
 TESTNET_READY   ← 下文「资格门之后」的启动 SOP 才开放
 ```
 
-当前停在 **INCIDENT_LOCKED**。仓位风险已收口为交易所 KNOWN_FLAT；证据残留 EXIT-PROVENANCE-01 仍 OPEN。**系统事故在 kill 解除审批前不算结束。**
+当前停在 **INCIDENT_LOCKED**。仓位风险已收口为交易所 KNOWN_FLAT；证据残留 EXIT-PROVENANCE-01 仍 OPEN，且已被 disposition 接受。只读 G0-4D 已获资格，**尚未开始**。**系统事故在 kill 解除审批前不算结束。**
 
 ```text
 INCIDENT_POSITION_STATE       RECOVERED
@@ -104,11 +109,15 @@ G0-4C                         CLOSED-OFFLINE
 G0-4C_COMMIT                  5bfa311
 G0-4D                         HOLD
 G0-5                          CLOSED-OFFLINE
+G0-5_COMMIT                   d0863ee
+HISTORICAL_EVIDENCE_GAP       ACCEPTED
+INCIDENT_REQUALIFICATION_ELIGIBLE  YES
+INCIDENT_LOCK                 ACTIVE
 AUTO_TESTNET                  DENIED
 LIVE                          NO-GO
 ```
 
-证据残留可永久 OPEN；运行锁须单独审批。当前未解除。
+证据残留可永久 OPEN。disposition 已批准进入 G0-4D 只读复核；`INCIDENT_LOCK` / kill 未解除。
 
 ---
 
