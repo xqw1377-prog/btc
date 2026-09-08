@@ -422,12 +422,16 @@ class Orchestrator:
             # ledger-first 不变量：账本写不进去就没有订单被提交
             return self._refuse(f"ledger pre-submit write failed; no order sent: {exc}")
 
-    def close_position(self, reason: str = "manual") -> Dict[str, Any]:
+    def close_position(
+        self, reason: str = "manual",
+        intent_id: Optional[str] = None,
+        client_order_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         fact = self.ledger.get_position_fact(self.symbol)
         if fact is None or fact["state"] != PositionFactState.KNOWN_OPEN.value:
             return self._refuse("close requires KNOWN_OPEN position fact")
         kill = self.ledger.kill_state()
-        intent_id = f"AURORA-CLOSE-{uuid.uuid4().hex[:12]}"
+        intent_id = intent_id or f"AURORA-CLOSE-{uuid.uuid4().hex[:12]}"
         self.ledger.create_intent(intent_id, self.symbol, "CLOSE", fact["qty"])
         if not self.ledger.claim_intent(intent_id, self.instance_id):
             return self._refuse(f"close intent {intent_id} claimed by another executor")
@@ -436,7 +440,8 @@ class Orchestrator:
             correlation_id=intent_id)
         self.ledger.transition_intent(
             intent_id, IntentState.CLOSING, f"closing ({reason})", correlation_id=intent_id)
-        return self._submit_close(intent_id, reason, emergency=False)
+        return self._submit_close(
+            intent_id, reason, emergency=False, client_order_id=client_order_id)
 
     # ---------- 内部：开仓与保护 ----------
 
@@ -669,7 +674,10 @@ class Orchestrator:
             "reason": f"{trigger}; {label}; kill switch engaged",
         }
 
-    def _submit_close(self, intent_id: str, reason: str, emergency: bool) -> Dict[str, Any]:
+    def _submit_close(
+        self, intent_id: str, reason: str, emergency: bool,
+        client_order_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
         pos = self._safe_position()
         if pos is None:
             self.ledger.transition_intent(
@@ -698,7 +706,7 @@ class Orchestrator:
                     "reason": "already flat"}
 
         tag = "CLOSE-EMG" if emergency else "CLOSE"
-        cid = f"{intent_id}-{tag}"
+        cid = client_order_id or f"{intent_id}-{tag}"
         try:
             self.ledger.record_order_submitting(
                 client_order_id=cid, intent_id=intent_id, order_kind="CLOSE",

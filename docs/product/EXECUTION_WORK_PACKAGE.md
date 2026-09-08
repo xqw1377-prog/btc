@@ -4,7 +4,7 @@
 > 封点提交：`6b2cc7c`（用户已接受为正式边界封点）  
 > 冻结日：2026-09-08  
 > 修订：REQUIRED AMENDMENTS 1–5 已并入  
-> 前置：Harness `3aa4d8d` CLOSED-OFFLINE；`EXECUTE_AUTHORIZED=false`  
+> 前置：Harness CLOSED-OFFLINE；EXECUTE_AUTHORIZED 已降级为 legacy dead-man 指示（不再是授权门）  
 > **本合同只把「若将来写那一笔 0.001」的边界一次性写死。不是开工令。**
 
 ```text
@@ -16,7 +16,7 @@ CLIENT ID NAMESPACE                   FROZEN
 QUALIFICATION LEDGER                  ISOLATED
 SCOPED SINGLE-USE PERMIT              REQUIRED
 
-EXECUTE_AUTHORIZED                    FALSE
+EXECUTE_AUTHORIZED                    FALSE（legacy dead-man 指示；非授权门）
 EXECUTION AUTHORIZATION               NOT ISSUED
 SCOPED PERMIT                         NOT ISSUED
 0.001 BTC WRITE                       NOT AUTHORIZED
@@ -33,12 +33,13 @@ SYSTEM EXECUTION                      NOT QUALIFIED
 
 「上线交易 / 启动交易」不是本包。本包若将来被单独授权执行，也只是一笔受控 TESTNET LONG 0.001。
 
-裸 `EXECUTE_AUTHORIZED=true` **不够**。将来写那一笔必须同时满足：
+**真实写权限（R2 之后唯一口径）** =
 
 ```text
-EXECUTE_AUTHORIZED = true
-+
-valid scoped single-use permit
+valid EXECUTION START ORDER（OPEN 未过期）
++ matching exact-session scoped single-use permit
++ explicit operator flag
++ no terminal session record
 ```
 
 缺一即 DENY BEFORE CLIENT WRITE。当前两者都未满足。
@@ -105,7 +106,7 @@ LIVE / AURORA_ARM_LIVE
 改 leverage / margin / position mode
 第二笔 intent
 为开跑而改事故 ledger / 事故 intent
-用裸 EXECUTE_AUTHORIZED 获得无限期写能力
+用任何布尔常量获得无限期写能力
 ```
 
 ---
@@ -254,7 +255,7 @@ QUALIFICATION PERMIT           只覆盖本包一笔
 KILL CLEAR                     不是本包前置，也不是本包副作用
 ```
 
-Permit 不得仅靠 `EXECUTE_AUTHORIZED=true` 获得无限期写能力。
+Permit 不得因任何布尔常量获得无限期写能力（one-lifecycle，终态即作废）。
 
 ---
 
@@ -313,7 +314,7 @@ ONLY RISK-REDUCTION / HUMAN RECOVERY
 ## 将来若单独授权执行
 
 必须另发开工令，明确引用本文件。  
-开工令必须同时打开 `EXECUTE_AUTHORIZED` **并**签发本包 scoped permit。单独改布尔值无效。
+开工令 = `--issue-execution-window`（同一窗口冻结 session_id、发 START ORDER 并签发 scoped permit）；执行时另需显式 operator flag 与无终态会话记录。单独改布尔值无效（该常量已是 legacy dead-man 指示）。
 
 即使 P0–P22 全 PASS，最大结果也只是：
 

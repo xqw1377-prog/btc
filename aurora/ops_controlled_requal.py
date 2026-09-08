@@ -50,9 +50,16 @@ def incident_ledger_path() -> str:
     return os.path.join(state_root(), "kernel_ledger.db")
 
 
-def session_ledger_path(fingerprint: str = INCIDENT_FINGERPRINT) -> str:
+def session_ledger_path(
+        fingerprint: str = INCIDENT_FINGERPRINT,
+        session_id: Optional[str] = None) -> str:
+    if not session_id:
+        raise SafetyViolation(
+            "[CTR] session_id required for qualification ledger path.")
+    assert_session_id(session_id)
     return os.path.join(
-        state_root(), "testnet", fingerprint, "controlled_requal.db")
+        state_root(), "testnet", fingerprint, "qualification",
+        session_id, "ledger.db")
 
 
 def qualification_permit_path(
@@ -61,8 +68,19 @@ def qualification_permit_path(
         state_root(), "testnet", fingerprint, "qualification_permit.json")
 
 
+def session_intent_id(session_id: str) -> str:
+    assert_session_id(session_id)
+    return f"{CLIENT_ID_NS}{session_id}"
+
+
+def leg_client_id(session_id: str, leg: str) -> str:
+    if leg not in ("ENTRY", "SL", "CLOSE"):
+        raise SafetyViolation(f"[CTR] unknown leg {leg}.")
+    return f"{session_intent_id(session_id)}-{leg}"
+
+
 def new_session_intent_id() -> str:
-    return f"{CLIENT_ID_NS}{uuid.uuid4().hex[:12]}"
+    return session_intent_id(uuid.uuid4().hex[:12])
 
 
 def assert_intent_allowed(intent_id: str) -> None:
@@ -73,12 +91,17 @@ def assert_intent_allowed(intent_id: str) -> None:
             f"[CTR] intent must use {CLIENT_ID_NS}* namespace.")
 
 
+def assert_qty_exact(qty: float) -> None:
+    if abs(float(qty) - MAX_QTY) > 1e-12:
+        raise SafetyViolation(
+            f"[CTR] qty must be exactly {MAX_QTY}, got {qty}.")
+
+
 def assert_scale(qty: float, mark_price: float) -> None:
     if mark_price is None or mark_price <= 0:
         raise SafetyViolation(
             "[CTR] notional cap requires an observed mark price.")
-    if qty <= 0 or qty - MAX_QTY > 1e-12:
-        raise SafetyViolation(f"[CTR] qty {qty} exceeds MAX_QTY={MAX_QTY}.")
+    assert_qty_exact(qty)
     notional = qty * float(mark_price)
     if notional - MAX_NOTIONAL_USDT > 1e-9:
         raise SafetyViolation(
@@ -106,15 +129,22 @@ def assert_session_start(exchange: Any, symbol: str = SYMBOL) -> None:
         raise SafetyViolation("[CTR] BTCUSDT not FLAT; refuse start.")
 
 
-def assert_session_ledger_isolated(path: str) -> None:
+def assert_session_ledger_isolated(
+        path: str, session_id: Optional[str] = None) -> None:
     incident = os.path.abspath(incident_ledger_path())
     target = os.path.abspath(path)
     if target == incident:
         raise SafetyViolation(
             "[CTR] session ledger must not be the incident ledger.")
-    if "controlled_requal.db" not in os.path.basename(target):
+    parts = target.split(os.sep)
+    if "qualification" not in parts:
         raise SafetyViolation(
-            "[CTR] session ledger must be controlled_requal.db.")
+            "[CTR] session ledger must live under qualification/<session-id>/.")
+    if os.path.basename(target) != "ledger.db":
+        raise SafetyViolation("[CTR] session ledger file must be ledger.db.")
+    if session_id is not None and session_id not in parts:
+        raise SafetyViolation(
+            "[CTR] session ledger path must include the session id.")
 
 
 def assert_identity(source: ConfigSource,
@@ -171,12 +201,6 @@ def _file_digest(path: str) -> str:
 # Qualification Permit（一次性、范围受限；事故 kill 不因此清除）
 # ---------------------------------------------------------------------------
 
-def qualification_permit_path(
-        fingerprint: str = INCIDENT_FINGERPRINT) -> str:
-    return os.path.join(
-        state_root(), "testnet", fingerprint, "qualification_permit.json")
-
-
 def issue_permit(
     issued_by: str,
     session_id: str,
@@ -193,12 +217,18 @@ def issue_permit(
     permit = {
         "schema": PERMIT_SCHEMA,
         "session_id": session_id,
-        "scope": {"env": "TESTNET", "symbol": SYMBOL, "side": SIDE},
+        "single_use": True,
+        "scope": {
+            "env": "TESTNET",
+            "symbol": SYMBOL,
+            "side": SIDE,
+            "qty": MAX_QTY,
+        },
         "max_qty": MAX_QTY,
         "max_notional_usdt": MAX_NOTIONAL_USDT,
         "client_id_ns": CLIENT_ID_NS,
         "lifecycle": {"total": 1, "used": []},
-        "session_ledger": session_ledger_path(fingerprint),
+        "session_ledger": session_ledger_path(fingerprint, session_id),
         "account_fingerprint": fingerprint,
         "issued_at": issued_at.isoformat(),
         "issued_by": issued_by.strip(),
@@ -230,9 +260,16 @@ def load_permit(fingerprint: str = INCIDENT_FINGERPRINT,
         raise SafetyViolation(
             "[CTR] permit voided by a terminated session; "
             "no second entry under this window.")
+    if permit.get("single_use") is not True:
+        raise SafetyViolation("[CTR] permit.single_use must be true.")
     scope = permit.get("scope") or {}
+    try:
+        scope_qty = float(scope.get("qty"))
+    except (TypeError, ValueError):
+        scope_qty = None
     if (scope.get("env") != "TESTNET" or scope.get("symbol") != SYMBOL
-            or scope.get("side") != SIDE):
+            or scope.get("side") != SIDE
+            or scope_qty is None or abs(scope_qty - MAX_QTY) > 1e-12):
         raise SafetyViolation("[CTR] permit scope drift.")
     if permit.get("account_fingerprint") != fingerprint:
         raise SafetyViolation("[CTR] permit account drift.")
@@ -248,11 +285,11 @@ def load_permit(fingerprint: str = INCIDENT_FINGERPRINT,
 
 
 # ---------------------------------------------------------------------------
-# Execution Start Order + 会话终态（运行时范围授权三条件之二/之三）
-# 代码默认 false（EXECUTE_AUTHORIZED 常量仅作 dead-man 记录，不再是门）；
-# 真实写路径 = START ORDER（OPEN、未过期）
-# + 精确 session 的 runtime permit（未作废、同 session_id）
-# + 操作员在调用中显式给出 --i-execute-controlled-requal。
+# Execution Start Order + scoped permit。
+# 真实写路径必须在构造任何写客户端之前同时满足：
+#   EXECUTE_AUTHORIZED == true
+#   + valid scoped single-use permit（session/qty/expiry）
+# 缺一即 DENY BEFORE CLIENT WRITE。
 # ---------------------------------------------------------------------------
 
 def start_order_path(fingerprint: str = INCIDENT_FINGERPRINT) -> str:
@@ -337,20 +374,36 @@ def load_start_order(
     return order
 
 
+def assert_write_gates(
+    fingerprint: str = INCIDENT_FINGERPRINT,
+    now: Optional[datetime] = None,
+    session_id: Optional[str] = None,
+) -> Dict[str, Any]:
+    """写客户端构造前的双门。缺一即 DENY BEFORE CLIENT WRITE。"""
+    if not EXECUTE_AUTHORIZED:
+        raise SafetyViolation(
+            "[CTR] EXECUTE_AUTHORIZED=false; refuse before write client.")
+    return check_execution_conditions(
+        fingerprint=fingerprint, now=now, session_id=session_id)
+
+
 def check_execution_conditions(
     fingerprint: str = INCIDENT_FINGERPRINT,
     now: Optional[datetime] = None,
     session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """三条件门：START ORDER（OPEN 未过期）+ 精确 session 的 runtime
-    permit（未作废未过期、session 匹配）+ 会话无终态记录。
-    操作员显式调用旗标由调用方保证。返回 (order, permit)。"""
+    """开工令 + 精确 session permit（未作废未过期、single_use、
+    scope=BTCUSDT/LONG/0.001）+ 会话无终态。不含写客户端构造。"""
     order = load_start_order(fingerprint, now=now)
     sid = session_id or order["session_id"]
     if sid != order["session_id"]:
         raise SafetyViolation(
             f"[CTR] session_id {sid} != start order {order['session_id']}.")
     permit = load_permit(fingerprint, now=now, expected_session_id=sid)
+    if permit.get("session_id") != sid:
+        raise SafetyViolation("[CTR] PERMIT_SESSION_MISMATCH")
+    if permit.get("single_use") is not True:
+        raise SafetyViolation("[CTR] permit.single_use must be true.")
     final = read_session_final(sid, fingerprint)
     if final is not None:
         raise SafetyViolation(
@@ -414,8 +467,9 @@ def bind_permit(
     ns = permit.get("client_id_ns") or CLIENT_ID_NS
     if not intent_id.startswith(ns):
         raise SafetyViolation(f"[CTR] intent outside permit namespace {ns}.")
+    assert_qty_exact(qty)
     permit_max_qty = float(permit.get("max_qty") or MAX_QTY)
-    if qty <= 0 or qty - permit_max_qty > 1e-12:
+    if abs(permit_max_qty - MAX_QTY) > 1e-12:
         raise SafetyViolation(f"[CTR] qty exceeds permit max {permit_max_qty}.")
     permit_max_notional = float(permit.get("max_notional_usdt")
                                 or MAX_NOTIONAL_USDT)
@@ -635,10 +689,12 @@ def plan(
     if mark_price is not None:
         assert_scale(qty, mark_price)
     else:
-        if qty - MAX_QTY > 1e-12:
-            raise SafetyViolation(f"[CTR] qty {qty} exceeds MAX_QTY={MAX_QTY}.")
-    session_path = session_ledger_path(fp)
-    assert_session_ledger_isolated(session_path)
+        assert_qty_exact(qty)
+    session_id = intent.removeprefix(CLIENT_ID_NS)
+    if not session_id or not intent.startswith(CLIENT_ID_NS):
+        raise SafetyViolation("[CTR] plan requires AURORA-CTR-<session> intent.")
+    session_path = session_ledger_path(fp, session_id)
+    assert_session_ledger_isolated(session_path, session_id)
     kill = incident_kill_snapshot()
     if kill.get("status") == "CLEAR":
         raise SafetyViolation("[CTR] incident kill unexpectedly CLEAR; refuse.")
@@ -651,7 +707,11 @@ def plan(
         "maxQty": MAX_QTY,
         "maxNotionalUsdt": MAX_NOTIONAL_USDT,
         "accountFingerprint": fp,
+        "sessionId": session_id,
         "intentId": intent,
+        "entryClientId": leg_client_id(session_id, "ENTRY"),
+        "slClientId": leg_client_id(session_id, "SL"),
+        "closeClientId": leg_client_id(session_id, "CLOSE"),
         "sessionLedger": session_path,
         "incidentLedger": incident_ledger_path(),
         "incidentKill": kill,
@@ -659,6 +719,82 @@ def plan(
         "productionMain": "DENIED",
         "autoTestnet": "DENIED",
         "live": "NO-GO",
+    }
+
+
+def restart_recover_session(
+    previous_orch: Any, exchange: Any, ledger_path: str,
+) -> Any:
+    """真正的 runtime stop → 新 harness 实例 → recover。
+
+    同进程对同一个 Orchestrator 再调 recover() 不算本条通过。
+    """
+    if previous_orch is None:
+        raise SafetyViolation("[CTR] restart requires a stopped runtime.")
+    if getattr(previous_orch, "instance_id", None) == "ctr-restart":
+        raise SafetyViolation("[CTR] restart must use a new harness instance.")
+    from aurora.kernel.ledger import Ledger
+    from aurora.kernel.orchestrator import Orchestrator
+
+    ledger = Ledger(ledger_path)
+    restarted = Orchestrator(
+        ledger, exchange, symbol=SYMBOL, instance_id="ctr-restart")
+    recovered = restarted.recover()
+    if recovered.get("unresolved"):
+        raise SafetyViolation(
+            f"[CTR] restart recover unresolved: {recovered.get('unresolved')}")
+    try:
+        previous_orch.ledger.close()
+    except Exception:
+        pass
+    return restarted, recovered
+
+
+def qualification_close(orch: Any, *, session_id: str) -> Dict[str, Any]:
+    """Harness 层钉死 QUALIFICATION CLOSE。ACK ≠ confirmed。"""
+    pos = orch.exchange.position(SYMBOL)
+    if pos is None:
+        raise SafetyViolation("[CTR] position UNKNOWN before close.")
+    qty = abs(float(pos.signed_qty))
+    if qty <= 1e-12:
+        raise SafetyViolation("[CTR] close requires an open LONG position.")
+    if qty - MAX_QTY > 1e-12:
+        raise SafetyViolation("[CTR] close qty exceeds 0.001.")
+    if float(pos.signed_qty) <= 0:
+        raise SafetyViolation("[CTR] qualification close requires LONG.")
+    close_id = leg_client_id(session_id, "CLOSE")
+    plan = {
+        "symbol": SYMBOL,
+        "side": "SELL",
+        "positionSide": "LONG",
+        "qty": qty,
+        "clientOrderId": close_id,
+        "reduceOnly": "NOT_SENT_ON_HEDGE",
+        "closePosition": False,
+    }
+    closed = orch.close_position(
+        reason="qualification-close",
+        intent_id=close_id,
+        client_order_id=close_id,
+    )
+    fill_qty = float(orch.ledger.fills_aggregate(close_id)["qty"])
+    after = orch.exchange.position(SYMBOL)
+    flat = after is not None and abs(float(after.signed_qty)) <= 1e-12
+    if not closed.get("success"):
+        raise SafetyViolation(
+            f"[CTR] qualification close failed: {closed.get('reason')}")
+    if closed.get("close_outcome") != "CONFIRMED":
+        raise SafetyViolation("[CTR] close ACK is not confirmation.")
+    if fill_qty <= 1e-12 and not flat:
+        raise SafetyViolation(
+            "[CTR] close ACK without authoritative fill or FLAT.")
+    if not flat:
+        raise SafetyViolation("[CTR] position not KNOWN_FLAT after close.")
+    return {
+        "plan": plan,
+        "closed": closed,
+        "authoritative": "fill" if fill_qty > 1e-12 else "position_flat",
+        "fillQty": fill_qty,
     }
 
 
@@ -679,9 +815,18 @@ def run_session(
 
     permit 必须已签发且有效；mark_price 必须是权威观察值。
     """
+    sid = session_id or permit.get("session_id")
+    if not sid:
+        raise SafetyViolation("[CTR] run_session requires session_id.")
+    assert_session_id(sid)
+    if permit.get("session_id") not in (None, sid):
+        raise SafetyViolation("[CTR] PERMIT_SESSION_MISMATCH")
     assert_scale(qty, mark_price)
     assert_stop_price(stop_price, mark_price)
-    intent = intent_id or new_session_intent_id()
+    intent = session_intent_id(sid)
+    if intent_id is not None and intent_id != intent:
+        raise SafetyViolation(
+            f"[CTR] intent must be {intent}, got {intent_id}.")
     assert_intent_allowed(intent)
     bind_permit(permit, intent_id=intent, qty=qty, mark_price=mark_price)
 
@@ -738,20 +883,39 @@ def run_session(
     if abs(protected_qty - qty) > 1e-12:
         return _stop("P3", "protected_qty != confirmed position qty",
                      opened=opened)
+    if protection.get("slClientId") != leg_client_id(sid, "SL"):
+        return _stop("P3", "SL client id namespace mismatch")
 
-    # P4 restart recovery：无未决，无重复
-    recovered = orch.recover()
-    if recovered.get("unresolved"):
-        return _stop("P4", "restart recover unresolved", recover=recovered)
+    # P4 restart recovery：停 runtime → 新实例 → 恢复已有仓位/保护
+    submits_before = list(getattr(orch.exchange, "submit_log", []) or [])
+    ledger_path = getattr(orch.ledger, "path", None)
+    if not ledger_path:
+        return _stop("P4", "session ledger path unknown; cannot restart")
+    exchange = orch.exchange
+    try:
+        orch, recovered = restart_recover_session(
+            orch, exchange, ledger_path)
+    except SafetyViolation as exc:
+        return _stop("P4", str(exc))
+    submits_after = list(getattr(exchange, "submit_log", []) or [])
+    if len(submits_after) != len(submits_before):
+        return _stop("P4", "duplicate submit during restart recovery",
+                     recover=recovered)
+    pos = exchange.position(SYMBOL)
+    if pos is None or abs(float(pos.signed_qty) - qty) > 1e-12:
+        return _stop("P4", "position not recovered as LONG 0.001")
+    try:
+        protection = confirm_protection_active(
+            orch, intent_id=intent, planned_trigger=stop_price,
+            planned_qty=qty, position_side=SIDE)
+    except SafetyViolation as exc:
+        return _stop("P4", f"existing SL not re-identified: {exc}")
 
-    # P5 flatten & close-out
-    closed = orch.close_position(reason="controlled-requal-flatten")
-    if not closed.get("success"):
-        return _stop("P5", f"flatten failed: {closed.get('reason')}",
-                     closed=closed)
-    position = orch.exchange.position(SYMBOL)
-    if position is None or abs(float(position.signed_qty)) > 1e-12:
-        return _stop("P5", "exchange position not flat after flatten")
+    # P5 QUALIFICATION CLOSE
+    try:
+        closed = qualification_close(orch, session_id=sid)
+    except SafetyViolation as exc:
+        return _stop("P5", str(exc))
     orch.ledger.engage_kill("controlled requal session complete")
     after = _file_digest(incident_path) if incident_path and os.path.exists(
         incident_path) else None
@@ -760,14 +924,18 @@ def run_session(
     return {
         "success": True,
         "phase": "COMPLETE",
-        "sessionId": session_id,
+        "sessionId": sid,
         "intentId": intent,
+        "entryClientId": leg_client_id(sid, "ENTRY"),
+        "slClientId": leg_client_id(sid, "SL"),
+        "closeClientId": leg_client_id(sid, "CLOSE"),
         "opened": {"state": opened.get("state"),
                    "protected_qty": protected_qty},
         "protectionConfirmed": protection,
         "wireAck": ack_report,
         "restartRecover": "PASS",
-        "closed": {"success": True},
+        "restartInstanceId": orch.instance_id,
+        "closed": closed,
         "sessionKill": orch.ledger.kill_state(),
         "incidentLedgerUnchanged": True,
         "execute": "OFFLINE_SESSION_ONLY",
@@ -787,23 +955,24 @@ def execute_live(
     mark_price: Optional[float] = None,
     now: Optional[datetime] = None,
 ) -> Dict[str, Any]:
-    """真实受控写入入口（三条件门满足时才可能走到真实请求）。
+    """真实受控写入入口。
 
-    三条件：START ORDER（OPEN 未过期）+ 精确 session 的 runtime permit
-    （未作废未过期、session 匹配）+ 调用方显式执行指令。
-    代码常量 EXECUTE_AUTHORIZED 只是 dead-man 记录，不再是门；
-    结束（无论 COMPLETE/STOP）写会话终态，STOP 同时作废 permit——
-    同一 session 绝无第二次 entry。
+    构造写客户端之前必须同时满足：
+    EXECUTE_AUTHORIZED == true
+    + scoped single-use permit（session/qty/expiry）
+    + START ORDER OPEN。
     """
+    if not EXECUTE_AUTHORIZED:
+        raise SafetyViolation(
+            "[CTR] EXECUTE_AUTHORIZED=false; refuse all TESTNET writes.")
     if source is None or stop_price is None:
         raise SafetyViolation(
             "[CTR] execute requires config source and stop price; "
             "and a valid execution window (START ORDER + scoped permit).")
-    conditions = check_execution_conditions(now=now)
+    conditions = assert_write_gates(now=now)
     session_id = conditions["session_id"]
     permit = conditions["permit"]
     if orch is None:
-        from aurora.armed_runtime import namespaced_ledger_path
         from aurora.kernel.binance_exchange import BinanceExchange
         from aurora.kernel.ledger import Ledger
         from aurora.kernel.orchestrator import Orchestrator
@@ -825,8 +994,10 @@ def execute_live(
         exchange = BinanceExchange(client, symbol=SYMBOL, allow_mutate=True)
         exchange.verify_position_mode(
             source.get("AURORA_EXPECTED_POSITION_MODE") or "HEDGE")
-        ledger = Ledger(namespaced_ledger_path(
-            RunMode.TESTNET, INCIDENT_FINGERPRINT))
+        session_path = session_ledger_path(INCIDENT_FINGERPRINT, session_id)
+        assert_session_ledger_isolated(session_path, session_id)
+        os.makedirs(os.path.dirname(session_path), exist_ok=True)
+        ledger = Ledger(session_path)
         orch = Orchestrator(ledger, exchange, symbol=SYMBOL)
     try:
         out = run_session(
@@ -917,8 +1088,22 @@ def main(argv=None) -> int:
         return 2
 
     if args.i_execute_controlled_requal:
-        # 三条件门：START ORDER + 精确 session permit + 本显式旗标。
-        # 任一不满足 → DENIED(3)；全部满足 → 真实受控写入（P0-P5）。
+        if not EXECUTE_AUTHORIZED:
+            report["execute"] = "DENIED"
+            report["reason"] = (
+                "EXECUTE_AUTHORIZED=false; refuse before write client.")
+            print(json.dumps(report, sort_keys=True, indent=2))
+            return 3
+        try:
+            assert_write_gates()
+        except SafetyViolation as exc:
+            print(json.dumps({
+                "package": "CONTROLLED_TESTNET_REQUAL",
+                "execute": "DENIED",
+                "status": "BLOCKED",
+                "reason": str(exc)[:200],
+            }, sort_keys=True, indent=2))
+            return 3
         from aurora.safety import build_client
         try:
             client = build_client(source.mode(), "controlled requal session",

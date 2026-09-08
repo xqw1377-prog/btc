@@ -31,20 +31,24 @@ from aurora.ops_controlled_requal import (  # noqa: E402
     MAX_QTY,
     WireTee,
     assert_intent_allowed,
+    assert_qty_exact,
     assert_scale,
     assert_session_ledger_isolated,
     assert_session_start,
     assert_stop_price,
+    assert_write_gates,
     baseline_from_probe,
     bind_permit,
     confirm_protection_active,
     execute_live,
     incident_ledger_path,
     issue_permit,
+    leg_client_id,
     load_permit,
     main,
     plan,
     run_session,
+    session_intent_id,
     session_ledger_path,
     verify_algo_ack,
     verify_entry_ack,
@@ -127,11 +131,22 @@ class CtrTestBase(unittest.TestCase):
         self.order = window["order"]
         self.permit = window["permit"]
 
-    def _orch(self, exchange=None, ledger_name="controlled_requal.db"):
-        ledger = Ledger(os.path.join(self._tmp.name, ledger_name))
+    def _orch(self, exchange=None, ledger_name=None):
+        if ledger_name is None:
+            path = os.path.join(
+                self._tmp.name, "qualification", "CTR-TEST-001", "ledger.db")
+        else:
+            path = os.path.join(self._tmp.name, ledger_name)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        ledger = Ledger(path)
         orch = Orchestrator(ledger, exchange or FakeExchange(price=100.0),
                             instance_id="ctr")
-        self.addCleanup(ledger.close)
+        def _close():
+            try:
+                ledger.close()
+            except Exception:
+                pass
+        self.addCleanup(_close)
         orch.recover()
         return orch
 
@@ -143,8 +158,11 @@ class PlanGateTests(CtrTestBase):
         self.assertEqual(report["qty"], 0.001)
         self.assertEqual(report["side"], "LONG")
         self.assertEqual(report["productionMain"], "DENIED")
-        self.assertTrue(report["sessionLedger"].endswith("controlled_requal.db"))
+        self.assertIn(os.path.join("qualification", report["sessionId"],
+                                   "ledger.db"), report["sessionLedger"])
         self.assertNotEqual(report["sessionLedger"], report["incidentLedger"])
+        self.assertEqual(report["entryClientId"],
+                         leg_client_id(report["sessionId"], "ENTRY"))
         self.assertEqual(report["incidentKill"]["status"], "ACTIVE")
 
     def test_identity_gate_is_unconditional(self):
@@ -167,6 +185,10 @@ class PlanGateTests(CtrTestBase):
             assert_scale(0.002, 100.0)
         with self.assertRaises(SafetyViolation):
             assert_scale(MAX_QTY, (MAX_NOTIONAL_USDT / MAX_QTY) + 1)
+        with self.assertRaises(SafetyViolation):
+            assert_qty_exact(0.0005)
+        with self.assertRaises(SafetyViolation):
+            assert_scale(0.0005, 100.0)
         assert_scale(MAX_QTY, 100.0)
 
     def test_incident_intent_and_namespace_forbidden(self):
@@ -181,7 +203,11 @@ class PlanGateTests(CtrTestBase):
     def test_session_path_cannot_be_incident(self):
         with self.assertRaises(SafetyViolation):
             assert_session_ledger_isolated(incident_ledger_path())
-        assert_session_ledger_isolated(session_ledger_path(FP))
+        path = session_ledger_path(FP, "CTR-TEST-001")
+        assert_session_ledger_isolated(path, "CTR-TEST-001")
+        with self.assertRaises(SafetyViolation):
+            assert_session_ledger_isolated(
+                os.path.join(self._tmp.name, "controlled_requal.db"))
 
     def test_source_has_no_production_or_write_paths(self):
         src = open(os.path.join(
@@ -199,16 +225,22 @@ class PlanGateTests(CtrTestBase):
             r"futures_create_order\(\s*(symbol|newOrderSymbol)", src))
 
     def test_main_execute_flag_still_denied(self):
-        self.assertEqual(main(["--i-execute-controlled-requal",
-                               "--qty", "0.001"]), 3)
-
-    def test_main_plan_only_zero(self):
-        self.assertEqual(main([]), 0)
+        with mock.patch("aurora.safety.build_client") as built:
+            self.assertEqual(main(["--i-execute-controlled-requal",
+                                   "--qty", "0.001"]), 3)
+        built.assert_not_called()
 
     def test_execute_live_hard_denied(self):
         self.assertFalse(EXECUTE_AUTHORIZED)
-        with self.assertRaises(SafetyViolation):
+        with self.assertRaises(SafetyViolation) as hc:
             execute_live()
+        self.assertIn("EXECUTE_AUTHORIZED=false", str(hc.exception))
+
+    def test_write_gates_refuse_before_client(self):
+        self.assertFalse(EXECUTE_AUTHORIZED)
+        with self.assertRaises(SafetyViolation) as hc:
+            assert_write_gates(fingerprint=FP, session_id="CTR-TEST-001")
+        self.assertIn("refuse before write client", str(hc.exception))
 
     def test_long_stop_must_be_below_mark(self):
         with self.assertRaises(SafetyViolation):
@@ -223,6 +255,8 @@ class PermitTests(CtrTestBase):
                               fingerprint=FP,
                               now=datetime(2026, 9, 8, tzinfo=timezone.utc))
         self.assertEqual(permit["scope"]["symbol"], "BTCUSDT")
+        self.assertEqual(permit["scope"]["qty"], 0.001)
+        self.assertTrue(permit["single_use"])
         loaded = load_permit(fingerprint=FP,
                              now=datetime(2026, 9, 8, 0, 30,
                                           tzinfo=timezone.utc))
@@ -305,7 +339,7 @@ class OfflineSessionTests(CtrTestBase):
         orch = self._orch()
         out = run_session(
             orch, permit=self.permit, qty=MAX_QTY, mark_price=100.0,
-            stop_price=99.0, intent_id="AURORA-CTR-ok001",
+            stop_price=99.0, session_id="CTR-TEST-001",
             incident_path=self.incident)
         self.assertTrue(out["success"], out)
         self.assertEqual(out["phase"], "COMPLETE")
@@ -316,17 +350,30 @@ class OfflineSessionTests(CtrTestBase):
         self.assertEqual(out["wireAck"]["submitAckContract"],
                          "NOT_OBSERVED_OFFLINE")
         self.assertEqual(out["restartRecover"], "PASS")
+        self.assertEqual(out["restartInstanceId"], "ctr-restart")
+        self.assertEqual(out["entryClientId"],
+                         leg_client_id("CTR-TEST-001", "ENTRY"))
+        self.assertEqual(out["closeClientId"],
+                         leg_client_id("CTR-TEST-001", "CLOSE"))
+        self.assertEqual(out["closed"]["plan"]["side"], "SELL")
+        self.assertEqual(out["closed"]["plan"]["positionSide"], "LONG")
+        self.assertNotEqual(out["closed"]["authoritative"], "ack")
         self.assertEqual(out["sessionKill"]["engaged"], 1)
         self.assertEqual(open(self.incident, "rb").read(), self.before)
         pos = orch.exchange.position("BTCUSDT")
         self.assertEqual(pos.signed_qty, 0.0)
-        self.assertIn("AURORA-CTR-ok001", self.permit["lifecycle"]["used"])
+        self.assertIn(session_intent_id("CTR-TEST-001"),
+                      self.permit["lifecycle"]["used"])
+        self.assertFalse(any(
+            req.client_order_id.startswith("AURORA-CLOSE-")
+            for req in orch.exchange.submit_log))
 
     def test_oversize_refused_before_open(self):
         orch = self._orch()
         with self.assertRaises(SafetyViolation):
             run_session(orch, permit=self.permit, qty=0.007,
-                        mark_price=100.0, stop_price=99.0)
+                        mark_price=100.0, stop_price=99.0,
+                        session_id="CTR-TEST-001")
         self.assertEqual(len(orch.exchange.submit_log), 0)
 
     def test_start_not_flat_refuses_and_kills_session(self):
@@ -335,7 +382,8 @@ class OfflineSessionTests(CtrTestBase):
         exchange.seed_external_position(0.002, 100.0)
         with self.assertRaises(SafetyViolation):
             run_session(orch, permit=self.permit, qty=MAX_QTY,
-                        mark_price=100.0, stop_price=99.0)
+                        mark_price=100.0, stop_price=99.0,
+                        session_id="CTR-TEST-001")
         self.assertEqual(orch.ledger.kill_state()["engaged"], 1)
 
     def test_unknown_position_refuses_start(self):
@@ -349,7 +397,7 @@ class OfflineSessionTests(CtrTestBase):
         orch = self._orch(exchange=exchange, ledger_name="slfail.db")
         out = run_session(orch, permit=self.permit, qty=MAX_QTY,
                           mark_price=100.0, stop_price=99.0,
-                          intent_id="AURORA-CTR-slfail")
+                          session_id="CTR-TEST-001")
         self.assertFalse(out["success"])
         self.assertEqual(out["phase"], "P2")  # SL 拒绝发生在开仓链路内
         self.assertEqual(orch.ledger.kill_state()["engaged"], 1)
@@ -362,7 +410,7 @@ class OfflineSessionTests(CtrTestBase):
         tee.algo_acks.append({"params": {}, "raw": bad_ack})
         out = run_session(orch, permit=self.permit, qty=MAX_QTY,
                           mark_price=100.0, stop_price=99.0,
-                          intent_id="AURORA-CTR-wire1", wire_log=tee)
+                          session_id="CTR-TEST-001", wire_log=tee)
         self.assertFalse(out["success"])
         self.assertEqual(out["phase"], "P1")
         self.assertEqual(orch.ledger.kill_state()["engaged"], 1)
@@ -371,7 +419,7 @@ class OfflineSessionTests(CtrTestBase):
         orch = self._orch()
         out = run_session(
             orch, permit=self.permit, qty=MAX_QTY, mark_price=100.0,
-            stop_price=99.0, intent_id="AURORA-CTR-base1",
+            stop_price=99.0, session_id="CTR-TEST-001",
             baseline={"ok": False,
                       "violations": ["ORDINARY_OPEN_ORDERS_PRESENT"]})
         self.assertFalse(out["success"])
@@ -380,14 +428,14 @@ class OfflineSessionTests(CtrTestBase):
 
     def test_protection_confirm_trigger_echo_mismatch_stops(self):
         orch = self._orch()
-        out = run_session(orch, permit=self.permit, qty=MAX_QTY,
-                          mark_price=100.0, stop_price=99.0,
-                          intent_id="AURORA-CTR-echo1")
-        self.assertTrue(out["success"])  # 正常路径先确认
+        opened = orch.open_position(
+            "LONG", MAX_QTY, intent_id=session_intent_id("CTR-TEST-001"),
+            stop_price=99.0)
+        self.assertTrue(opened.get("success"), opened)
         with self.assertRaises(SafetyViolation):
             confirm_protection_active(
-                orch, intent_id="AURORA-CTR-echo1", planned_trigger=98.0,
-                planned_qty=MAX_QTY)
+                orch, intent_id=session_intent_id("CTR-TEST-001"),
+                planned_trigger=98.0, planned_qty=MAX_QTY)
 
     def test_expired_permit_denies_session(self):
         expired = issue_permit(issued_by="op", session_id="CTR-TEST-001",
@@ -396,7 +444,8 @@ class OfflineSessionTests(CtrTestBase):
         orch = self._orch()
         with self.assertRaises(SafetyViolation):
             run_session(orch, permit=expired, qty=MAX_QTY,
-                        mark_price=100.0, stop_price=99.0)
+                        mark_price=100.0, stop_price=99.0,
+                        session_id="CTR-TEST-001")
 
     def test_conditions_require_start_order(self):
         os.remove(self.ocr.start_order_path(FP))
