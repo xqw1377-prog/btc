@@ -16,7 +16,11 @@ class MarketStateEngineV2:
         
         self.regime_history = []
         self.max_history = 100
-        
+        # G0-2：confirmation 只能由新的唯一已收盘 bar 推进。
+        # bar_id = (symbol, interval, open_time)；poll 重复不构成新证据。
+        self._last_bar_id = None
+        self.bars_consumed = 0
+
         self.trend_thresholds = {
             'adx_min': 25,
             'adx_mean_multiplier': 1.0,
@@ -28,17 +32,60 @@ class MarketStateEngineV2:
             'atr_mean_multiplier': 0.8
         }
     
-    def identify_regime(self, features: Dict[str, Any]) -> Dict[str, Any]:
+    def _bar_status(self, bar_id) -> str:
+        """bar_id = (symbol, interval, open_time)；None/重复/乱序都不是新证据。"""
+        if bar_id is None:
+            return "NO_VALID_CLOSED_BAR"
+        last = self._last_bar_id
+        if last is not None:
+            if bar_id == last:
+                return "SAME_CLOSED_BAR"
+            if tuple(bar_id[:2]) != tuple(last[:2]):
+                # symbol/interval 改变：不串联旧证据流
+                self.confirmation_counter = 0
+                self.pending_regime = self.current_regime
+                self._last_bar_id = bar_id
+                return "NEW_CLOSED_BAR"
+            if bar_id[2] <= last[2]:
+                return "STALE_OR_OUT_OF_ORDER_BAR"
+        self._last_bar_id = bar_id
+        return "NEW_CLOSED_BAR"
+
+    def mark_bar_seen(self, bar_id) -> None:
+        """持久化证据缺失时保守标记：该 bar 已见，本轮不推进。"""
+        if bar_id is not None:
+            self._last_bar_id = bar_id
+
+    @property
+    def last_bar_id(self):
+        return self._last_bar_id
+
+    def identify_regime(self, features: Dict[str, Any], bar_id=None) -> Dict[str, Any]:
         if not features:
             return {
                 'regime': self.current_regime.value,
                 'confidence': 0.5,
                 'confirmed': True,
-                'confirmation_count': 0
+                'confirmation_count': 0,
+                'bar_status': "NO_VALID_CLOSED_BAR",
             }
-        
+
+        bar_status = self._bar_status(bar_id)
+        if bar_status != "NEW_CLOSED_BAR":
+            # 非新证据：不推进确认计数，如实返回当前状态。
+            return {
+                'regime': self.current_regime.value,
+                'confidence': self._calculate_confidence(features, False),
+                'confirmed': self.confirmation_counter == 0 and self.pending_regime == self.current_regime,
+                'confirmation_count': self.confirmation_counter,
+                'pending_regime': self.pending_regime.value,
+                'features': features,
+                'bar_status': bar_status,
+            }
+
         detected_regime = self._detect_regime(features)
-        
+        self.bars_consumed += 1
+
         if detected_regime == self.current_regime:
             self.confirmation_counter = 0
             confirmed = True
@@ -57,6 +104,7 @@ class MarketStateEngineV2:
         confidence = self._calculate_confidence(features, confirmed)
         
         self.regime_history.append({
+            'bar_id': bar_id,
             'regime': self.current_regime.value,
             'confidence': confidence,
             'confirmed': confirmed
@@ -70,7 +118,8 @@ class MarketStateEngineV2:
             'confirmed': confirmed,
             'confirmation_count': self.confirmation_counter,
             'pending_regime': self.pending_regime.value,
-            'features': features
+            'features': features,
+            'bar_status': bar_status,
         }
     
     def _detect_regime(self, features: Dict[str, Any]) -> MarketRegime:

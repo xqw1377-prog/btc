@@ -5,6 +5,7 @@ ArmedRuntime; this module never constructs a Binance Client.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 from typing import Any, Dict, Optional
@@ -25,6 +26,12 @@ from aurora.signal_providers import (
 
 MIN_QTY = 0.001
 ENABLE_TOKEN = "true"
+KLINE_INTERVAL = "1m"
+
+
+def default_evidence_path() -> str:
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    return os.path.join(root, "state", "strategy_evidence.json")
 
 
 def trading_enabled(environ: Optional[Dict[str, str]] = None) -> bool:
@@ -55,6 +62,7 @@ class TradingCycle:
         mode: Optional[RunMode] = None,
         brain: Optional[PortfolioBrainV2] = None,
         capital: float = 0.0,
+        evidence_path: Optional[str] = None,
     ):
         if mode == RunMode.PAPER:
             raise SafetyViolation("[P0] PAPER cannot run a trading cycle.")
@@ -72,6 +80,49 @@ class TradingCycle:
         self.mr = MeanReversionSignalProvider()
         self.capital = capital or self._read_balance()
         self.brain = brain or PortfolioBrainV2(self.capital)
+        self.evidence_path = (
+            evidence_path if evidence_path is not None else default_evidence_path()
+        )
+        # G0-2 重启去重：有持久化证据则武装两个引擎；
+        # 无证据则保守处理——第一根 bar 只标记已见、不推进确认。
+        self._evidence_armed = self._load_evidence()
+
+    def _bar_id(self, feats: Dict[str, Any]):
+        open_time = feats.get("bar_open_time")
+        if open_time is None:
+            return None
+        return (self.symbol, KLINE_INTERVAL, int(open_time))
+
+    def _load_evidence(self) -> bool:
+        try:
+            with open(self.evidence_path) as fh:
+                data = json.load(fh)
+        except Exception:
+            return False
+        bar_id = data.get("last_bar_id")
+        if not (isinstance(bar_id, (list, tuple)) and len(bar_id) == 3):
+            return False
+        bar_id = (bar_id[0], bar_id[1], int(bar_id[2]))
+        self.state_engine.mark_bar_seen(bar_id)
+        self.brain.regime_memory.mark_bar_seen(bar_id)
+        return True
+
+    def _save_evidence(self, bar_id) -> None:
+        try:
+            os.makedirs(os.path.dirname(self.evidence_path) or ".", exist_ok=True)
+            tmp = self.evidence_path + ".tmp"
+            with open(tmp, "w") as fh:
+                json.dump({"last_bar_id": list(bar_id)}, fh)
+            os.replace(tmp, self.evidence_path)
+        except Exception:
+            pass  # 持久化失败不中断循环；代价是重启后保守跳过一根 bar
+
+    def _arm_evidence(self, bar_id) -> None:
+        self.state_engine.mark_bar_seen(bar_id)
+        self.brain.regime_memory.mark_bar_seen(bar_id)
+        self._evidence_armed = True
+        if bar_id is not None:
+            self._save_evidence(bar_id)
 
     def _read_balance(self) -> float:
         try:
@@ -91,7 +142,13 @@ class TradingCycle:
         feats = self.features.get_latest_features(df, exclude_forming=True)
         if not feats or not feats.get("close"):
             return {"action": "HOLD", "reason": "no closed-bar features", "intent": None, "features": feats}
-        regime = self.state_engine.identify_regime(feats)
+        # G0-2：两层确认/时长只消费同一个唯一已收盘 bar 证据。
+        bar_id = self._bar_id(feats)
+        if not self._evidence_armed:
+            # 重启且无持久化证据：保守处理——第一根 bar 只标记已见，不推进。
+            self._arm_evidence(bar_id)
+            bar_id = None
+        regime = self.state_engine.identify_regime(feats, bar_id=bar_id)
         signals = [
             self.trend.generate(feats, regime["regime"]),
             self.breakout.generate(feats, df),
@@ -107,13 +164,18 @@ class TradingCycle:
             atr=float(feats.get("atr") or 0),
             current_ts=time.time(),
             features=feats,
+            bar_id=bar_id,
         )
+        if bar_id is not None and regime.get("bar_status") == "NEW_CLOSED_BAR":
+            self._save_evidence(bar_id)
         return {
             "action": intent.action,
             "reason": intent.reason,
             "intent": intent,
             "features": feats,
             "regime": regime,
+            "bar_id": bar_id,
+            "bar_status": regime.get("bar_status"),
         }
 
     def sync_brain_from_exchange(self) -> None:

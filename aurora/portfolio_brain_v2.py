@@ -32,11 +32,12 @@ class PortfolioBrainV2:
 
     def process(self, signals: List[Signal], regime: str, confidence: float,
                 volatility: float, price: float, atr: float, current_ts: float,
-                features: Dict[str, Any] = None) -> TradeIntent:
+                features: Dict[str, Any] = None, bar_id=None) -> TradeIntent:
 
         self.position_mgr.update_price(price)
 
-        regime_state = self.regime_memory.update(regime, confidence, features or {})
+        regime_state = self.regime_memory.update(
+            regime, confidence, features or {}, bar_id=bar_id)
         effective_regime = regime_state['regime']
         effective_confidence = regime_state['confidence']
 

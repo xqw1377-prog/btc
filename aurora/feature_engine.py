@@ -94,6 +94,8 @@ class FeatureEngine:
         latest = df.iloc[-1]
         
         return {
+            # G0-2：最新已收盘 bar 的开盘时间，作为证据身份的一部分。
+            'bar_open_time': int(latest['time']) if 'time' in work.columns else None,
             'close': float(latest['close']),
             'ema20': float(latest['ema20']),
             'ema60': float(latest['ema60']),
