@@ -88,16 +88,16 @@ export default function KLineChart({ marketData }) {
   return (
     <div className="kline-observation">
       <div className="chart-stats">
-        <div><span>Bars observed</span><strong>{observable ? klines.length : 'UNKNOWN'}</strong></div>
-        <div><span>Latest bar ID</span><strong>{observable && last?.time ? `BTCUSDT · 1m · ${last.time}` : 'UNKNOWN'}</strong></div>
-        <div><span>Closed-bar evidence</span><strong className="unknown-value">NOT PROVIDED BY FEED</strong></div>
+        <div><span>已观察K线</span><strong>{observable ? klines.length : '未知'}</strong></div>
+        <div><span>最新bar标识</span><strong>{observable && last?.time ? `BTCUSDT · 1m · ${last.time}` : '未知'}</strong></div>
+        <div><span>收盘K线证据</span><strong className="unknown-value">馈源未提供</strong></div>
       </div>
       <div className="canvas-frame" ref={containerRef}>
         {observable && klines.length > 0 ? (
           <canvas ref={canvasRef} aria-label="BTCUSDT 1分钟交易所K线观察图" />
         ) : (
           <div className="chart-unavailable">
-            <strong>MARKET DATA UNKNOWN</strong>
+            <strong>行情数据未知</strong>
             <span>没有可验证的新鲜 K 线观察；不绘制零值图表。</span>
           </div>
         )}
