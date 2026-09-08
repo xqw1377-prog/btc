@@ -1,12 +1,12 @@
 # CONTROLLED TESTNET REQUALIFICATION
 
-> 状态：**BOUNDARY-FROZEN / EXECUTE DENIED**  
+> 状态：**HARNESS-READY / EXECUTE DENIED**  
 > 冻结日：2026-09-08  
 > 前置：G0-4D `b0b1ef1` CLOSED-READONLY；Incident Disposition `c612c8d`  
 > **本文件只冻结写入边界。未授权执行。未清事故 kill。未启动交易。**
 
 ```text
-CONTROLLED TESTNET REQUALIFICATION    BOUNDARY-FROZEN
+CONTROLLED TESTNET REQUALIFICATION    HARNESS-READY
 EXECUTE                               DENIED
 production_main                       DENIED
 AURORA_ENABLE_TRADING                 DENIED
@@ -131,3 +131,14 @@ INCIDENT KILL                         仍 ACTIVE
 ```
 
 一次受控试验 PASS ≠ 恢复系统交易。
+
+---
+
+## 已落地（仍不可执行）
+
+```text
+命令                 python3 -m aurora.ops_controlled_requal
+默认                 PLAN only
+--i-execute-...      仍 DENIED（旗标本身不开写）
+离线会话             tests/test_controlled_requal.py
+```
