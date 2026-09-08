@@ -1,0 +1,138 @@
+/Users/xinquanwang/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+P0 BASELINE: mode=HEDGE FLAT ok mark=78373.23581522 stop=77589.5
+GATES: OPEN CTR-20260908-03
+RESULT: {
+  "closeout": {
+    "reason": "[CTR] close requires an open LONG position.",
+    "success": false
+  },
+  "phase": "P5",
+  "reason": "[CTR] residual SL leg not cancelled: NEW",
+  "sessionKill": {
+    "engaged": 1,
+    "engaged_at": "2026-09-08T13:00:13.892088+00:00",
+    "id": 1,
+    "reason": "controlled requal STOP P5: [CTR] residual SL leg not cancelled: NEW"
+  },
+  "success": false,
+  "wireEvidence": {
+    "algoAcks": [
+      {
+        "params": {
+          "algoType": "CONDITIONAL",
+          "clientAlgoId": "AURORA-CTR-CTR-20260908-03-SL",
+          "positionSide": "LONG",
+          "quantity": 0.001,
+          "side": "SELL",
+          "signature": "ecaab42152fff1c07da6a2621e2a39aa015647ea8741739e1b30167a5c0d9860",
+          "symbol": "BTCUSDT",
+          "timestamp": 1788872411152,
+          "triggerPrice": 77589.5,
+          "type": "STOP_MARKET",
+          "workingType": "MARK_PRICE"
+        },
+        "raw": {
+          "algoId": 1000000197772171,
+          "algoStatus": "NEW",
+          "algoType": "CONDITIONAL",
+          "clientAlgoId": "AURORA-CTR-CTR-20260908-03-SL",
+          "closePosition": false,
+          "createTime": 1788872411263,
+          "goodTillDate": 0,
+          "icebergQuantity": null,
+          "orderType": "STOP_MARKET",
+          "positionSide": "LONG",
+          "price": "0.00",
+          "priceMatch": "NONE",
+          "priceProtect": false,
+          "quantity": "0.0010",
+          "reduceOnly": true,
+          "selfTradePreventionMode": "EXPIRE_MAKER",
+          "side": "SELL",
+          "symbol": "BTCUSDT",
+          "timeInForce": "GTC",
+          "triggerPrice": "77589.50",
+          "triggerTime": 0,
+          "updateTime": 1788872411263,
+          "workingType": "MARK_PRICE"
+        }
+      }
+    ],
+    "entryAcks": [
+      {
+        "params": {
+          "newClientOrderId": "AURORA-CTR-CTR-20260908-03-ENTRY",
+          "positionSide": "LONG",
+          "quantity": 0.001,
+          "side": "BUY",
+          "symbol": "BTCUSDT",
+          "type": "MARKET"
+        },
+        "raw": {
+          "clientOrderId": "AURORA-CTR-CTR-20260908-03-ENTRY",
+          "closePosition": false,
+          "cumQty": "0.0000",
+          "executedQty": "0.0000",
+          "goodTillDate": 0,
+          "orderId": 28576831937,
+          "origQty": "0.0010",
+          "origType": "MARKET",
+          "positionSide": "LONG",
+          "price": "0.00",
+          "priceMatch": "NONE",
+          "priceProtect": false,
+          "reduceOnly": false,
+          "selfTradePreventionMode": "EXPIRE_MAKER",
+          "side": "BUY",
+          "status": "NEW",
+          "stopPrice": "0.00",
+          "symbol": "BTCUSDT",
+          "timeInForce": "GTC",
+          "type": "MARKET",
+          "updateTime": 1788872410375,
+          "workingType": "CONTRACT_PRICE"
+        }
+      },
+      {
+        "params": {
+          "newClientOrderId": "AURORA-CTR-CTR-20260908-03-CLOSE",
+          "positionSide": "LONG",
+          "quantity": 0.001,
+          "side": "SELL",
+          "symbol": "BTCUSDT",
+          "type": "MARKET"
+        },
+        "raw": {
+          "clientOrderId": "AURORA-CTR-CTR-20260908-03-CLOSE",
+          "closePosition": false,
+          "cumQty": "0.0000",
+          "executedQty": "0.0000",
+          "goodTillDate": 0,
+          "orderId": 28576831964,
+          "origQty": "0.0010",
+          "origType": "MARKET",
+          "positionSide": "LONG",
+          "price": "0.00",
+          "priceMatch": "NONE",
+          "priceProtect": false,
+          "reduceOnly": true,
+          "selfTradePreventionMode": "EXPIRE_MAKER",
+          "side": "SELL",
+          "status": "NEW",
+          "stopPrice": "0.00",
+          "symbol": "BTCUSDT",
+          "timeInForce": "GTC",
+          "type": "MARKET",
+          "updateTime": 1788872413214,
+          "workingType": "CONTRACT_PRICE"
+        }
+      }
+    ]
+  }
+}
+Traceback (most recent call last):
+  File "<stdin>", line 64, in <module>
+  File "/Users/xinquanwang/AURORA/./aurora/kernel/ledger.py", line 479, in kill_state
+    row = self._conn.execute("SELECT * FROM kill_switch WHERE id = 1").fetchone()
+sqlite3.ProgrammingError: Cannot operate on a closed database.

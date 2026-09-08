@@ -1,0 +1,29 @@
+/Users/xinquanwang/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+  warnings.warn(
+{
+  "closeOrder": {
+    "avg_price": 78351.0,
+    "client_order_id": "AURORA-CTR-CTR-20260908-03-CLOSE",
+    "filled_qty": 0.001,
+    "status": "FILLED"
+  },
+  "position": {
+    "entry": 0.0,
+    "signedQty": 0.0
+  },
+  "slAlgo": {
+    "actual_order_id": null,
+    "algo_id": "1000000197772171",
+    "client_algo_id": "AURORA-CTR-CTR-20260908-03-SL",
+    "close_position": false,
+    "observed_at": 1788872450.020271,
+    "order_type": "STOP_MARKET",
+    "position_side": "LONG",
+    "qty": 0.001,
+    "side": "SELL",
+    "status": "CANCELLED",
+    "symbol": "BTCUSDT",
+    "trigger_price": 77589.5,
+    "working_type": "MARK_PRICE"
+  }
+}
