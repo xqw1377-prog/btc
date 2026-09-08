@@ -21,8 +21,8 @@ class RiskGate:
     def update_capital(self, capital: float):
         self.kernel.update_capital(capital)
 
-    def record_result(self, pnl: float):
-        self.kernel.record_trade(pnl)
+    def record_result(self, pnl: float, timestamp: Optional[float] = None):
+        self.kernel.record_trade(pnl, timestamp=timestamp)
 
     def approve(self, intent: TradeIntent, position: PositionState,
                 volatility: float, regime: str, confidence: float,

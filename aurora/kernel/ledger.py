@@ -412,6 +412,37 @@ class Ledger:
         ).fetchall()
         return [dict(r) for r in rows]
 
+    def list_economic_fills_with_context(self) -> List[Dict[str, Any]]:
+        """E0：权威经济影响成交，附带 order_kind / intent_id 上下文。"""
+        rows = self._conn.execute(
+            "SELECT f.*, o.order_kind, o.intent_id"
+            " FROM fills f"
+            " JOIN orders o ON f.client_order_id = o.client_order_id"
+            " WHERE f.economic_effect_applied = 1"
+            " AND NOT (f.synthetic = 1 AND f.covered_by_fact_id IS NOT NULL)"
+            " ORDER BY f.filled_at, f.fill_id"
+        ).fetchall()
+        return [dict(r) for r in rows]
+
+    def accounting_aggregate(self) -> Dict[str, Any]:
+        """E0：fills 表聚合（不含 funding；funding 列预留）。"""
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(realized_pnl), 0.0) AS gross,"
+            " COALESCE(SUM(fee), 0.0) AS fees,"
+            " COUNT(*) AS n"
+            " FROM fills"
+            " WHERE economic_effect_applied = 1"
+            " AND NOT (synthetic = 1 AND covered_by_fact_id IS NOT NULL)"
+        ).fetchone()
+        gross = float(row["gross"])
+        fees = float(row["fees"])
+        return {
+            "gross_realized_pnl": gross,
+            "total_fees": fees,
+            "net_pnl": gross - fees,
+            "fill_count": int(row["n"]),
+        }
+
     def fills_aggregate(self, client_order_id: str) -> Dict[str, Any]:
         """权威成交聚合（G0-4B B1）。
 

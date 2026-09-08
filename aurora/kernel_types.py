@@ -156,6 +156,19 @@ class PositionManager:
         self._position = PositionState()
         return pnl
 
+    def close_without_pnl(self, reason: str) -> None:
+        """E0：只清本地仓位视图；资本变动由 ledger fills 权威链负责。"""
+        if not self._position.is_open:
+            return
+        self._history.append({
+            'action': 'CLOSE', 'side': self._position.side.value,
+            'size': self._position.size, 'entry': self._position.entry_price,
+            'exit': None, 'pnl': None, 'reason': reason,
+            'time': datetime.now().isoformat(),
+            'accounting': 'ledger_authoritative',
+        })
+        self._position = PositionState()
+
     def update_price(self, price: float):
         if not self._position.is_open:
             return

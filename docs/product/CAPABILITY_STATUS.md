@@ -78,9 +78,17 @@ EXECUTION BOUNDARY            FROZEN      6b2cc7c
 EXECUTE_AUTHORIZED            FALSE
 EXECUTION AUTHORIZATION       NOT ISSUED
 REAL WRITE PATH               DENIED
-NEXT STAGE                    E0 ACCOUNTING TRUTH（待单独发令）
+NEXT STAGE                    E1 RISK SEMANTICS（HOLD）
 STRATEGY V2 / BACKTEST        HOLD
 PASS-2 / THIRD SESSION        HOLD / DENIED
+E0 ACCOUNTING TRUTH           CLOSED-OFFLINE
+  FILLS → PNL → CAPITAL       PASS
+  FEES IN NET PNL             PASS
+  FUNDING                     NOT YET AUTHORITATIVE / E1
+  EQUITY LABEL                fills+fees authoritative; not full economic NAV
+  RESTART WATERMARK           PASS（derivative cache；ledger rebuild 为 oracle）
+  BAR-PRICE CLOSE PNL         PROHIBITED
+E0 ≠ STRATEGY PROFITABILITY   账可信 ≠ 策略赚钱
                               仍是写盘前门 ≠ legacy dead-man
 CTR-20260908-01               STOP AT P2 / NO EXCHANGE WRITE
 EXECUTION AUTHORIZATION       NOT ISSUED
@@ -100,7 +108,12 @@ P0-GOVERNANCE-REPAIR          CLOSED          f0efb2b
   GATE-2  production_main → cannot bypass incident governance
   GATE-3  incident authority missing/unreadable/invalid → UNKNOWN
           → deny boot → never synthesize CLEAR
-OFFLINE REGRESSION            455 PASS
+OFFLINE REGRESSION            465 PASS
+REAL EXCHANGE WRITES          0
+EXECUTE_AUTHORIZED            FALSE
+INCIDENT KILL / LOCK          ACTIVE
+AUTO TESTNET                  DENIED
+LIVE                          NO-GO
 P1-GOV-3 LIVE ENDPOINT        PLANNED / NOT-STARTED
 EXECUTION AUTHORIZATION       CONSUMED（CTR-20260908-02，one-lifecycle）
 NEXT SESSION                  需新开工令；AUTO TESTNET 仍 DENIED
@@ -168,13 +181,14 @@ STRATEGY / V2                 HOLD
 | Controlled TESTNET Requal | **IMPLEMENTED / EXECUTE DENIED** | 边界已冻；`ops_controlled_requal` 默认只出 PLAN；execute 旗标在构造写客户端前硬拒。真源：CONTROLLED_TESTNET_REQUAL.md |
 | Pre-Execution Conformance | **ALIGNED TO 6b2cc7c / NOT AUTHORIZED TO EXECUTE** | qty exactly 0.001；分腿 `AURORA-CTR-<session>-ENTRY/SL/CLOSE`；`qualification/<session-id>/ledger.db`；新实例 restart recovery；harness 层 QUALIFICATION CLOSE；写门在构造客户端前双检。回归：tests/test_controlled_requal.py。真源：PRE_EXECUTION_CONFORMANCE.md |
 | Execution Work Package | **BOUNDARY-FROZEN / NOT AUTHORIZED TO EXECUTE** | 正式封点 `6b2cc7c`。不得用 HEAD 反向改解释。写盘必须 `EXECUTE_AUTHORIZED` **且** scoped single-use permit。PASS-1 ≠ AUTO TESTNET ≠ SYSTEM EXECUTION。permit 未签发 |
-| G0-5 运行身份与配置隔离 | **CLOSED-OFFLINE** | 5A–5D 同前。sealed-at-the-time：370 passed（排除当时未提交 probe）。pre-governance-repair：445 passed；current head：455 passed（2026-09-08 离线全套）。REAL EXCHANGE CALLS = 0。不授权 probe / 清 kill / TESTNET 真跑 |
+| G0-5 运行身份与配置隔离 | **CLOSED-OFFLINE** | 5A–5D 同前。sealed-at-the-time：370 passed（排除当时未提交 probe）。pre-governance-repair：445 passed；post-E0 head：465 passed（2026-09-08 离线全套）。REAL EXCHANGE CALLS = 0。不授权 probe / 清 kill / TESTNET 真跑 |
 
 沿用既有登记的 G1/G4/G5 迁移项（启动余额不刷新、死配置、数量精度、
 内存移动止损、波动单位）不因未列入上表而消失。
 
 下一阶段顺序冻结为：
-`E0 ACCOUNTING TRUTH → E1 RISK SEMANTICS → E2 STRATEGY V2 →
-E3 BACKTEST / WALK-FORWARD / OOS`。回测主 benchmark 必须包含
-`BTC HODL`，并报告 Excess BTC、BTC-denominated NAV / drawdown /
-CAGR、fee/funding drag 与 turnover；USDT 收益仅为第二视角。
+`E1 RISK SEMANTICS → E2 STRATEGY V2 → E3 BACKTEST / WALK-FORWARD / OOS`。
+E0 已 CLOSED-OFFLINE（账从 fills 重建；**不等于策略盈利证据**）。
+回测主 benchmark 必须包含 `BTC HODL`，并报告 Excess BTC、
+BTC-denominated NAV / drawdown / CAGR、fee/funding drag 与 turnover；
+USDT 收益仅为第二视角。

@@ -12,6 +12,13 @@ from typing import Any, Dict, Optional
 
 import pandas as pd
 
+from aurora.accounting_truth import (
+    accounting_path_for_ledger,
+    load_accounting,
+    persist_accounting,
+    rebuild_from_ledger,
+    sync_brain_from_snapshot,
+)
 from aurora.feature_engine import FeatureEngine
 from aurora.kernel_types import Intent, TradeIntent
 from aurora.market_state_engine_v2 import MarketStateEngineV2
@@ -79,7 +86,20 @@ class TradingCycle:
         self.momentum = MomentumSignalProvider()
         self.mr = MeanReversionSignalProvider()
         self.capital = capital or self._read_balance()
+        self.initial_capital = self.capital
         self.brain = brain or PortfolioBrainV2(self.capital)
+        ledger_path = getattr(getattr(runtime, "ledger", None), "path", "") or ""
+        self.accounting_path = (
+            accounting_path_for_ledger(ledger_path)
+            if ledger_path
+            else default_evidence_path().replace(
+                "strategy_evidence.json", "accounting_truth.json")
+        )
+        self._last_applied_fill_id: Optional[str] = None
+        cached = load_accounting(self.accounting_path)
+        if cached and cached.last_applied_fill_id:
+            self._last_applied_fill_id = cached.last_applied_fill_id
+        self._sync_accounting(full_replay=cached is None)
         self.evidence_path = (
             evidence_path if evidence_path is not None else default_evidence_path()
         )
@@ -178,6 +198,18 @@ class TradingCycle:
             "bar_status": regime.get("bar_status"),
         }
 
+    def _sync_accounting(self, *, full_replay: bool = False) -> None:
+        ledger = getattr(self.runtime, "ledger", None)
+        if ledger is None or not hasattr(ledger, "list_economic_fills_with_context"):
+            return
+        snapshot = rebuild_from_ledger(ledger, self.initial_capital)
+        watermark = None if full_replay else self._last_applied_fill_id
+        self._last_applied_fill_id = sync_brain_from_snapshot(
+            self.brain, snapshot, ledger, watermark)
+        snapshot.last_applied_fill_id = self._last_applied_fill_id
+        persist_accounting(snapshot, self.accounting_path)
+        self.capital = snapshot.equity
+
     def sync_brain_from_exchange(self) -> None:
         pos = self.runtime.exchange.position(self.symbol)
         brain_pos = self.brain.position_mgr.position
@@ -185,7 +217,8 @@ class TradingCycle:
             return
         if abs(pos.signed_qty) < 1e-12:
             if brain_pos.is_open:
-                self.brain.position_mgr.close(pos.entry_price or brain_pos.entry_price, "exchange flat")
+                self.brain.close_position_from_accounting("exchange flat")
+                self._sync_accounting()
             return
         if not brain_pos.is_open:
             side = Intent.LONG if pos.signed_qty > 0 else Intent.SHORT
@@ -221,11 +254,13 @@ class TradingCycle:
             )
             if result.get("success"):
                 self.brain.execute_intent(intent, price)
+                self._sync_accounting()
             return {"submitted": True, "action": "OPEN", "result": result, "qty": qty}
         if intent.action == "CLOSE":
             result = self.runtime.close_position(intent.reason)
             if result.get("success"):
                 self.brain.execute_intent(intent, price)
+                self._sync_accounting()
             return {"submitted": True, "action": "CLOSE", "result": result}
         return {"submitted": False, "action": intent.action, "reason": intent.reason}
 
@@ -237,6 +272,7 @@ class TradingCycle:
         if self.runtime.ledger.kill_state().get("engaged"):
             return {"action": "HOLD", "reason": "kill switch engaged", "recover": report}
         self.sync_brain_from_exchange()
+        self._sync_accounting()
         try:
             df = self.fetch_klines()
         except Exception as exc:

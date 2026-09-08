@@ -266,14 +266,14 @@ class PortfolioBrainV2:
             )
 
         elif intent.action == "CLOSE":
-            pnl = self.position_mgr.close(price, intent.reason)
-            self.risk_gate.record_result(pnl)
-            self.capital_objective.record(pnl)
-            self.capital += pnl
-            self.risk_gate.update_capital(self.capital)
-            return pnl
+            # E0：平仓 PnL 必须来自 ledger fills，不得用 bar 价格记账。
+            self.position_mgr.close_without_pnl(intent.reason)
 
         return 0.0
+
+    def close_position_from_accounting(self, reason: str) -> None:
+        """交易所/内核已平仓后，只更新本地仓位视图，不记账。"""
+        self.position_mgr.close_without_pnl(reason)
 
     def get_state(self) -> Dict[str, Any]:
         pos = self.position_mgr.position
