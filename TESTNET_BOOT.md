@@ -118,6 +118,7 @@ INCIDENT_LOCK                 ACTIVE
 AUTO_TESTNET                  DENIED
 CONTROLLED_REQUAL             HARNESS-READY / EXECUTE DENIED
 EXECUTION_WP                  BOUNDARY-FROZEN / NOT AUTHORIZED TO EXECUTE
+                              REQUIRED AMENDMENTS INCORPORATED
 LIVE                          NO-GO
 ```
 

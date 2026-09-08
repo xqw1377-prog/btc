@@ -48,6 +48,7 @@ INCIDENT_LOCK                 ACTIVE
 AUTO_TESTNET                  DENIED
 CONTROLLED_REQUAL             HARNESS-READY / EXECUTE DENIED
 EXECUTION_WP                  BOUNDARY-FROZEN / NOT AUTHORIZED TO EXECUTE
+                              REQUIRED AMENDMENTS INCORPORATED
 LIVE                          NO-GO
 SYSTEM_EXECUTION_QUALIFIED    NO
 P0_SAFETY_STATUS              STALE / NOT AUTHORITATIVE
@@ -103,7 +104,7 @@ STRATEGY / V2                 HOLD
 | Incident Disposition | **SEALED** | 历史证据缺口 ACCEPTED；`INCIDENT_REQUALIFICATION_ELIGIBLE=YES` 仅批准进入 G0-4D 只读复核。lock / kill / AUTO TESTNET / SYSTEM EXECUTION 未解除。真源：DISPOSITION.md |
 | G0-4D 只读 TESTNET 资格复核 | **CLOSED-READONLY** | 认证 PASS；读协议 PASS；恢复证据 PARTIAL（无 SELL，缺口再确认）。fail-closed 未触发。回归：tests/test_g04d_readonly.py。现场：g04d_readonly.json。SYSTEM EXECUTION 仍 NO |
 | Controlled TESTNET Requal | **HARNESS-READY / EXECUTE DENIED** | 边界已冻；`ops_controlled_requal` 默认只出 PLAN；execute 旗标仍拒写。离线单次会话：开仓→PROTECTED→restart recover→flatten→会话 kill，事故账本字节不变。回归：tests/test_controlled_requal.py。真源：CONTROLLED_TESTNET_REQUAL.md |
-| Execution Work Package | **BOUNDARY-FROZEN / NOT AUTHORIZED TO EXECUTE** | 0.001 LONG 一次性边界已写死：KNOWN_FLAT 入场、权威 fill、SL ACTIVE_CONFIRMED、失败不得第二笔、必须归零、事故 kill 保持 ACTIVE。真源：EXECUTION_WORK_PACKAGE.md。`EXECUTE_AUTHORIZED` 仍为 false |
+| Execution Work Package | **BOUNDARY-FROZEN / NOT AUTHORIZED TO EXECUTE** | REQUIRED AMENDMENTS 已并入：restart recovery 必过；QUALIFICATION CLOSE 写死 SELL+LONG / ACK≠confirmed；分腿 client ID；独立 qualification ledger；scoped single-use permit + `EXECUTE_AUTHORIZED` 双门。P0–P22 才算 PASS-1，仍 ≠ SYSTEM EXECUTION。真源：EXECUTION_WORK_PACKAGE.md。`EXECUTE_AUTHORIZED` 仍为 false |
 | G0-5 运行身份与配置隔离 | **CLOSED-OFFLINE** | 5A 交易相邻入口共用显式 `ConfigSource`：不 `load_dotenv` / 不向上搜索父目录、导入零副作用、不改写 `os.environ`、进程环境优先。5B `state/<mode>/<fingerprint>/` 物理隔离；事故 `state/kernel_ledger.db` 只读接管，源文件字节不变，kill 保留；显式 `AURORA_LEDGER_PATH` 不继承遗留账本。5C 缺指纹拒启；身份含 mode/fingerprint/position_mode/host/exclusivity；漂移 `ACCOUNT_IDENTITY_DRIFT` fail-closed；独占性默认 false。5D `SafeExecutor` 迁出为 OFFLINE_REFERENCE_ONLY，`BootContext.executor` 恒为 None。回归：tests/test_g05_identity_isolation.py。全套 370 passed（排除未提交 probe）。REAL EXCHANGE CALLS = 0。不授权 probe / 清 kill / TESTNET 真跑 |
 
 沿用既有登记的 G1/G4/G5 迁移项（启动余额不刷新、死配置、数量精度、
