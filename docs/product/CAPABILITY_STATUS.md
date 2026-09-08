@@ -77,8 +77,9 @@ PRE_EXECUTION_CONFORMANCE     ALIGNED     eb0536b / 6ed46be
 EXECUTION BOUNDARY            FROZEN      6b2cc7c
 EXECUTE_AUTHORIZED            FALSE
                               仍是写盘前门 ≠ legacy dead-man
+CTR-20260908-01               STOP AT P2 / NO EXCHANGE WRITE
 EXECUTION AUTHORIZATION       NOT ISSUED
-SCOPED PERMIT                 NOT ISSUED
+SCOPED PERMIT                 VOIDED（该 session）
 REAL WRITE PATH               DENIED
 CONTROLLED_REQUAL             IMPLEMENTATION SEALED 5336467
                               EXECUTION AUTHORIZATION  NOT ISSUED

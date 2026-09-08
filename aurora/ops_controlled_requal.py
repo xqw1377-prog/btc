@@ -43,7 +43,7 @@ PERMIT_TTL_HOURS_DEFAULT = 72.0
 PERMIT_SCHEMA = "ctr-permit-v1"
 START_ORDER_SCHEMA = "ctr-start-order-v1"
 # 硬开关：开工令未到之前，任何 live 写入口必须失败。
-EXECUTE_AUTHORIZED = True
+EXECUTE_AUTHORIZED = False
 
 
 def incident_ledger_path() -> str:
@@ -1024,6 +1024,7 @@ def execute_live(
         os.makedirs(os.path.dirname(session_path), exist_ok=True)
         ledger = Ledger(session_path)
         orch = Orchestrator(ledger, exchange, symbol=SYMBOL)
+        orch.recover()
     if baseline is None and client is not None:
         baseline = observe_baseline(client, source.as_environ())
         if mark_price is None and baseline.get("markPriceObserved"):
@@ -1045,7 +1046,7 @@ def execute_live(
         try:
             closeout = qualification_close(orch, session_id=session_id)
             out["closeout"] = {"success": True, "fillQty": closeout["fillQty"]}
-        except Exception as close_exc:
+        except (SafetyViolation, Exception) as close_exc:
             out["closeout"] = {"success": False,
                                "reason": str(close_exc)[:160]}
         out["wireEvidence"] = getattr(wire_log, "export", lambda: {})() \

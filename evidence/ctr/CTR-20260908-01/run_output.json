@@ -1,0 +1,6 @@
+{
+  "execute": "DENIED",
+  "package": "CONTROLLED_TESTNET_REQUAL",
+  "reason": "[P0] mutating exchange requires injected ObservedPositionMode; no ONE_WAY/HEDGE default.",
+  "status": "BLOCKED"
+}
