@@ -76,19 +76,31 @@ CONTROLLED REQUAL HARNESS     IMPLEMENTED
 PRE_EXECUTION_CONFORMANCE     ALIGNED     eb0536b / 6ed46be
 EXECUTION BOUNDARY            FROZEN      6b2cc7c
 EXECUTE_AUTHORIZED            FALSE
+EXECUTION AUTHORIZATION       NOT ISSUED
+REAL WRITE PATH               DENIED
+NEXT STAGE                    E0 ACCOUNTING TRUTH（待单独发令）
+STRATEGY V2 / BACKTEST        HOLD
+PASS-2 / THIRD SESSION        HOLD / DENIED
                               仍是写盘前门 ≠ legacy dead-man
 CTR-20260908-01               STOP AT P2 / NO EXCHANGE WRITE
 EXECUTION AUTHORIZATION       NOT ISSUED
 SCOPED PERMIT                 VOIDED（该 session）
 REAL WRITE PATH               DENIED
-CONTROLLED REQUAL LIFECYCLE   PASS-1（CTR-20260908-02；证据包已补齐）
+PASS-1                        EXISTS
+PASS-1 EVIDENCE               RECONSTRUCTED-COMPLETE
+PASS-1 ORIGINAL RAW           PARTIAL（原始 run_output.txt 已丢失；
+                              禁止生成新文件冒充原始——只允许追加
+                              reconstruction provenance/hash/引用来源）
 SESSION CTR-20260908-03       FAIL-SAFE / CLEAN RECOVERY
                               （P5_FINALITY_DELAY；后到证据不改写裁决）
 AUTHORIZATION PROVENANCE      CTR-03：TIMELINE MECHANICALLY VALID /
                               GOVERNANCE NON-CONFORMANT（永久标记）
-P0-GOVERNANCE-REPAIR          EXECUTE_AUTHORIZED 硬前门已恢复；
-                              production_main 事故联锁已接；
-                              incident state UNKNOWN 拒启（禁默认 CLEAR）
+P0-GOVERNANCE-REPAIR          CLOSED          f0efb2b
+  GATE-1  EXECUTE_AUTHORIZED=FALSE → deny before writable client
+  GATE-2  production_main → cannot bypass incident governance
+  GATE-3  incident authority missing/unreadable/invalid → UNKNOWN
+          → deny boot → never synthesize CLEAR
+OFFLINE REGRESSION            455 PASS
 P1-GOV-3 LIVE ENDPOINT        PLANNED / NOT-STARTED
 EXECUTION AUTHORIZATION       CONSUMED（CTR-20260908-02，one-lifecycle）
 NEXT SESSION                  需新开工令；AUTO TESTNET 仍 DENIED

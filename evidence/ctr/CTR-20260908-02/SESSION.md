@@ -55,3 +55,15 @@ AUTHORIZATION GOVERNANCE      NOTE：授权来自操作员正式确认单（对�
                               P0-GOVERNANCE-REPAIR 中以硬前门封堵。
 QUALIFICATION RESULT          PASS-1（本仓唯一 PASS；EXECUTE 恢复 FALSE）
 ```
+
+---
+
+## RECONSTRUCTION PROVENANCE（永久纪律，append-only）
+
+```text
+ORIGINAL RAW EVIDENCE      PARTIAL / LOST（run_output.txt 丢失，不可恢复）
+EVIDENCE PACKAGE           RECONSTRUCTED-COMPLETE（依据执行时会话输出重建）
+REBUILD SOURCE             执行代理的会话记录（本文件创建时唯一来源）
+或然纪律                   本目录今后只允许追加 provenance/hash/引用来源；
+                          任何新生成的 txt 不得称为原始执行文件。
+```
