@@ -22,6 +22,7 @@ from aurora.kernel.ledger import Ledger, PositionFactState  # noqa: E402
 from aurora.kernel.orchestrator import Orchestrator  # noqa: E402
 from aurora.kernel.port import OrderKind  # noqa: E402
 from aurora.kernel.state_machine import IntentState  # noqa: E402
+from tests.kernel_test_open import bind_explicit_protect_prices  # noqa: E402
 
 try:
     from test_protection_semantics import oracle_coverage  # noqa: E402
@@ -107,7 +108,8 @@ class KernelPropertyTests(unittest.TestCase):
                 close_behavior=close_b,
             )
             ledger = Ledger(path)
-            orch = Orchestrator(ledger, exchange, instance_id="prop")
+            orch = bind_explicit_protect_prices(
+                Orchestrator(ledger, exchange, instance_id="prop"))
             orch.recover()
             seen_kill = False
             opened = False
@@ -135,7 +137,8 @@ class KernelPropertyTests(unittest.TestCase):
                     elif op == "restart_recover":
                         ledger.close()
                         ledger = Ledger(path)
-                        orch = Orchestrator(ledger, exchange, instance_id="prop2")
+                        orch = bind_explicit_protect_prices(
+                            Orchestrator(ledger, exchange, instance_id="prop2"))
                         self._assert_convergence(orch, exchange, ledger)
                     seen_kill = self._assert_invariants(
                         orch, exchange, ledger, seen_kill) or seen_kill

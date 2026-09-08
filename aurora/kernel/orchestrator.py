@@ -9,7 +9,15 @@
 6. 持仓事实 UNKNOWN 禁止新开仓。
 7. Kill Switch 持久化，重启后仍生效。
 8. 启动先 recover()（对账 + 解决未决），才允许开仓。
+
+G0-4B（执行事实真源）补充铁律：
+9. 保护数量来自权威成交聚合/仓位事实；入场 ACK executedQty 只是早期观察值，
+   绝不是保护数量真源；0 < protection_qty <= confirmed_position_qty。
+10. 紧急平仓的尝试/拒绝/未知/确认四态分离；只有权威成交或仓位归零事实
+    才产生 EMERGENCY_CLOSE_CONFIRMED；"调用过 close" ≠ "已执行"。
+11. 强制腿 SL 保护价缺失/非法 → OPEN DENIED；不存在 99/101 哨兵保护价。
 """
+import math
 import uuid
 from typing import Any, Dict, Optional
 
@@ -24,6 +32,32 @@ from .port import (
     SubmitUnknownError,
 )
 from .state_machine import IntentState
+
+
+def _valid_price(px: Any) -> bool:
+    """合法保护触发价：有限正数。0/负数/NaN/None 都不是价格。"""
+    return (
+        isinstance(px, (int, float))
+        and not isinstance(px, bool)
+        and math.isfinite(px)
+        and float(px) > 0
+    )
+
+
+EXECUTION_QTY_DRIFT = "EXECUTION_QTY_DRIFT"
+EMERGENCY_CLOSE_ATTEMPTED = "EMERGENCY_CLOSE_ATTEMPTED"
+EMERGENCY_CLOSE_REJECTED = "EMERGENCY_CLOSE_REJECTED"
+EMERGENCY_CLOSE_UNKNOWN = "EMERGENCY_CLOSE_UNKNOWN"
+EMERGENCY_CLOSE_CONFIRMED = "EMERGENCY_CLOSE_CONFIRMED"
+# B2：close_outcome → kill 理由标签。NOT_ZERO（平仓单成交但仓位未归零）
+# 属于"未确认平仓"，与 UNKNOWN 同级，不得写成 CONFIRMED。
+_EMERGENCY_OUTCOME_LABELS = {
+    "CONFIRMED": EMERGENCY_CLOSE_CONFIRMED,
+    "REJECTED": EMERGENCY_CLOSE_REJECTED,
+    "UNKNOWN": EMERGENCY_CLOSE_UNKNOWN,
+    "NOT_ZERO": EMERGENCY_CLOSE_UNKNOWN,
+}
+_QTY_EPS = 1e-9
 
 
 class Orchestrator:
@@ -78,6 +112,8 @@ class Orchestrator:
                         state="FILLED" if fact.status == "FILLED" else "PARTIALLY_FILLED",
                         filled_qty=fact.filled_qty, avg_price=fact.avg_price)
                     self._apply_fills(cid)
+                    self.ledger.sync_order_projection_from_fills(cid)
+                    agg = self.ledger.fills_aggregate(cid)["qty"]
                     intent = self.ledger.get_intent(intent_id)
                     if intent and IntentState(intent["state"]) in (
                         IntentState.SUBMITTING, IntentState.SUBMIT_UNKNOWN,
@@ -85,7 +121,8 @@ class Orchestrator:
                     ):
                         self.ledger.transition_intent(
                             intent_id, IntentState.FILLED_UNPROTECTED,
-                            f"recovery: entry {fact.status} (filled={fact.filled_qty})",
+                            f"recovery: entry {fact.status} "
+                            f"(fill_aggregate={agg}; query.executedQty={fact.filled_qty} observation)",
                             correlation_id=intent_id)
                         self._ensure_protection(intent_id)
                     report["resolved"].append(entry)
@@ -294,6 +331,14 @@ class Orchestrator:
         if kill["engaged"]:
             return self._refuse(f"kill switch engaged: {kill['reason']}")
 
+        # B3：强制腿保护价必须在开仓前存在。没有明确保护合同，不允许开仓；
+        # 绝不自动制造"看起来有数字"的哨兵保护价（99/101 已废除）。
+        if not _valid_price(stop_price):
+            return self._refuse(
+                "OPEN DENIED: mandatory SL protection price missing/invalid;"
+                " no intent created, no order sent"
+            )
+
         # 保护修复期间禁止一切新开仓（DEGRADED 存在即拒绝）
         degraded = self.ledger.list_intents(states=[IntentState.PROTECTION_DEGRADED.value])
         if degraded:
@@ -348,10 +393,14 @@ class Orchestrator:
         # 当前事故运行锁（kill / INCIDENT_LOCKED）另层拒绝新风险。
         # 未来 incident disposition 可以在残留仍 OPEN 时批准新的 qualification。
 
-        self._protect_px[intent_id] = (
-            float(stop_price) if stop_price else 99.0,
-            float(take_profit_price) if take_profit_price else 101.0,
+        # TP 是可选腿：价格缺失时跳过 TP（NOT_CONFIGURED），不制造哨兵价。
+        # SL 已在开仓前校验；写入账本，重启 recover 不得靠 99/101 回填。
+        tp_stored = (
+            float(take_profit_price) if _valid_price(take_profit_price) else None
         )
+        self.ledger.set_intent_protect_prices(
+            intent_id, float(stop_price), tp_stored)
+        self._protect_px[intent_id] = (float(stop_price), tp_stored)
         try:
             return self._submit_entry(intent_id, side, quantity, reason)
         except _LedgerWriteFailed as exc:
@@ -420,34 +469,131 @@ class Orchestrator:
             exchange_order_id=ack.exchange_order_id,
             filled_qty=ack.filled_qty, avg_price=ack.avg_price)
         self._apply_fills(cid)
+        # ACK.executedQty 只是早期观察；保护数量必须在成交入账后再取真源。
+        self.ledger.sync_order_projection_from_fills(cid)
+        agg = self.ledger.fills_aggregate(cid)["qty"]
 
         if ack.status == "PARTIALLY_FILLED":
             self.ledger.transition_intent(
                 intent_id, IntentState.PARTIALLY_FILLED,
-                f"entry partial filled_qty={ack.filled_qty}", correlation_id=intent_id)
+                f"entry partial fill_aggregate={agg} ack={ack.filled_qty}",
+                correlation_id=intent_id)
         self.ledger.transition_intent(
             intent_id, IntentState.FILLED_UNPROTECTED,
-            f"entry filled={ack.filled_qty}; protection required",
+            f"entry fill_aggregate={agg}; ack.executedQty={ack.filled_qty} (observation only); "
+            "protection required",
             correlation_id=intent_id)
         return self._ensure_protection(intent_id)
 
+    def _protection_sizing(self, intent_id: str) -> Dict[str, Any]:
+        """保护数量真源（G0-4B B1）。
+
+        优先级：权威成交聚合 → 已确认仓位事实 / 交易所仓位 → 其他权威执行事实。
+        入场 ACK.executedQty 只是早期观察，绝不作为 sizing 真源。
+        fills 与仓位不一致 → EXECUTION_QTY_DRIFT，不得取 max/min 继续挂保护。
+        """
+        cid = f"{intent_id}-ENTRY"
+        self._apply_fills(cid)
+        self.ledger.sync_order_projection_from_fills(cid)
+        fill_qty = self.ledger.fills_aggregate(cid)["qty"]
+        pos = self._safe_position()
+        fact = self.ledger.get_position_fact(self.symbol)
+        position_qty = None
+        position_side = None
+        if pos is not None:
+            position_qty = abs(pos.signed_qty)
+            if position_qty > _QTY_EPS:
+                position_side = "LONG" if pos.signed_qty > 0 else "SHORT"
+        elif fact is not None and fact["state"] == PositionFactState.KNOWN_OPEN.value:
+            position_qty = abs(float(fact["qty"] or 0.0))
+            position_side = fact.get("side")
+        else:
+            return {"error": "POSITION_UNKNOWN", "fill_qty": fill_qty}
+
+        if fill_qty > _QTY_EPS and position_qty is not None:
+            if abs(fill_qty - position_qty) > _QTY_EPS:
+                return {
+                    "error": EXECUTION_QTY_DRIFT,
+                    "fill_qty": fill_qty,
+                    "position_qty": position_qty,
+                }
+
+        if fill_qty > _QTY_EPS:
+            qty = fill_qty
+        elif position_qty is not None and position_qty > _QTY_EPS:
+            qty = position_qty
+        else:
+            return {"error": "PROTECTION_QTY_ZERO",
+                    "fill_qty": fill_qty, "position_qty": position_qty}
+
+        if position_qty is not None and qty > position_qty + _QTY_EPS:
+            return {"error": EXECUTION_QTY_DRIFT,
+                    "fill_qty": fill_qty, "position_qty": position_qty}
+
+        intent = self.ledger.get_intent(intent_id)
+        side = intent["side"] if intent else position_side
+        if position_side and side and position_side != side:
+            return {"error": EXECUTION_QTY_DRIFT,
+                    "fill_qty": fill_qty, "position_qty": position_qty}
+        return {
+            "qty": qty, "side": side,
+            "position_qty": position_qty, "fill_qty": fill_qty,
+        }
+
+    def _entry_price_for_protection(self, intent_id: str) -> Optional[float]:
+        cid = f"{intent_id}-ENTRY"
+        agg = self.ledger.fills_aggregate(cid)
+        if agg["qty"] > _QTY_EPS and _valid_price(agg.get("avg_price")):
+            return float(agg["avg_price"])
+        order = self.ledger.get_order(cid)
+        if order is not None and _valid_price(order.get("avg_price")):
+            return float(order["avg_price"])
+        pos = self._safe_position()
+        if pos is not None and _valid_price(getattr(pos, "entry_price", None)):
+            return float(pos.entry_price)
+        return None
+
     def _ensure_protection(self, intent_id: str) -> Dict[str, Any]:
         intent = self.ledger.get_intent(intent_id)
-        entry_order = self.ledger.get_order(f"{intent_id}-ENTRY")
-        filled_qty = entry_order["filled_qty"] if entry_order else 0.0
         side = intent["side"]
+        sizing = self._protection_sizing(intent_id)
+        if sizing.get("error"):
+            err = sizing["error"]
+            self.ledger.transition_intent(
+                intent_id, IntentState.RECOVERY_REQUIRED,
+                f"protection sizing failed: {err}", correlation_id=intent_id)
+            self.ledger.engage_kill(f"{err} {intent_id}")
+            self.ledger.set_position_fact(
+                self.symbol, PositionFactState.UNKNOWN,
+                source="protection-sizing", note=err)
+            return {"success": False, "intent_id": intent_id,
+                    "state": "RECOVERY_REQUIRED", "halt": True,
+                    "reason": err, "sizing": sizing}
 
+        filled_qty = sizing["qty"]
         self.ledger.transition_intent(
             intent_id, IntentState.PROTECTION_SUBMITTING,
-            f"protection submit for actual filled qty={filled_qty}",
+            f"protection submit for fill/position qty={filled_qty}",
             correlation_id=intent_id)
 
         sl_px, tp_px = self._protect_prices(intent_id)
+        if not _valid_price(sl_px):
+            self.ledger.transition_intent(
+                intent_id, IntentState.RECOVERY_REQUIRED,
+                "mandatory SL price unavailable; sentinels removed (G0-4B)",
+                correlation_id=intent_id)
+            self.ledger.engage_kill(f"mandatory SL price missing {intent_id}")
+            self.ledger.set_position_fact(
+                self.symbol, PositionFactState.UNKNOWN,
+                source="protection", note=f"SL price missing {intent_id}")
+            return {"success": False, "intent_id": intent_id,
+                    "state": "RECOVERY_REQUIRED", "halt": True,
+                    "reason": "mandatory SL price missing"}
         # 强制腿 SL：失败 = 裸奔仓位 → 紧急平仓
         try:
             self._place_protection_leg(
                 intent_id, self._leg_cid(intent_id, "SL"),
-                OrderKind.STOP_LOSS, side, filled_qty, stop_price=sl_px)
+                OrderKind.STOP_LOSS, side, filled_qty, stop_price=float(sl_px))
         except SubmitUnknownError as exc:
             self.ledger.transition_intent(
                 intent_id, IntentState.RECOVERY_REQUIRED,
@@ -466,19 +612,26 @@ class Orchestrator:
                 f"mandatory SL rejected: {exc}", correlation_id=intent_id)
             return self._emergency_close(intent_id, trigger="mandatory SL failed")
 
-        # 可选腿 TP：仅 TP 失败 = safe_but_incomplete，不紧急平仓
-        tp_ok = True
-        try:
-            self._place_protection_leg(
-                intent_id, self._leg_cid(intent_id, "TP"),
-                OrderKind.TAKE_PROFIT, side, filled_qty, stop_price=tp_px)
-        except (OrderRejectedError, SubmitUnknownError):
-            tp_ok = False
+        # 可选腿 TP：价格缺失/无效 = 明确不挂 TP（NOT_CONFIGURED →
+        # safe_but_incomplete），绝不制造哨兵保护价；仅 TP 失败不紧急平仓。
+        tp_ok = False
+        tp_not_configured = False
+        if _valid_price(tp_px):
+            try:
+                self._place_protection_leg(
+                    intent_id, self._leg_cid(intent_id, "TP"),
+                    OrderKind.TAKE_PROFIT, side, filled_qty, stop_price=float(tp_px))
+                tp_ok = True
+            except (OrderRejectedError, SubmitUnknownError):
+                tp_ok = False
+        else:
+            tp_not_configured = True
 
         self.ledger.transition_intent(
             intent_id, IntentState.PROTECTED,
             f"SL confirmed for qty={filled_qty}"
-            + ("" if tp_ok else "; TP incomplete (safe_but_incomplete)"),
+            + ("" if tp_ok else "; TP incomplete (safe_but_incomplete)")
+            + ("; TP NOT_CONFIGURED" if tp_not_configured else ""),
             correlation_id=intent_id)
         self.ledger.set_position_fact(
             self.symbol, PositionFactState.KNOWN_OPEN, qty=filled_qty, side=side,
@@ -491,16 +644,15 @@ class Orchestrator:
     def _emergency_close(self, intent_id: str, trigger: str) -> Dict[str, Any]:
         self.ledger.transition_intent(
             intent_id, IntentState.CLOSING,
-            f"emergency reduceOnly close ({trigger})", correlation_id=intent_id)
+            f"{EMERGENCY_CLOSE_ATTEMPTED} ({trigger})", correlation_id=intent_id)
         result = self._submit_close(intent_id, trigger, emergency=True)
-        self.ledger.engage_kill(f"{trigger}; emergency close executed for {intent_id}")
-        if result.get("success"):
-            # 紧急平仓成功 ≠ 开仓成功：整体操作失败并熔断，禁止一切新开仓
-            result = {
-                **result, "success": False, "halt": True,
-                "reason": f"{trigger}; emergency flatten succeeded; kill switch engaged",
-            }
-        return result
+        label = _EMERGENCY_OUTCOME_LABELS.get(
+            str(result.get("close_outcome") or ""), EMERGENCY_CLOSE_ATTEMPTED)
+        self.ledger.engage_kill(f"{label}: {trigger} ({intent_id})")
+        return {
+            **result, "success": False, "halt": True,
+            "reason": f"{trigger}; {label}; kill switch engaged",
+        }
 
     def _submit_close(self, intent_id: str, reason: str, emergency: bool) -> Dict[str, Any]:
         pos = self._safe_position()
@@ -513,7 +665,8 @@ class Orchestrator:
             self.ledger.set_position_fact(
                 self.symbol, PositionFactState.UNKNOWN, source="close", note="unknown")
             return {"success": False, "intent_id": intent_id,
-                    "state": "RECOVERY_REQUIRED", "reason": "position UNKNOWN"}
+                    "state": "RECOVERY_REQUIRED", "close_outcome": "UNKNOWN",
+                    "reason": "position UNKNOWN"}
 
         qty = abs(pos.signed_qty)
         side = "LONG" if pos.signed_qty > 0 else "SHORT"
@@ -526,6 +679,7 @@ class Orchestrator:
             self.ledger.set_position_fact(
                 self.symbol, PositionFactState.KNOWN_FLAT, source="close", note=reason)
             return {"success": True, "intent_id": intent_id, "state": "RECONCILED",
+                    "close_outcome": "CONFIRMED",
                     "reason": "already flat"}
 
         tag = "CLOSE-EMG" if emergency else "CLOSE"
@@ -558,7 +712,8 @@ class Orchestrator:
             self.ledger.set_position_fact(
                 self.symbol, PositionFactState.UNKNOWN, source="close", note=cid)
             return {"success": False, "intent_id": intent_id,
-                    "state": "RECOVERY_REQUIRED", "reason": str(exc)}
+                    "state": "RECOVERY_REQUIRED", "close_outcome": "UNKNOWN",
+                    "reason": str(exc)}
         except OrderRejectedError as exc:
             self.ledger.update_order(cid, state="REJECTED")
             # 拒单是确定性事实：仓位未平。合法路径 CLOSING→CLOSE_UNKNOWN→
@@ -575,14 +730,33 @@ class Orchestrator:
             self.ledger.set_position_fact(
                 self.symbol, PositionFactState.UNKNOWN, source="close", note=cid)
             return {"success": False, "intent_id": intent_id,
-                    "state": "RECOVERY_REQUIRED", "reason": str(exc)}
+                    "state": "RECOVERY_REQUIRED", "close_outcome": "REJECTED",
+                    "reason": str(exc)}
 
-        self.ledger.update_order(cid, state="FILLED",
-                                 exchange_order_id=ack.exchange_order_id,
-                                 filled_qty=ack.filled_qty, avg_price=ack.avg_price)
+        self.ledger.update_order(
+            cid, exchange_order_id=ack.exchange_order_id)
         self._apply_fills(cid)
+        close_fills = self.ledger.fills_aggregate(cid)["qty"]
+        flat = self._exchange_flat()
+        if close_fills <= _QTY_EPS and not flat:
+            self.ledger.update_order(cid, state="CLOSE_UNKNOWN")
+            self.ledger.transition_intent(
+                intent_id, IntentState.CLOSE_UNKNOWN,
+                f"close ack without fill or flatten fact ({reason})",
+                correlation_id=intent_id)
+            self.ledger.transition_intent(
+                intent_id, IntentState.RECOVERY_REQUIRED,
+                "close unconfirmed: no authoritative close fill and position still open",
+                correlation_id=intent_id)
+            if not emergency:
+                self.ledger.engage_kill(f"close unknown {cid}")
+            self.ledger.set_position_fact(
+                self.symbol, PositionFactState.UNKNOWN, source="close", note=cid)
+            return {"success": False, "intent_id": intent_id,
+                    "state": "RECOVERY_REQUIRED", "close_outcome": "UNKNOWN",
+                    "reason": "close ack is not a flatten fact"}
 
-        if self._exchange_flat():
+        if flat:
             self.ledger.transition_intent(
                 intent_id, IntentState.CLOSED, f"close confirmed flat ({reason})",
                 correlation_id=intent_id)
@@ -591,16 +765,19 @@ class Orchestrator:
                 correlation_id=intent_id)
             self.ledger.set_position_fact(
                 self.symbol, PositionFactState.KNOWN_FLAT, source="close", note=reason)
-            return {"success": True, "intent_id": intent_id, "state": "RECONCILED"}
+            return {"success": True, "intent_id": intent_id, "state": "RECONCILED",
+                    "close_outcome": "CONFIRMED"}
 
         self.ledger.transition_intent(
             intent_id, IntentState.RECOVERY_REQUIRED,
-            "close filled but position not zero", correlation_id=intent_id)
-        self.ledger.engage_kill(f"post-close non-zero position {intent_id}")
+            "close fill present but position not zero", correlation_id=intent_id)
+        if not emergency:
+            self.ledger.engage_kill(f"post-close non-zero position {intent_id}")
         self.ledger.set_position_fact(
             self.symbol, PositionFactState.UNKNOWN, source="close", note="non-zero after close")
         return {"success": False, "intent_id": intent_id,
-                "state": "RECOVERY_REQUIRED", "reason": "position not zero after close"}
+                "state": "RECOVERY_REQUIRED", "close_outcome": "NOT_ZERO",
+                "reason": "position not zero after close"}
 
     # ---------- 内部：事实同步 ----------
 
@@ -815,18 +992,32 @@ class Orchestrator:
                     "tp_coverage": status.tp_coverage,
                     "safe_but_incomplete": status.safe_but_incomplete}
 
+        sl_px, tp_px = self._protect_prices(intent_id)
+        # G0-4B：TP 价格缺失 = 维持 safe_but_incomplete（明确不挂 TP），
+        # 绝不是需要紧急平仓的失败；SL 价格缺失才不能补、必须走失败路径。
+        if deficits["SL"] > 1e-12 and not _valid_price(sl_px):
+            return {"success": False, "intent_id": intent_id,
+                    "state": "RECOVERY_REQUIRED",
+                    "reason": "SL top-up price unavailable; sentinels removed (G0-4B)"}
+        tp_price_missing = not _valid_price(tp_px)
+
         for tag, kind, deficit in (
             ("SL-TOPUP", OrderKind.STOP_LOSS, deficits["SL"]),
             ("TP-TOPUP", OrderKind.TAKE_PROFIT, deficits["TP"]),
         ):
             if deficit <= 1e-12:
                 continue
+            if tag.startswith("TP"):
+                if tp_price_missing:
+                    continue  # 无 TP 价 → 明确跳过，保持 sl-only 覆盖
+                topup_px = float(tp_px)
+            else:
+                topup_px = float(sl_px)
             cid = self._leg_cid(intent_id, tag)
             try:
-                sl_px, tp_px = self._protect_prices(intent_id)
                 self._place_protection_leg(
                     intent_id, cid, kind, side, deficit,
-                    stop_price=sl_px if tag.startswith("SL") else tp_px)
+                    stop_price=topup_px)
             except SubmitUnknownError as exc:
                 current = IntentState(self.ledger.get_intent(intent_id)["state"])
                 if current in (
@@ -958,9 +1149,11 @@ class Orchestrator:
             correlation_id=intent_id)
         try:
             sl_px, tp_px = self._protect_prices(intent_id)
+            if not _valid_price(sl_px):
+                return _recovery("mandatory SL price missing")
             self._place_protection_leg(
                 intent_id, self._leg_cid(intent_id, "SL-R"),
-                OrderKind.STOP_LOSS, side, remaining, stop_price=sl_px)
+                OrderKind.STOP_LOSS, side, remaining, stop_price=float(sl_px))
         except SubmitUnknownError as exc:
             return _recovery(f"mandatory SL rebuild result unknown: {exc}")
         except OrderRejectedError as exc:
@@ -970,14 +1163,15 @@ class Orchestrator:
             return self._emergency_close(
                 intent_id, trigger="mandatory SL rebuild failed")
 
-        # 4) 再提交可选腿 TP；仅 TP 失败 = 安全但不完整，不紧急平仓
-        tp_ok = True
-        try:
-            self._place_protection_leg(
-                intent_id, self._leg_cid(intent_id, "TP-R"),
-                OrderKind.TAKE_PROFIT, side, remaining, stop_price=tp_px)
-        except (OrderRejectedError, SubmitUnknownError):
-            tp_ok = False
+        tp_ok = False
+        if _valid_price(tp_px):
+            try:
+                self._place_protection_leg(
+                    intent_id, self._leg_cid(intent_id, "TP-R"),
+                    OrderKind.TAKE_PROFIT, side, remaining, stop_price=float(tp_px))
+                tp_ok = True
+            except (OrderRejectedError, SubmitUnknownError):
+                tp_ok = False
 
         self.ledger.transition_intent(
             intent_id, IntentState.PROTECTED,
@@ -990,13 +1184,29 @@ class Orchestrator:
                 "safe_but_incomplete": not tp_ok}
 
     def _protect_prices(self, intent_id: str) -> tuple:
-        sl, tp = 99.0, 101.0
+        """返回 (sl_px, tp_px)；缺失/非法为 None（G0-4B 哨兵废除）。
+
+        优先取账本保护腿已记录的触发价（重放/修复路径），否则取开仓时
+        冻结的计划价。TP 为可选腿，None 表示明确不挂 TP，绝不是哨兵价。
+        """
+        sl = tp = None
+        intent = self.ledger.get_intent(intent_id)
+        if intent:
+            if _valid_price(intent.get("stop_price")):
+                sl = float(intent["stop_price"])
+            if _valid_price(intent.get("take_profit_price")):
+                tp = float(intent["take_profit_price"])
         cached = self._protect_px.get(intent_id)
         if cached:
-            sl, tp = float(cached[0]), float(cached[1])
+            if _valid_price(cached[0]):
+                sl = float(cached[0])
+            if len(cached) > 1 and _valid_price(cached[1]):
+                tp = float(cached[1])
+            elif len(cached) > 1 and cached[1] is None:
+                tp = None
         for order in self.ledger.orders_for_intent(intent_id):
             px = order.get("stop_price")
-            if px is None:
+            if not _valid_price(px):
                 continue
             if order["order_kind"] == "STOP_LOSS":
                 sl = float(px)
@@ -1008,7 +1218,50 @@ class Orchestrator:
         self, intent_id: str, cid: str, kind: OrderKind, side: str,
         qty: float, stop_price: float,
     ) -> None:
-        """ledger-first 挂保护腿；提交结果同步到账本。"""
+        """ledger-first 挂保护腿；提交结果同步到账本。
+
+        硬合同（G0-4B）：qty 必须为正且不超过任何已确认仓位语义，触发价必须
+        是合法正价。零数量/哨兵价保护在提交前拒绝，不允许"看起来挂上了"。
+        """
+        if qty <= _QTY_EPS or not _valid_price(stop_price):
+            raise OrderRejectedError(
+                f"protection leg rejected before submit: qty={qty},"
+                f" stop_price={stop_price}; zero-qty or sentinel protection forbidden"
+            )
+        if side not in ("LONG", "SHORT"):
+            raise OrderRejectedError(
+                f"protection leg rejected before submit: invalid side {side}")
+        pos = self._safe_position()
+        if pos is None:
+            raise OrderRejectedError(
+                "protection leg rejected before submit: position UNKNOWN")
+        pos_qty = abs(pos.signed_qty)
+        if qty > pos_qty + _QTY_EPS:
+            raise OrderRejectedError(
+                f"protection qty {qty} exceeds confirmed position {pos_qty}")
+        if pos_qty > _QTY_EPS:
+            pos_side = "LONG" if pos.signed_qty > 0 else "SHORT"
+            if pos_side != side:
+                raise OrderRejectedError(
+                    f"protection would not reduce {pos_side} with side={side}")
+        entry_px = self._entry_price_for_protection(intent_id)
+        if _valid_price(entry_px):
+            px = float(stop_price)
+            entry = float(entry_px)
+            if kind == OrderKind.STOP_LOSS:
+                if side == "LONG" and px >= entry:
+                    raise OrderRejectedError(
+                        f"nonsensical LONG SL {px} not below entry {entry}")
+                if side == "SHORT" and px <= entry:
+                    raise OrderRejectedError(
+                        f"nonsensical SHORT SL {px} not above entry {entry}")
+            elif kind == OrderKind.TAKE_PROFIT:
+                if side == "LONG" and px <= entry:
+                    raise OrderRejectedError(
+                        f"nonsensical LONG TP {px} not above entry {entry}")
+                if side == "SHORT" and px >= entry:
+                    raise OrderRejectedError(
+                        f"nonsensical SHORT TP {px} not below entry {entry}")
         try:
             self.ledger.record_order_submitting(
                 client_order_id=cid, intent_id=intent_id, order_kind=kind.value,
@@ -1191,6 +1444,12 @@ class Orchestrator:
             if not inserted:
                 continue  # 重复 Fill 事件不重复记账
             inserted_count += 1
+        # B1：成交入账后立即把订单投影收敛到权威聚合（filled_qty 是投影，
+        # fills 是事实；投影只推进不倒退）。
+        self.ledger.sync_order_projection_from_fills(client_order_id)
+        agg = self.ledger.fills_aggregate(client_order_id)
+        if agg["qty"] > _QTY_EPS and _valid_price(agg.get("avg_price")):
+            self.ledger.update_order(client_order_id, avg_price=agg["avg_price"])
         return inserted_count
 
     def _protection_fill_state(self, order: Dict[str, Any]) -> Optional[str]:

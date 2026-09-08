@@ -19,6 +19,7 @@ from aurora.kernel.ledger import Ledger, PositionFactState  # noqa: E402
 from aurora.kernel.orchestrator import Orchestrator  # noqa: E402
 from aurora.kernel.port import OrderKind  # noqa: E402
 from aurora.kernel.state_machine import IntentState  # noqa: E402
+from tests.kernel_test_open import bind_explicit_protect_prices  # noqa: E402
 from aurora.p0_boundary import (  # noqa: E402
     BrainPosition,
     Persistence,
@@ -47,6 +48,7 @@ class KernelHarness(unittest.TestCase):
         self.exchange = FakeExchange()
         self.ledger = Ledger(self.path)
         self.orch = Orchestrator(self.ledger, self.exchange, instance_id="gate")
+        bind_explicit_protect_prices(self.orch)
         report = self.orch.recover()
         self.assertFalse(report["kill_engaged"])
 
@@ -316,7 +318,8 @@ class G4AlgoLegNotAutoFill(KernelHarness):
             with self.subTest(status=status), tempfile.TemporaryDirectory() as tmp:
                 ledger = Ledger(os.path.join(tmp, "ledger.db"))
                 exchange = FakeExchange()
-                orch = Orchestrator(ledger, exchange, instance_id="algo-test")
+                orch = bind_explicit_protect_prices(
+                    Orchestrator(ledger, exchange, instance_id="algo-test"))
                 try:
                     orch.recover()
                     self.assertTrue(orch.open_position(

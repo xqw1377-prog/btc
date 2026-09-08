@@ -25,7 +25,9 @@ CREATE TABLE IF NOT EXISTS intents (
     claimed_at      TEXT,
     reason          TEXT DEFAULT '',
     created_at      TEXT NOT NULL,
-    updated_at      TEXT NOT NULL
+    updated_at      TEXT NOT NULL,
+    stop_price      REAL,
+    take_profit_price REAL
 );
 
 CREATE TABLE IF NOT EXISTS orders (
@@ -129,10 +131,23 @@ class Ledger:
         self._conn.execute("PRAGMA busy_timeout=10000")
         self._conn.execute("PRAGMA foreign_keys=ON")
         self._conn.executescript(SCHEMA)
+        self._ensure_intent_protect_columns()
         self._conn.execute(
             "INSERT OR IGNORE INTO kill_switch (id, engaged, reason) VALUES (1, 0, '')"
         )
         self._conn.commit()
+
+    def _ensure_intent_protect_columns(self) -> None:
+        """G0-4B：保护价必须能在重启后从账本读回，禁止用 99/101 哨兵回填。"""
+        cols = {
+            row[1] for row in self._conn.execute("PRAGMA table_info(intents)")
+        }
+        with self._conn:
+            if "stop_price" not in cols:
+                self._conn.execute("ALTER TABLE intents ADD COLUMN stop_price REAL")
+            if "take_profit_price" not in cols:
+                self._conn.execute(
+                    "ALTER TABLE intents ADD COLUMN take_profit_price REAL")
 
     def close(self) -> None:
         self._conn.close()
@@ -153,6 +168,20 @@ class Ledger:
         except sqlite3.IntegrityError:
             return False  # 重放：意图已存在
         return True
+
+    def set_intent_protect_prices(
+        self,
+        intent_id: str,
+        stop_price: Optional[float],
+        take_profit_price: Optional[float] = None,
+    ) -> None:
+        """把强制 SL / 可选 TP 作为意图合同持久化（不是哨兵默认值）。"""
+        with self._conn:
+            self._conn.execute(
+                "UPDATE intents SET stop_price = ?, take_profit_price = ?,"
+                " updated_at = ? WHERE intent_id = ?",
+                (stop_price, take_profit_price, utc_now(), intent_id),
+            )
 
     def get_intent(self, intent_id: str) -> Optional[Dict[str, Any]]:
         row = self._conn.execute(
@@ -368,6 +397,60 @@ class Ledger:
             "SELECT * FROM fills WHERE client_order_id = ? ORDER BY filled_at", (client_order_id,)
         ).fetchall()
         return [dict(r) for r in rows]
+
+    def fills_aggregate(self, client_order_id: str) -> Dict[str, Any]:
+        """权威成交聚合（G0-4B B1）。
+
+        fills 是执行事实；orders.filled_qty 只是可重建投影。聚合口径：
+        - quantity_effect_applied = 1 才计入数量；
+        - economic_effect_applied = 0 的证据行（COVERED_BY_FACT，其数量已由
+          reconciliation fact 表达）不计入；
+        - 已被真实成交替换的合成调整（synthetic=1 且 covered_by_fact_id 非空）
+          不计入，替换它的真实成交按自身口径计入。
+        """
+        row = self._conn.execute(
+            "SELECT COALESCE(SUM(qty), 0.0) AS qty,"
+            " COALESCE(SUM(qty * price), 0.0) AS notional,"
+            " COUNT(*) AS n FROM fills"
+            " WHERE client_order_id = ? AND quantity_effect_applied = 1"
+            " AND economic_effect_applied = 1"
+            " AND NOT (synthetic = 1 AND covered_by_fact_id IS NOT NULL)",
+            (client_order_id,),
+        ).fetchone()
+        qty = float(row["qty"])
+        notional = float(row["notional"])
+        return {
+            "qty": qty,
+            "notional": notional,
+            "avg_price": (notional / qty) if qty > 1e-12 else 0.0,
+            "fills": int(row["n"]),
+        }
+
+    def sync_order_projection_from_fills(self, client_order_id: str) -> Optional[Dict[str, Any]]:
+        """把 orders.filled_qty 收敛为权威聚合（G0-4B B1）。
+
+        投影单调不减：聚合小于现值（如 fills 尚未拉全）时不回退旧值。
+        状态只随事实推进（凑满全量 → FILLED），绝不改写
+        REJECTED/CANCELLED/SUBMIT_UNKNOWN 等提交结果语义。
+        """
+        order = self.get_order(client_order_id)
+        if order is None:
+            return None
+        agg = self.fills_aggregate(client_order_id)
+        current = float(order["filled_qty"] or 0.0)
+        merged = max(current, agg["qty"])
+        if merged > current + 1e-12:
+            self.update_order(client_order_id, filled_qty=merged)
+        state = order["state"]
+        if (
+            agg["qty"] > 1e-12
+            and agg["qty"] + 1e-12 >= float(order["quantity"])
+            and state in ("SUBMITTING", "NEW", "ACTIVE", "PARTIALLY_FILLED")
+        ):
+            self.update_order(client_order_id, state="FILLED")
+        elif agg["qty"] > 1e-12 and state == "SUBMITTING":
+            self.update_order(client_order_id, state="PARTIALLY_FILLED")
+        return {"filled_qty": merged, "aggregate": agg["qty"], "fills": agg["fills"]}
 
     # ---------- Kill Switch ----------
 

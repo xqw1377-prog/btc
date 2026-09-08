@@ -17,6 +17,7 @@ from aurora.kernel.ledger import Ledger, PositionFactState  # noqa: E402
 from aurora.kernel.orchestrator import Orchestrator  # noqa: E402
 from aurora.kernel.port import Fill, OrderKind  # noqa: E402
 from aurora.kernel.state_machine import IntentState, utc_now  # noqa: E402
+from tests.kernel_test_open import bind_explicit_protect_prices  # noqa: E402
 
 EPS = 1e-9
 
@@ -47,6 +48,7 @@ class Harness(unittest.TestCase):
         self.exchange = FakeExchange()
         self.ledger = Ledger(self.path)
         self.orch = Orchestrator(self.ledger, self.exchange, instance_id="ps")
+        bind_explicit_protect_prices(self.orch)
         self.orch.recover()
 
     def tearDown(self):

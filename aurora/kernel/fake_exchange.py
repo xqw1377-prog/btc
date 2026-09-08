@@ -50,6 +50,8 @@ class FakeExchange(ExchangePort):
         self.cancel_fires_first = False  # 撤单竞态：撤单到达前腿已成交
         self.tp_reject_only = False      # 仅 TP 腿拒单（SL 正常，测 safe_but_incomplete）
         self.price = price
+        # G0-4B：ACK.executedQty 只是早期观察。设为 0 可模拟事故：ACK=0 但 fills/仓位已有量。
+        self.ack_executed_qty = None
 
         self.submit_log: List[OrderRequest] = []
         self._orders: Dict[str, dict] = {}
@@ -123,16 +125,34 @@ class FakeExchange(ExchangePort):
             }
             self._emit_fill(req, round(req.quantity * 0.6, 10))
             order = self._orders[req.client_order_id]
-            return OrderAck(req.client_order_id, req.client_order_id, "PARTIALLY_FILLED",
-                            order["filled_qty"], order["avg_price"])
+            return OrderAck(
+                req.client_order_id, req.client_order_id, "PARTIALLY_FILLED",
+                self._ack_qty(req, order["filled_qty"]),
+                self._ack_avg(req, order["avg_price"]))
 
         self._orders[req.client_order_id] = {
             "req": req, "status": "FILLED", "filled_qty": 0.0, "avg_price": 0.0,
         }
         self._emit_fill(req, req.quantity)
         order = self._orders[req.client_order_id]
-        return OrderAck(req.client_order_id, req.client_order_id, "FILLED",
-                        order["filled_qty"], order["avg_price"])
+        return OrderAck(
+            req.client_order_id, req.client_order_id, "FILLED",
+            self._ack_qty(req, order["filled_qty"]),
+            self._ack_avg(req, order["avg_price"]))
+
+    def _ack_qty(self, req: OrderRequest, actual: float) -> float:
+        if req.order_kind == OrderKind.ENTRY and self.ack_executed_qty is not None:
+            return float(self.ack_executed_qty)
+        return actual
+
+    def _ack_avg(self, req: OrderRequest, actual: float) -> float:
+        if (
+            req.order_kind == OrderKind.ENTRY
+            and self.ack_executed_qty is not None
+            and float(self.ack_executed_qty) <= 1e-12
+        ):
+            return 0.0
+        return actual
 
     def query_order(self, client_order_id: str) -> OrderFact:
         if self._fail_order_query:

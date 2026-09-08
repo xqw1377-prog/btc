@@ -21,6 +21,7 @@ from aurora.kernel.ledger import CLOSE_PROVENANCE_UNKNOWN, Ledger, PositionFactS
 from aurora.kernel.orchestrator import Orchestrator  # noqa: E402
 from aurora.kernel.state_machine import IntentState  # noqa: E402
 from aurora.p0_boundary import RunMode, SafetyViolation  # noqa: E402
+from tests.kernel_test_open import bind_explicit_protect_prices  # noqa: E402
 from tests.test_binance_exchange import RecordingClient  # noqa: E402
 
 
@@ -51,7 +52,8 @@ class CloseProvenanceUnknownTests(unittest.TestCase):
             path = os.path.join(tmp, "ledger.db")
             exchange = FakeExchange()
             ledger = Ledger(path)
-            orch = Orchestrator(ledger, exchange, instance_id="g04a")
+            orch = bind_explicit_protect_prices(
+                Orchestrator(ledger, exchange, instance_id="g04a"))
             try:
                 orch.recover()
                 opened = orch.open_position("LONG", 0.007, intent_id="AURORA-0650a39f56e3")
@@ -88,7 +90,8 @@ class CloseProvenanceUnknownTests(unittest.TestCase):
             path = os.path.join(tmp, "ledger.db")
             exchange = FakeExchange()
             ledger = Ledger(path)
-            orch = Orchestrator(ledger, exchange, instance_id="g04a")
+            orch = bind_explicit_protect_prices(
+                Orchestrator(ledger, exchange, instance_id="g04a"))
             try:
                 ledger.set_position_fact(
                     "BTCUSDT", PositionFactState.KNOWN_OPEN,
@@ -108,7 +111,8 @@ class CloseProvenanceUnknownTests(unittest.TestCase):
             path = os.path.join(tmp, "ledger.db")
             exchange = FakeExchange()
             ledger = Ledger(path)
-            orch = Orchestrator(ledger, exchange, instance_id="g04a")
+            orch = bind_explicit_protect_prices(
+                Orchestrator(ledger, exchange, instance_id="g04a"))
             try:
                 orch.recover()
                 orch.open_position("LONG", 0.007, intent_id="EXIT01")

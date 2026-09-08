@@ -20,6 +20,7 @@ from aurora.kernel.ledger import Ledger, PositionFactState  # noqa: E402
 from aurora.kernel.orchestrator import Orchestrator  # noqa: E402
 from aurora.kernel.port import OrderKind  # noqa: E402
 from aurora.kernel.state_machine import IntentState  # noqa: E402
+from tests.kernel_test_open import bind_explicit_protect_prices  # noqa: E402
 
 TERMINAL_OR_CERTAIN = {
     "FILLED", "REJECTED", "CANCELLED",
@@ -35,6 +36,7 @@ class Harness(unittest.TestCase):
         self.exchange = FakeExchange()
         self.ledger = Ledger(self.path)
         self.orch = Orchestrator(self.ledger, self.exchange, instance_id="t")
+        bind_explicit_protect_prices(self.orch)
 
     def tearDown(self):
         self.ledger.close()

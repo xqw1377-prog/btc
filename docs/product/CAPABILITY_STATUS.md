@@ -31,7 +31,7 @@ MANUAL_CLOSE_FILL             NOT_FOUND
 MANUAL_CLOSE_ORDER            NOT_FOUND
 
 G0-4A                         CLOSED-OFFLINE
-G0-4B                         HOLD
+G0-4B                         CLOSED-OFFLINE（工作树未提交；见 §四）
 G0-4C                         HOLD
 G0-5                          OPEN
 KILL                          ACTIVE
@@ -86,9 +86,9 @@ STRATEGY / V2                 HOLD
 | G0-2 确认计数 | **CLOSED**（`ffbb17f`） | 唯一已收盘 bar |
 | G0-3 UNKNOWN | **CLOSED**（`e4af236`） | 性质测试钉死；不重造状态机 |
 | G0-4A Algo/HEDGE 协议 | **CLOSED-OFFLINE** | fake transport。ObservedPositionMode 注入、HEDGE 减仓 `side+positionSide+qty`、`-1106` 不改参重试、Algo 终态≠fill、KNOWN_FLAT+CLOSE_PROVENANCE_UNKNOWN。REAL ORDER/ALGO/MODE MUTATION/KILL CLEAR = 0 |
-| G0-4B 紧急减仓合同 | **HOLD** | 4A 封口之后才开。保护数量真源 + emergency-close 事实语义 + 禁止哨兵保护价 |
-| G0-4C 保护生命周期 | **HOLD** | 需 testnet；当前 DENIED |
-| G0-5 配置来源 | **OPEN**（执行资格前置） | `production_main` 裸 `load_dotenv()` 必须与 safety_check / dashboard_feed 共用显式 ConfigSource |
+| G0-4B 执行事实真源 | **CLOSED-OFFLINE**（工作树未提交） | B1 保护数量 = fills 权威聚合→仓位事实，ACK executedQty 仅为早期观察；订单投影单调收敛于 fills；`0 < protection_qty ≤ confirmed_position_qty`；保护计划价持久化于 intents（PRAGMA+ALTER 增量迁移，不改历史行）。B2 紧急平仓四态（ATTEMPTED/REJECTED/UNKNOWN/CONFIRMED），kill 理由禁"executed"假成功，仅权威事实可 CONFIRMED。B3 缺/非法 SL 价 → OPEN DENIED；99/101 哨兵废除；TP 可明确 NOT_CONFIGURED。回归：tests/test_g04b_contracts.py + tests/test_g04b_offline_probe.py（socket 绊网零出网）；全套 342 passed。交易所侧行为未验证（事故锁不变） |
+| G0-4C 保护生命周期 | **HOLD** | 需 testnet；当前 DENIED。已知待办：FILLED_UNPROTECTED 意图崩溃后 recover() 不重试保护（本轮发现）；fills 查询无时间窗/有界分页 |
+| G0-5 配置来源 | **OPEN**（执行资格前置） | `production_main` 裸 `load_dotenv()` 必须与 safety_check / dashboard_feed 共用显式 ConfigSource；含 SafeExecutor 退休裁定（M2）：其交易方法在生产入口不可达（production_main 仅调 `executor.reconcile("timer")`，且仅 SHADOW 分支；SHADOW broker 拒写），TP 失败即平仓的旧合同与内核冲突暂为休眠，须在 G0-5 隔离或退休 |
 
 沿用既有登记的 G1/G4/G5 迁移项（启动余额不刷新、死配置、数量精度、
 内存移动止损、波动单位）不因未列入上表而消失。

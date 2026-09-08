@@ -15,6 +15,7 @@ from aurora.kernel.ledger import Ledger, PositionFactState  # noqa: E402
 from aurora.kernel.orchestrator import Orchestrator  # noqa: E402
 from aurora.kernel.port import OrderKind  # noqa: E402
 from aurora.kernel.state_machine import IntentState  # noqa: E402
+from tests.kernel_test_open import bind_explicit_protect_prices  # noqa: E402
 
 
 class BootDriftHarness(unittest.TestCase):
@@ -24,6 +25,7 @@ class BootDriftHarness(unittest.TestCase):
         self.exchange = FakeExchange()
         self.ledger = Ledger(self.path)
         self.orch = Orchestrator(self.ledger, self.exchange, instance_id="t")
+        bind_explicit_protect_prices(self.orch)
 
     def tearDown(self):
         self.ledger.close()
@@ -110,14 +112,14 @@ class BootDriftDiscoveryTests(BootDriftHarness):
         self.assertEqual(self.exchange.submit_log, [])
         self.assertEqual(self.ledger.fills_for_order("missing"), [])
         # 证据残留 ≠ 永久禁开仓：kill 未合上、仓位 KNOWN_FLAT 时内核允许新开。
-        opened = self.orch.open_position("LONG", 0.01, stop_price=99000.0)
+        opened = self.orch.open_position("LONG", 0.01, stop_price=99.0)
         self.assertTrue(opened.get("success") or opened.get("intent_id"))
 
     def test_clean_flat_boot_allows_open(self):
         report = self.orch.recover()
         self.assertFalse(report["unresolved"])
         self.assertEqual(self._fact()["state"], PositionFactState.KNOWN_FLAT.value)
-        result = self.orch.open_position("LONG", 0.01, stop_price=99000.0)
+        result = self.orch.open_position("LONG", 0.01, stop_price=99.0)
         self.assertTrue(result.get("success") or result.get("intent_id"))
         self.assertTrue(
             any(r.order_kind == OrderKind.ENTRY for r in self.exchange.submit_log)

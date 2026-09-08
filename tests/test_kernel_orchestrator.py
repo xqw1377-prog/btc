@@ -11,6 +11,7 @@ from aurora.kernel.ledger import Ledger, PositionFactState  # noqa: E402
 from aurora.kernel.orchestrator import Orchestrator  # noqa: E402
 from aurora.kernel.port import OrderKind  # noqa: E402
 from aurora.kernel.state_machine import IntentState  # noqa: E402
+from tests.kernel_test_open import bind_explicit_protect_prices  # noqa: E402
 
 
 class Harness(unittest.TestCase):
@@ -20,6 +21,7 @@ class Harness(unittest.TestCase):
         self.exchange = FakeExchange()
         self.ledger = Ledger(self.path)
         self.orch = Orchestrator(self.ledger, self.exchange, instance_id="orch-A")
+        bind_explicit_protect_prices(self.orch)
 
     def tearDown(self):
         self.ledger.close()
@@ -123,7 +125,8 @@ class AcceptanceTests(Harness):
         self.exchange.fire_protection("A6b-SL", price=99.0)
         self.ledger.close()
         self.ledger = Ledger(self.path)
-        self.orch = Orchestrator(self.ledger, self.exchange, instance_id="orch-B")
+        self.orch = bind_explicit_protect_prices(
+            Orchestrator(self.ledger, self.exchange, instance_id="orch-B"))
         report = self.orch.recover()
         self.assertEqual(len(report["unresolved"]), 0)
         intent = self.ledger.get_intent("A6b")
@@ -250,7 +253,8 @@ class AcceptanceTests(Harness):
         self.assertEqual(result["state"], "SUBMIT_UNKNOWN")
         self.ledger.close()
         self.ledger = Ledger(self.path)
-        self.orch = Orchestrator(self.ledger, self.exchange, instance_id="orch-B")
+        self.orch = bind_explicit_protect_prices(
+            Orchestrator(self.ledger, self.exchange, instance_id="orch-B"))
         report = self.orch.recover()
         intent = self.ledger.get_intent("A8")
         self.assertEqual(intent["state"], IntentState.REJECTED.value)
@@ -289,7 +293,8 @@ class AcceptanceTests(Harness):
                 raise RuntimeError("disk full")
 
         broken = BrokenLedger(self.ledger)
-        orch = Orchestrator(broken, self.exchange, instance_id="orch-X")
+        orch = bind_explicit_protect_prices(
+            Orchestrator(broken, self.exchange, instance_id="orch-X"))
         result = orch.open_position("LONG", 0.01, intent_id="A10")
         self.assertFalse(result["success"])
         self.assertIn("no order sent", result["reason"])

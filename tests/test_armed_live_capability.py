@@ -74,7 +74,9 @@ class ArmedKernelTests(unittest.TestCase):
             rt = ArmedRuntime.attach(
                 RunMode.TESTNET, client, os.path.join(tmp, "l.db"))
             try:
-                opened = rt.open_position("LONG", 0.01, intent_id="LIVE1")
+                opened = rt.open_position(
+                    "LONG", 0.01, intent_id="LIVE1",
+                    stop_price=99.0, take_profit_price=101.0)
                 self.assertTrue(opened["success"])
                 self.assertEqual(opened["state"], "PROTECTED")
                 self.assertEqual([c["type"] for c in client.creates], ["MARKET"])
@@ -104,7 +106,9 @@ class ArmedKernelTests(unittest.TestCase):
                 rt = ArmedRuntime.attach(
                     RunMode.LIVE, client, os.path.join(tmp, "l.db"))
                 try:
-                    opened = rt.open_position("LONG", 0.01, intent_id="LIVE2")
+                    opened = rt.open_position(
+                        "LONG", 0.01, intent_id="LIVE2",
+                        stop_price=99.0, take_profit_price=101.0)
                     self.assertTrue(opened["success"])
                     self.assertNotIn(
                         "STOP_MARKET", [c["type"] for c in client.creates])
