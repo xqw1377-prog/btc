@@ -332,7 +332,14 @@ def issue_execution_window(
         "schema": START_ORDER_SCHEMA,
         "session_id": session_id,
         "status": "OPEN",
-        "scope": {"env": "TESTNET", "symbol": SYMBOL, "side": SIDE},
+        "contract": "6b2cc7c",
+        "conformance": "eb0536b",
+        "scope": {
+            "env": "TESTNET",
+            "symbol": SYMBOL,
+            "side": SIDE,
+            "qty": MAX_QTY,
+        },
         "max_qty": MAX_QTY,
         "max_notional_usdt": MAX_NOTIONAL_USDT,
         "client_id_ns": CLIENT_ID_NS,
@@ -379,7 +386,7 @@ def assert_write_gates(
     now: Optional[datetime] = None,
     session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """写客户端构造前的双门。缺一即 DENY BEFORE CLIENT WRITE。"""
+    """写客户端构造前的联合前门。缺一即 DENY BEFORE CLIENT WRITE。"""
     if not EXECUTE_AUTHORIZED:
         raise SafetyViolation(
             "[CTR] EXECUTE_AUTHORIZED=false; refuse before write client.")
@@ -563,6 +570,9 @@ class WireTee:
 
     def __getattr__(self, name):
         return getattr(self._inner, name)
+
+    def export(self) -> Dict[str, Any]:
+        return {"entryAcks": self.entry_acks, "algoAcks": self.algo_acks}
 
     def futures_create_order(self, **params: Any):
         raw = self._inner.futures_create_order(**params)
@@ -981,6 +991,9 @@ def execute_live(
             raise SafetyViolation(
                 "[CTR] execute requires an exchange client "
                 "(network path) — none provided.")
+        if wire_log is None:
+            wire_log = WireTee(client)
+            client = wire_log
         observed_mark: Optional[float] = None
         if mark_price is None:
             try:
@@ -991,14 +1004,32 @@ def execute_live(
                     f"[CTR] mark price observation failed: "
                     f"{type(exc).__name__}") from exc
             mark_price = observed_mark
-        exchange = BinanceExchange(client, symbol=SYMBOL, allow_mutate=True)
-        exchange.verify_position_mode(
-            source.get("AURORA_EXPECTED_POSITION_MODE") or "HEDGE")
+        # R2/合同：变动型适配器必须注入【已观察】的持仓模式——
+        # 先只读观察外部事实，与批准模式核对，再构造写适配器。
+        probe = BinanceExchange(client, symbol=SYMBOL, allow_mutate=False)
+        observed_mode = probe.position_mode_read()
+        if observed_mode is None:
+            raise SafetyViolation(
+                "[CTR] position mode UNKNOWN; refuse execution attach.")
+        expected_mode = source.get("AURORA_EXPECTED_POSITION_MODE") or "HEDGE"
+        if observed_mode != expected_mode:
+            raise SafetyViolation(
+                f"[CTR] position mode {observed_mode} != approved "
+                f"{expected_mode}; refuse attach.")
+        exchange = BinanceExchange(
+            client, symbol=SYMBOL, allow_mutate=True,
+            position_mode=observed_mode)
         session_path = session_ledger_path(INCIDENT_FINGERPRINT, session_id)
         assert_session_ledger_isolated(session_path, session_id)
         os.makedirs(os.path.dirname(session_path), exist_ok=True)
         ledger = Ledger(session_path)
         orch = Orchestrator(ledger, exchange, symbol=SYMBOL)
+    if baseline is None and client is not None:
+        baseline = observe_baseline(client, source.as_environ())
+        if mark_price is None and baseline.get("markPriceObserved"):
+            mark_price = float(baseline["markPriceObserved"])
+    if incident_path is None:
+        incident_path = incident_ledger_path()
     try:
         out = run_session(
             orch, permit=permit, qty=qty, mark_price=mark_price,
@@ -1009,6 +1040,16 @@ def execute_live(
                                          "reason": str(exc)[:200]})
         void_permit(f"session {session_id} STOP: {exc}")
         raise
+    if not out.get("success"):
+        # STOP 后仅允许 BTC 减仓收口（合同：NO SECOND ENTRY）
+        try:
+            closeout = qualification_close(orch, session_id=session_id)
+            out["closeout"] = {"success": True, "fillQty": closeout["fillQty"]}
+        except Exception as close_exc:
+            out["closeout"] = {"success": False,
+                               "reason": str(close_exc)[:160]}
+        out["wireEvidence"] = getattr(wire_log, "export", lambda: {})() \
+            if wire_log is not None else {}
     if out.get("success"):
         write_session_final(session_id, {"outcome": "COMPLETE",
                                          "intentId": out.get("intentId")})
@@ -1044,7 +1085,8 @@ def main(argv=None) -> int:
                         default=PERMIT_TTL_HOURS_DEFAULT)
     parser.add_argument(
         "--i-execute-controlled-requal", action="store_true",
-        help="write path; still refused unless EXECUTE_AUTHORIZED + 开工令")
+        help="write path; refused unless START ORDER + scoped permit + "
+             "无终态记录（四条件门）")
     args = parser.parse_args(argv)
 
     env_file = os.path.abspath(args.env_file or repo_default_env_file())
@@ -1097,12 +1139,9 @@ def main(argv=None) -> int:
         try:
             assert_write_gates()
         except SafetyViolation as exc:
-            print(json.dumps({
-                "package": "CONTROLLED_TESTNET_REQUAL",
-                "execute": "DENIED",
-                "status": "BLOCKED",
-                "reason": str(exc)[:200],
-            }, sort_keys=True, indent=2))
+            report["execute"] = "DENIED"
+            report["reason"] = str(exc)[:200]
+            print(json.dumps(report, sort_keys=True, indent=2))
             return 3
         from aurora.safety import build_client
         try:
