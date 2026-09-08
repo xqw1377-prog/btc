@@ -140,5 +140,7 @@ INCIDENT KILL                         仍 ACTIVE
 命令                 python3 -m aurora.ops_controlled_requal
 默认                 PLAN only
 --i-execute-...      仍 DENIED（旗标本身不开写）
-离线会话             tests/test_controlled_requal.py
+离线会话             开仓前 FLAT/UNKNOWN 门禁 + SL 必须低于 mark
+                     保护失败 → 会话 kill
+EXECUTE_AUTHORIZED   false（硬开关；execute_live 恒拒且不构造客户端）
 ```

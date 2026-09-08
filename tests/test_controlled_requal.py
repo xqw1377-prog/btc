@@ -17,7 +17,11 @@ from aurora.ops_controlled_requal import (  # noqa: E402
     MAX_QTY,
     assert_intent_allowed,
     assert_scale,
+    EXECUTE_AUTHORIZED,
     assert_session_ledger_isolated,
+    assert_session_start,
+    assert_stop_price,
+    execute_live,
     incident_ledger_path,
     main,
     plan,
@@ -81,6 +85,16 @@ class PlanGateTests(unittest.TestCase):
     def test_main_plan_only_zero(self):
         self.assertEqual(main([]), 0)
 
+    def test_execute_live_hard_denied(self):
+        self.assertFalse(EXECUTE_AUTHORIZED)
+        with self.assertRaises(SafetyViolation):
+            execute_live()
+
+    def test_long_stop_must_be_below_mark(self):
+        with self.assertRaises(SafetyViolation):
+            assert_stop_price(100.0, 100.0)
+        assert_stop_price(99.0, 100.0)
+
 
 class OfflineSessionTests(unittest.TestCase):
     def test_one_shot_protect_restart_flatten_kills_session_not_incident(self):
@@ -117,6 +131,45 @@ class OfflineSessionTests(unittest.TestCase):
                 with self.assertRaises(SafetyViolation):
                     run_session(
                         orch, qty=0.007, mark_price=100.0, stop_price=99.0)
+            finally:
+                ledger.close()
+
+    def test_start_not_flat_refuses_and_kills_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "controlled_requal.db")
+            exchange = FakeExchange(price=100.0)
+            ledger = Ledger(path)
+            orch = Orchestrator(ledger, exchange, instance_id="ctr")
+            orch.recover()
+            exchange.seed_external_position(0.002, 100.0)
+            try:
+                with self.assertRaises(SafetyViolation):
+                    run_session(
+                        orch, qty=0.001, mark_price=100.0, stop_price=99.0)
+                self.assertEqual(ledger.kill_state()["engaged"], 1)
+            finally:
+                ledger.close()
+
+    def test_unknown_position_refuses_start(self):
+        exchange = FakeExchange()
+        exchange.set_position_query_ambiguous(True)
+        with self.assertRaises(SafetyViolation):
+            assert_session_start(exchange)
+
+    def test_protection_reject_kills_session(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "controlled_requal.db")
+            exchange = FakeExchange(price=100.0, protection_behavior="reject")
+            ledger = Ledger(path)
+            orch = Orchestrator(ledger, exchange, instance_id="ctr")
+            orch.recover()
+            try:
+                out = run_session(
+                    orch, qty=0.001, mark_price=100.0, stop_price=99.0,
+                    intent_id="AURORA-CTR-slfail")
+                self.assertFalse(out["success"])
+                self.assertIn(out["phase"], ("OPEN", "SL"))
+                self.assertEqual(ledger.kill_state()["engaged"], 1)
             finally:
                 ledger.close()
 

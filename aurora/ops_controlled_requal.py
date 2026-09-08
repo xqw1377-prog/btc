@@ -30,6 +30,8 @@ MAX_NOTIONAL_USDT = 120.0
 SESSION_LEDGER_REL = os.path.join(
     "state", "testnet", INCIDENT_FINGERPRINT, "controlled_requal.db")
 FORBIDDEN_INTENT_MARK = "0650a39f56e3"
+# 硬开关：开工令未到之前，任何 live 写入口必须失败。
+EXECUTE_AUTHORIZED = False
 
 
 def incident_ledger_path() -> str:
@@ -57,6 +59,32 @@ def assert_scale(qty: float, mark_price: float) -> None:
         raise SafetyViolation(
             f"[CTR] notional {notional:.4f} exceeds MAX_NOTIONAL_USDT={MAX_NOTIONAL_USDT}."
         )
+
+
+def assert_stop_price(stop_price: float, mark_price: float) -> None:
+    if stop_price <= 0 or mark_price <= 0:
+        raise SafetyViolation("[CTR] stop/mark price missing or invalid.")
+    if stop_price >= mark_price:
+        raise SafetyViolation("[CTR] LONG SL must be strictly below mark.")
+
+
+def assert_session_start(exchange: Any, symbol: str = SYMBOL) -> None:
+    """开仓前：仓位必须可知且 FLAT。UNKNOWN 不得解释为空仓。"""
+    try:
+        pos = exchange.position(symbol)
+    except Exception as exc:
+        raise SafetyViolation(f"[CTR] position unreadable: {type(exc).__name__}") from exc
+    if pos is None:
+        raise SafetyViolation("[CTR] position UNKNOWN; refuse start.")
+    if abs(float(getattr(pos, "signed_qty", 0.0) or 0.0)) > 1e-12:
+        raise SafetyViolation("[CTR] BTCUSDT not FLAT; refuse start.")
+
+
+def execute_live(*_args: Any, **_kwargs: Any) -> Dict[str, Any]:
+    """真实写入口。未单独开工前恒拒，且不构造客户端。"""
+    raise SafetyViolation(
+        "[CTR] EXECUTE_AUTHORIZED=false; refuse all TESTNET writes."
+    )
 
 
 def assert_session_ledger_isolated(path: str) -> None:
@@ -162,8 +190,14 @@ def run_session(
 ) -> Dict[str, Any]:
     """用已注入的 Orchestrator 跑完一次受控会话（供离线 FakeExchange）。"""
     assert_scale(qty, mark_price)
+    assert_stop_price(stop_price, mark_price)
     intent = intent_id or new_session_intent_id()
     assert_intent_allowed(intent)
+    try:
+        assert_session_start(orch.exchange)
+    except SafetyViolation:
+        orch.ledger.engage_kill("controlled requal start preconditions failed")
+        raise
     before = _file_digest(incident_path) if incident_path and os.path.exists(incident_path) else None
 
     opened = orch.open_position(
@@ -244,14 +278,14 @@ def main(argv=None) -> int:
         }, sort_keys=True, indent=2))
         return 2
 
-    if args.i_execute_controlled_requal:
-        report["execute"] = "DENIED"
-        report["reason"] = (
-            "write path is frozen; a separate execute order is required. "
-            "this flag alone does not start TESTNET writes."
-        )
-        print(json.dumps(report, sort_keys=True, indent=2))
-        return 3
+    if args.i_execute_controlled_requal or not EXECUTE_AUTHORIZED:
+        if args.i_execute_controlled_requal:
+            report["execute"] = "DENIED"
+            report["reason"] = (
+                "EXECUTE_AUTHORIZED=false; flag alone does not start TESTNET writes."
+            )
+            print(json.dumps(report, sort_keys=True, indent=2))
+            return 3
 
     report["status"] = "PLAN"
     print(json.dumps(report, sort_keys=True, indent=2))
