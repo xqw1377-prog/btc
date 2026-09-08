@@ -1,0 +1,1 @@
+[CTR] permit voided by a terminated session; no second entry under this window.

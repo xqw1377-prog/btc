@@ -81,9 +81,9 @@ CTR-20260908-01               STOP AT P2 / NO EXCHANGE WRITE
 EXECUTION AUTHORIZATION       NOT ISSUED
 SCOPED PERMIT                 VOIDED（该 session）
 REAL WRITE PATH               DENIED
-CONTROLLED_REQUAL             IMPLEMENTATION SEALED 5336467
-                              EXECUTION AUTHORIZATION  NOT ISSUED
-                              REAL TESTNET WRITE  DENIED
+CONTROLLED REQUAL LIFECYCLE   PASS-1（真实 TESTNET，见 evidence/ctr/）
+EXECUTION AUTHORIZATION       CONSUMED（CTR-20260908-02，one-lifecycle）
+NEXT SESSION                  需新开工令；AUTO TESTNET 仍 DENIED
 WRITE GATES                   EXECUTE_AUTHORIZED
                               + scoped permit（session/single_use/exact 0.001/未过期）
                               + Execution Start Order

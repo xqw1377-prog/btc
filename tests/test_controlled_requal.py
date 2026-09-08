@@ -231,16 +231,36 @@ class PlanGateTests(CtrTestBase):
         built.assert_not_called()
 
     def test_execute_live_hard_denied(self):
+        # R2：常量是 legacy dead-man 指示；裸调用缺 source/stop → 拒绝
         self.assertFalse(EXECUTE_AUTHORIZED)
         with self.assertRaises(SafetyViolation) as hc:
             execute_live()
-        self.assertIn("EXECUTE_AUTHORIZED=false", str(hc.exception))
+        self.assertIn("valid execution window", str(hc.exception))
 
     def test_write_gates_refuse_before_client(self):
+        # R2 四条件门：无 START ORDER/permit 的密封环境 → DENY
+        # （EXECUTE_AUTHORIZED 常量仅为 legacy dead-man 指示）
         self.assertFalse(EXECUTE_AUTHORIZED)
-        with self.assertRaises(SafetyViolation) as hc:
-            assert_write_gates(fingerprint=FP, session_id="CTR-TEST-001")
-        self.assertIn("refuse before write client", str(hc.exception))
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(
+                    __import__("aurora.ops_controlled_requal", fromlist=["x"]),
+                    "start_order_path",
+                    lambda *a, **k: os.path.join(
+                        tmp, "execution_start_order.json")), \
+                mock.patch.object(
+                    __import__("aurora.ops_controlled_requal", fromlist=["x"]),
+                    "qualification_permit_path",
+                    lambda *a, **k: os.path.join(
+                        tmp, "qualification_permit.json")), \
+                mock.patch.object(
+                    __import__("aurora.ops_controlled_requal", fromlist=["x"]),
+                    "session_final_path",
+                    lambda sid, *a, **k: os.path.join(
+                        tmp, "sessions", f"{sid}.final.json")):
+                with self.assertRaises(SafetyViolation) as hc:
+                    assert_write_gates(fingerprint=FP,
+                                       session_id="CTR-TEST-001")
+        self.assertIn("EXECUTION START ORDER", str(hc.exception))
 
     def test_long_stop_must_be_below_mark(self):
         with self.assertRaises(SafetyViolation):

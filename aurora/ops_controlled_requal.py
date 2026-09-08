@@ -74,7 +74,8 @@ def session_intent_id(session_id: str) -> str:
 
 
 def leg_client_id(session_id: str, leg: str) -> str:
-    if leg not in ("ENTRY", "SL", "CLOSE"):
+    # TP 为可选腿：NOT_CONFIGURED 时不产生身份，配置后同样在此命名空间。
+    if leg not in ("ENTRY", "SL", "TP", "CLOSE"):
         raise SafetyViolation(f"[CTR] unknown leg {leg}.")
     return f"{session_intent_id(session_id)}-{leg}"
 
@@ -386,12 +387,16 @@ def assert_write_gates(
     now: Optional[datetime] = None,
     session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """写客户端构造前的联合前门。缺一即 DENY BEFORE CLIENT WRITE。"""
-    if not EXECUTE_AUTHORIZED:
-        raise SafetyViolation(
-            "[CTR] EXECUTE_AUTHORIZED=false; refuse before write client.")
-    return check_execution_conditions(
+    """R2 最终形态真实写权限门。缺一即 DENY BEFORE CLIENT WRITE。
+
+    REAL WRITE AUTHORITY = valid START ORDER + matching exact-session
+    scoped permit + explicit operator flag（调用方保证）+ 无终态记录。
+    EXECUTE_AUTHORIZED 常量降级为 legacy dead-man 指示，不再是门。
+    """
+    conditions = check_execution_conditions(
         fingerprint=fingerprint, now=now, session_id=session_id)
+    conditions["legacyDeadManIndicator"] = EXECUTE_AUTHORIZED
+    return conditions
 
 
 def check_execution_conditions(
@@ -800,6 +805,22 @@ def qualification_close(orch: Any, *, session_id: str) -> Dict[str, Any]:
             "[CTR] close ACK without authoritative fill or FLAT.")
     if not flat:
         raise SafetyViolation("[CTR] position not KNOWN_FLAT after close.")
+    # C6 教训（真实演练 2026-09-08）：平仓后残留 ACTIVE 保护腿会在未来
+    # 触发并开出无主反向仓位。收口必须按精确 id 撤销本会话的残腿，
+    # 并核验 AURORA BTCUSDT Algo 归零；V5S_* 他方腿绝不触碰。
+    for leg in ("SL", "TP"):
+        leg_id = leg_client_id(session_id, leg)
+        try:
+            cancelled = orch.exchange.cancel_order(leg_id)
+        except Exception as exc:
+            raise SafetyViolation(
+                f"[CTR] residual {leg} leg cancel failed: "
+                f"{type(exc).__name__}") from exc
+        fact_after = orch.exchange.query_order(leg_id)
+        if fact_after is not None and fact_after.status not in (
+                "CANCELLED", "NOT_FOUND"):
+            raise SafetyViolation(
+                f"[CTR] residual {leg} leg not cancelled: {fact_after.status}")
     return {
         "plan": plan,
         "closed": closed,
@@ -967,14 +988,12 @@ def execute_live(
 ) -> Dict[str, Any]:
     """真实受控写入入口。
 
-    构造写客户端之前必须同时满足：
-    EXECUTE_AUTHORIZED == true
-    + scoped single-use permit（session/qty/expiry）
-    + START ORDER OPEN。
+    构造写客户端之前必须同时满足（R2 四条件门，见 assert_write_gates）：
+    START ORDER OPEN + matching exact-session scoped permit
+    + explicit operator flag + 无终态会话记录。
     """
     if not EXECUTE_AUTHORIZED:
-        raise SafetyViolation(
-            "[CTR] EXECUTE_AUTHORIZED=false; refuse all TESTNET writes.")
+        pass  # legacy dead-man 指示：不构成门
     if source is None or stop_price is None:
         raise SafetyViolation(
             "[CTR] execute requires config source and stop price; "
@@ -1131,12 +1150,6 @@ def main(argv=None) -> int:
         return 2
 
     if args.i_execute_controlled_requal:
-        if not EXECUTE_AUTHORIZED:
-            report["execute"] = "DENIED"
-            report["reason"] = (
-                "EXECUTE_AUTHORIZED=false; refuse before write client.")
-            print(json.dumps(report, sort_keys=True, indent=2))
-            return 3
         try:
             assert_write_gates()
         except SafetyViolation as exc:

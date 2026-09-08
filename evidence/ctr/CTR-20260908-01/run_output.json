@@ -1,6 +1,28 @@
 {
+  "accountFingerprint": "3fbc5d4f1f9ddc7d",
+  "autoTestnet": "DENIED",
+  "closeClientId": "AURORA-CTR-544e6230d594-CLOSE",
+  "entryClientId": "AURORA-CTR-544e6230d594-ENTRY",
+  "entryPoint": "aurora.ops_controlled_requal",
   "execute": "DENIED",
+  "incidentKill": {
+    "digest": "d0b4e3f7e1ddc56471d97c38e69b5cde9a0d50638a969e0bbd59585252f65ae8",
+    "engaged": 1,
+    "status": "ACTIVE",
+    "written": false
+  },
+  "incidentLedger": "/Users/xinquanwang/AURORA/state/kernel_ledger.db",
+  "intentId": "AURORA-CTR-544e6230d594",
+  "live": "NO-GO",
+  "maxNotionalUsdt": 120.0,
+  "maxQty": 0.001,
   "package": "CONTROLLED_TESTNET_REQUAL",
-  "reason": "[P0] mutating exchange requires injected ObservedPositionMode; no ONE_WAY/HEDGE default.",
-  "status": "BLOCKED"
+  "productionMain": "DENIED",
+  "qty": 0.001,
+  "reason": "EXECUTE_AUTHORIZED=false; refuse before write client.",
+  "sessionId": "544e6230d594",
+  "sessionLedger": "/Users/xinquanwang/AURORA/state/testnet/3fbc5d4f1f9ddc7d/qualification/544e6230d594/ledger.db",
+  "side": "LONG",
+  "slClientId": "AURORA-CTR-544e6230d594-SL",
+  "symbol": "BTCUSDT"
 }
