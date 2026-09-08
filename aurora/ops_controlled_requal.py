@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
@@ -765,6 +766,36 @@ def restart_recover_session(
     return restarted, recovered
 
 
+# R1 finality 合同（CTR-20260908-03 教训）：撤单/成交后的状态传播
+# 存在最终一致性窗口。有界轮询：terminal 即权威；窗口耗尽仍非 terminal
+# → UNKNOWN（fail-safe，绝不当作成功，也绝不无界重试）。
+FINALITY_MAX_ATTEMPTS = 5
+FINALITY_POLL_INTERVAL_SEC = 1.0
+LEG_TERMINAL_STATES = ("CANCELLED", "FILLED", "NOT_FOUND")
+
+
+def wait_leg_finality(query, leg_id: str, *,
+                      max_attempts: int = FINALITY_MAX_ATTEMPTS,
+                      interval: float = FINALITY_POLL_INTERVAL_SEC,
+                      ) -> Dict[str, Any]:
+    """按有界窗口轮询腿状态直到 terminal。
+
+    返回 {"status": terminal 或 "UNKNOWN", "attempts": n}。
+    UNKNOWN = 窗口耗尽仍未收敛，调用方必须 fail-safe。
+    """
+    last = None
+    for attempt in range(1, max_attempts + 1):
+        fact = query(leg_id)
+        status = getattr(fact, "status", None) if fact is not None else None
+        if status in LEG_TERMINAL_STATES:
+            return {"status": status, "attempts": attempt}
+        last = status
+        if attempt < max_attempts:
+            time.sleep(interval)
+    return {"status": "UNKNOWN", "lastObserved": last,
+            "attempts": max_attempts}
+
+
 def qualification_close(orch: Any, *, session_id: str) -> Dict[str, Any]:
     """Harness 层钉死 QUALIFICATION CLOSE。ACK ≠ confirmed。"""
     pos = orch.exchange.position(SYMBOL)
@@ -810,17 +841,25 @@ def qualification_close(orch: Any, *, session_id: str) -> Dict[str, Any]:
     # 并核验 AURORA BTCUSDT Algo 归零；V5S_* 他方腿绝不触碰。
     for leg in ("SL", "TP"):
         leg_id = leg_client_id(session_id, leg)
+        fact = orch.exchange.query_order(leg_id)
+        status = getattr(fact, "status", None) if fact is not None else "NOT_FOUND"
+        if status in ("CANCELLED", "NOT_FOUND", "FILLED"):
+            continue  # 已终态：撤过/已触发/不存在，无需处理
+        if status not in ("NEW", "ACTIVE", "PARTIALLY_FILLED"):
+            raise SafetyViolation(
+                f"[CTR] residual {leg} leg unexpected status {status}")
         try:
-            cancelled = orch.exchange.cancel_order(leg_id)
+            orch.exchange.cancel_order(leg_id)
         except Exception as exc:
             raise SafetyViolation(
                 f"[CTR] residual {leg} leg cancel failed: "
                 f"{type(exc).__name__}") from exc
-        fact_after = orch.exchange.query_order(leg_id)
-        if fact_after is not None and fact_after.status not in (
-                "CANCELLED", "NOT_FOUND"):
+        finality = wait_leg_finality(
+            lambda cid: orch.exchange.query_order(cid), leg_id)
+        if finality["status"] not in ("CANCELLED", "FILLED"):
             raise SafetyViolation(
-                f"[CTR] residual {leg} leg not cancelled: {fact_after.status}")
+                f"[CTR] residual {leg} leg finality UNKNOWN after bounded "
+                f"window ({finality}); manual closeout required")
     return {
         "plan": plan,
         "closed": closed,

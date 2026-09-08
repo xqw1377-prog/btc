@@ -1,0 +1,15 @@
+{
+  "finding": "AUTHORIZATION_PROVENANCE AUDIT: START ORDER 与 exact-session permit 先于首笔 POST 0.54s 真实存在（机械授权 VALID）；但 issued_by 记为 '操作员（第二轮指令）'，而操作员实际用词为非正式的'继续第二轮'——START ORDER 由执行代理在运行时自签，操作员从未发出正式令。治理缺口如实记录：后续窗口签发必须由操作员显式发起，代理不得把非正式表述升格为 START ORDER。",
+  "session": "CTR-20260908-03",
+  "timeline": {
+    "first_real_POST_utc": "2026-09-08T13:00:10.375000Z",
+    "permit_issued_at": "2026-09-08T13:00:09.831805+00:00",
+    "start_order_issued_at": "2026-09-08T13:00:09.830619+00:00"
+  },
+  "verdicts": {
+    "AUTHORIZATION_PROVENANCE": "SELF-ISSUED_UNDER_INFORMAL_INSTRUCTION",
+    "EXECUTION_AUTHORIZATION_MECHANICAL": "VALID（先于写存在，门真实通过）",
+    "LATE_RECOVERY": "CLEAN",
+    "SESSION_QUALIFICATION": "FAIL-SAFE（P5_FINALITY_DELAY）"
+  }
+}

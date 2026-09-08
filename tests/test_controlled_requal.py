@@ -10,6 +10,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from unittest import mock
 
@@ -516,6 +517,44 @@ class MainAndSourceTests(CtrTestBase):
         code = main(["--env-file",
                      os.path.join(self._tmp.name, "missing.env")])
         self.assertEqual(code, 2)
+
+
+if __name__ == "__main__":
+    unittest.main()
+
+
+class FinalityContractTests(unittest.TestCase):
+    """R1 finality 合同：撤腿状态的有界轮询。"""
+
+    def _wait(self, statuses, max_attempts=3, interval=0.01):
+        from aurora.ops_controlled_requal import wait_leg_finality
+        seq = list(statuses)
+        calls = {"n": 0}
+
+        def query(cid):
+            calls["n"] += 1
+            return SimpleNamespace(status=seq[min(calls["n"] - 1, len(seq) - 1)])
+        return wait_leg_finality(query, "X-SL", max_attempts=max_attempts,
+                                 interval=interval), calls
+
+    def test_terminal_immediately(self):
+        result, _ = self._wait(["CANCELLED"])
+        self.assertEqual(result["status"], "CANCELLED")
+
+    def test_lagging_status_bounded_then_terminal(self):
+        result, calls = self._wait(["NEW", "NEW", "CANCELLED"],
+                                   max_attempts=5)
+        self.assertEqual(result["status"], "CANCELLED")
+        self.assertLessEqual(calls["n"], 5)
+
+    def test_exhausted_window_returns_unknown(self):
+        result, _ = self._wait(["NEW", "NEW", "NEW"], max_attempts=3)
+        self.assertEqual(result["status"], "UNKNOWN")
+        self.assertEqual(result["lastObserved"], "NEW")
+
+    def test_unknown_is_fail_safe_not_success(self):
+        result, _ = self._wait(["NEW"], max_attempts=1)
+        self.assertNotIn(result["status"], ("CANCELLED", "FILLED"))
 
 
 if __name__ == "__main__":

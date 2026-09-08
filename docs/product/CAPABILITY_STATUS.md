@@ -81,8 +81,11 @@ CTR-20260908-01               STOP AT P2 / NO EXCHANGE WRITE
 EXECUTION AUTHORIZATION       NOT ISSUED
 SCOPED PERMIT                 VOIDED（该 session）
 REAL WRITE PATH               DENIED
-CONTROLLED REQUAL LIFECYCLE   PASS-1（5c5945a）+ PASS-2（CTR-20260908-03，
-                              evidence/ctr/CTR-20260908-03/）
+CONTROLLED REQUAL LIFECYCLE   PASS-1（5c5945a）
+SESSION CTR-20260908-03       FAIL-SAFE / CLEAN RECOVERY
+                              （P5_FINALITY_DELAY；后到证据不改写裁决）
+AUTHORIZATION_PROVENANCE      AUDITED — 机械有效 / 自签治理缺口（见
+                              evidence/ctr/CTR-20260908-03/provenance_audit.json）
 EXECUTION AUTHORIZATION       CONSUMED（CTR-20260908-02，one-lifecycle）
 NEXT SESSION                  需新开工令；AUTO TESTNET 仍 DENIED
 WRITE GATES                   EXECUTE_AUTHORIZED
