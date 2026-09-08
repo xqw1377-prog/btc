@@ -64,3 +64,32 @@ CONTRACT_INCOMPLETE，仅缺此一项）。
 - 对当前 BTCUSDT 状态：证据完整可枚举（1+1，单页内），恢复对账充分。
 - 一般化完整性（超大历史的分页/时间窗上界）：能力已演示但未穷尽证明
   → 按冻结口径记 PARTIAL，不伪造 PASS。
+
+---
+
+## R1 修复后复测（G0-4D-R1，95ece99）
+
+- 列表端点（openAlgoOrders 全账户）：**PASS**（orderType 别名进入合同后，
+  原先唯一缺失字段消失；跨品种 DOGE/ENA/XRP 与非 AURORA id 照常记录）。
+- 单条查询解析层：**PASS** —— 真实 payload 经 `_algo_fact` 映射成功，
+  `order_type_normalized=STOP_MARKET`。
+- 全链路 `query_algo_order` 对非 AURORA 订单由 **workingType 策略守卫**
+  拒绝（V5S_* 为 CONTRACT_PRICE，AURORA 合同冻结 MARK_PRICE）——
+  属合同内 fail-closed，不是 schema 缺陷；端到端 AURORA 形态单查
+  留待受控重资格阶段首个真实 AURORA Algo 现场核验。
+- ownership isolation：BTCUSDT 适配器查跨品种 id 仍被身份守卫拒绝
+  （未为验证 schema 拆除任何守卫）。
+
+## 更正后裁决（R1 后）
+
+```text
+AUTHENTICATION CONTRACT          PASS（维持）
+READ PROTOCOL CONTRACT           PASS（Algo 段：列表 PASS + 解析层 PASS +
+                                 策略守卫按合同工作）
+RECOVERY EVIDENCE COMPLETENESS   PARTIAL（维持：无 SELL 缺口继续 OPEN）
+
+G0-4D EXECUTION                  COMPLETE
+G0-4D EVIDENCE                   SEALED（a1a284c + R1 复测本文件）
+G0-4D QUALIFICATION GATE         UNBLOCKED（可讨论受控重资格；
+                                 EXECUTE 仍 DENIED）
+```

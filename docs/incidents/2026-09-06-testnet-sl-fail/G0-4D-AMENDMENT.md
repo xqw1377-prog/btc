@@ -63,3 +63,33 @@ kill / lock / AUTO TESTNET / SYSTEM EXECUTION 全部未解除。
 POST/DELETE = 0；position mode / leverage / margin 未变；
 kill / ledger / state 树未触碰（契约测试以 transport 间谍 +
 state 树字节不变钉死）。
+
+---
+
+## R1 修复与复测（2026-09-08，95ece99）
+
+按更正后的唯一阻塞执行离线修复并复测：
+
+- `_algo_fact` 经 `_wire_order_type` 接受 `orderType`/`type` 双别名
+  （冲突 fail closed，双缺按合同报错）；领域字段统一 `order_type`。
+- `ALGO_LIST_REQUIRED_FIELDS` / `ALGO_SINGLE_REQUIRED_FIELDS` 分开定义；
+  `closePosition` 仅单查必备；`actualOrderId` 条件字段。
+- 真实脱敏 fixture 进回归（本探测归档 payload 的五条映射规则）。
+
+复测（真实只读 GET，零写入）：
+
+```text
+列表端点            PASS（orderType 别名进合同）
+单条查询解析层      PASS（真实 payload → STOP_MARKET）
+全链路单查          由 workingType 策略守卫拒绝非 AURORA 订单
+                    （CONTRACT_PRICE != 冻结的 MARK_PRICE）——
+                    合同内 fail-closed，不是 schema 缺陷
+ownership 隔离      BTCUSDT 适配器查跨品种 id 仍被身份守卫拒绝
+
+READ PROTOCOL CONTRACT   FAIL → PASS
+RECOVERY EVIDENCE        PARTIAL（维持；EXIT-PROVENANCE-01 仍 OPEN）
+G0-4D QUALIFICATION GATE HOLD → UNBLOCKED（EXECUTE 仍 DENIED）
+```
+
+端到端 AURORA 形态单查（真实 AURORA Algo 的完整 query_algo_order
+PASS）留待受控重资格阶段首个真实 AURORA Algo 现场核验。
