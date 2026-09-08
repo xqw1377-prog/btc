@@ -1,0 +1,150 @@
+{
+  "authentication": {
+    "accountConfigFields": [
+      "canDeposit",
+      "canTrade",
+      "canWithdraw",
+      "dualSidePosition",
+      "feeTier",
+      "multiAssetsMargin",
+      "tradeGroupId",
+      "updateTime"
+    ],
+    "fingerprint": "3fbc5d4f1f9ddc7d",
+    "incidentFingerprint": "3fbc5d4f1f9ddc7d",
+    "status": "PASS"
+  },
+  "autoTestnet": "DENIED",
+  "capturedAt": "2026-09-08T05:07:33.378169+00:00",
+  "contracts": {
+    "authentication": "PASS",
+    "g04d": "CLOSED-READONLY",
+    "readProtocol": "PASS",
+    "recoveryEvidence": "PARTIAL"
+  },
+  "failClosed": [],
+  "futuresHost": "https://testnet.binancefuture.com/fapi",
+  "g04d": "CLOSED-READONLY",
+  "httpMethodsAllowed": [
+    "GET"
+  ],
+  "intent": "AURORA-0650a39f56e3",
+  "killClear": "DENIED",
+  "live": "NO-GO",
+  "localKill": {
+    "engaged": 1,
+    "source": "legacy_ledger_readonly",
+    "status": "ACTIVE",
+    "written": false
+  },
+  "probe": "G0-4D_READ_ONLY_REQUAL",
+  "reads": {
+    "allOrders": {
+      "closeOrderCount": 0,
+      "closeOrders": [],
+      "count": 1,
+      "entryOrder": {
+        "clientOrderId": "AURORA-0650a39f56e3-ENTRY",
+        "executedQty": "0.0070",
+        "orderId": 28574233916,
+        "side": "BUY",
+        "status": "FILLED"
+      },
+      "pageFull": false,
+      "pageLimit": 1000,
+      "schema": "OBSERVED",
+      "status": "PASS"
+    },
+    "hostReachable": {
+      "status": "PASS"
+    },
+    "openAlgoOrders": {
+      "auroraBtcusdt": [],
+      "count": 3,
+      "foreign": [
+        {
+          "algoStatus": "NEW",
+          "clientAlgoId": "V5S_XRP_1788567120000_0001",
+          "symbol": "XRPUSDT"
+        },
+        {
+          "algoStatus": "NEW",
+          "clientAlgoId": "V5S_ENA_1788551460000_0001",
+          "symbol": "ENAUSDT"
+        },
+        {
+          "algoStatus": "NEW",
+          "clientAlgoId": "V5S_DOGE_1788529140000_0001",
+          "symbol": "DOGEUSDT"
+        }
+      ],
+      "g04aListFields": "PARTIAL",
+      "g04aListMissing": [
+        "type"
+      ],
+      "schema": "OBSERVED",
+      "status": "PASS"
+    },
+    "openOrders": {
+      "count": 0,
+      "schema": "NOT_OBSERVED",
+      "status": "EMPTY"
+    },
+    "orderRateLimit": {
+      "count": 2,
+      "schema": "OBSERVED",
+      "status": "PASS"
+    },
+    "positionMode": {
+      "status": "PASS",
+      "value": "HEDGE"
+    },
+    "positions": {
+      "count": 2,
+      "openLegs": [],
+      "schema": "OBSERVED",
+      "status": "PASS"
+    },
+    "userTrades": {
+      "count": 1,
+      "entryTrade": {
+        "id": 535229485,
+        "orderId": 28574233916,
+        "positionSide": "LONG",
+        "qty": "0.0070",
+        "side": "BUY"
+      },
+      "pageFull": false,
+      "pageLimit": 1000,
+      "schema": "OBSERVED",
+      "sellCount": 0,
+      "sells": [],
+      "status": "PASS"
+    }
+  },
+  "recoveryEvidence": {
+    "entryOrder": {
+      "clientOrderId": "AURORA-0650a39f56e3-ENTRY",
+      "executedQty": "0.0070",
+      "orderId": 28574233916,
+      "side": "BUY",
+      "status": "FILLED"
+    },
+    "entryTrade": {
+      "id": 535229485,
+      "orderId": 28574233916,
+      "positionSide": "LONG",
+      "qty": "0.0070",
+      "side": "BUY"
+    },
+    "exitMechanism": "UNKNOWN",
+    "exitProvenance": "OPEN / APPEND-ONLY",
+    "manualCloseFill": "NOT_FOUND",
+    "manualCloseOrder": "NOT_FOUND",
+    "reason": "FLAT gap reconfirmed; no authoritative SELL/close",
+    "status": "PARTIAL"
+  },
+  "symbol": "BTCUSDT",
+  "systemExecutionQualified": false,
+  "writeCapabilities": "ABSENT"
+}

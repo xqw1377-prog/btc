@@ -37,7 +37,7 @@ G0-4B                          CLOSED-OFFLINE
 G0-4B_COMMIT                   1bb1ecf
 G0-4C                          CLOSED-OFFLINE
 G0-4C_COMMIT                   5bfa311
-G0-4D                          HOLD
+G0-4D                          CLOSED-READONLY
 G0-5                           CLOSED-OFFLINE
 G0-5_COMMIT                    d0863ee
 
@@ -50,7 +50,7 @@ INCIDENT_LOCK                  ACTIVE
 未来若 Testnet API / 账户历史给出新解释，**只能追加，不得覆盖** 本日 `NOT_FOUND`。
 
 2026-09-08 disposition 已封：`HISTORICAL_EVIDENCE_GAP=ACCEPTED`，`INCIDENT_REQUALIFICATION_ELIGIBLE=YES`。  
-这只批准进入 G0-4D 只读资格复核。`INCIDENT_LOCK` / kill / AUTO TESTNET / SYSTEM EXECUTION 均未解除。
+G0-4D 只读复核已封（认证/读协议 PASS，恢复证据 PARTIAL）。`INCIDENT_LOCK` / kill / AUTO TESTNET / SYSTEM EXECUTION 均未解除。
 
 P0-1 当时（2026-09-08T02:18Z）交易所仍持有 LONG 0.007。该快照保留在「六问」；现行仓位以文末「人工平仓复核」为准。
 
@@ -206,7 +206,7 @@ synthetic SELL / fee / realized pnl / manual order id
 
 没有来源就没有财务事实。旧 ENTRY 订单行 `PARTIALLY_FILLED / filled_qty=0` **保持原样**。
 
-2026-09-08 disposition 已接受历史证据缺口，并批准进入只读 qualification cycle（G0-4D）。  
-EXIT provenance 继续 UNKNOWN / OPEN。new risk 仍 DENIED：kill ACTIVE，INCIDENT_LOCK ACTIVE。详见 [DISPOSITION.md](DISPOSITION.md)。
+2026-09-08 disposition 已接受历史证据缺口。G0-4D 只读复核再确认同一缺口：userTrades/allOrders 仍无 SELL，仓位仍 KNOWN_FLAT。详见 [G0-4D.md](G0-4D.md)。  
+EXIT provenance 继续 UNKNOWN / OPEN。new risk 仍 DENIED：kill ACTIVE，INCIDENT_LOCK ACTIVE。
 
 原始探针：`exchange_manual_close_probe.json`（仍开仓）、`exchange_post_manual_close.json`、`exchange_post_manual_close_hunt.json`、`MANUAL_RECOVERY_ACTION.json`（处置记录，非成交事实）。

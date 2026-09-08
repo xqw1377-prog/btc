@@ -9,7 +9,7 @@
 ```text
 NETWORK CALLS                 0
 KILL CLEAR                    DENIED
-PROBE                         HOLD until this document is sealed
+PROBE                         G0-4D sealed read-only; further writes NOT AUTHORIZED
 PRODUCTION_MAIN               DENIED
 LIVE                          NO-GO
 ```
@@ -142,25 +142,12 @@ LIVE
 
 ---
 
-## 下一阶段（尚未开始）
+## 下一阶段
 
-本文件封点之后，才允许单独授权：
-
-```text
-G0-4D = READ-ONLY TESTNET REQUALIFICATION
-```
-
-只允许真实读取：
+G0-4D 只读复核已封为 **CLOSED-READONLY**（恢复证据 PARTIAL）。  
+受控 TESTNET 写入资格必须另开独立工作包，当前 **NOT AUTHORIZED**。
 
 ```text
-position mode
-account identity / config
-positions
-ordinary open orders
-Algo open orders
-userTrades
-rate limits
-endpoint / schema behavior
+CONTROLLED TESTNET REQUALIFICATION    NOT AUTHORIZED
+KILL CLEAR                            DENIED
 ```
-
-G0-4D 全部通过之前，不得设计受控 TESTNET qualification，更不得讨论 kill clearance。

@@ -84,14 +84,16 @@ G0-4A / 4B / 4C + G0-5 通过
     ↓
 INCIDENT DISPOSITION（证据缺口 ACCEPTED；只读复核资格 YES；lock/kill 仍 ACTIVE）
     ↓
-TESTNET_REQUALIFICATION（G0-4D 只读，尚未开始）
+TESTNET_REQUALIFICATION（G0-4D CLOSED-READONLY；恢复证据 PARTIAL）
+    ↓
+CONTROLLED TESTNET REQUALIFICATION（未授权）
     ↓
 明确审批
     ↓
 TESTNET_READY   ← 下文「资格门之后」的启动 SOP 才开放
 ```
 
-当前停在 **INCIDENT_LOCKED**。仓位风险已收口为交易所 KNOWN_FLAT；证据残留 EXIT-PROVENANCE-01 仍 OPEN，且已被 disposition 接受。只读 G0-4D 已获资格，**尚未开始**。**系统事故在 kill 解除审批前不算结束。**
+当前停在 **INCIDENT_LOCKED**。仓位风险已收口为交易所 KNOWN_FLAT；证据残留 EXIT-PROVENANCE-01 仍 OPEN，且已被 disposition 接受。G0-4D 只读复核 **CLOSED-READONLY**（恢复证据 PARTIAL）。受控写入包未授权。**系统事故在 kill 解除审批前不算结束。**
 
 ```text
 INCIDENT_POSITION_STATE       RECOVERED
@@ -107,7 +109,7 @@ G0-4B                         CLOSED-OFFLINE
 G0-4B_COMMIT                  1bb1ecf
 G0-4C                         CLOSED-OFFLINE
 G0-4C_COMMIT                  5bfa311
-G0-4D                         HOLD
+G0-4D                         CLOSED-READONLY
 G0-5                          CLOSED-OFFLINE
 G0-5_COMMIT                   d0863ee
 HISTORICAL_EVIDENCE_GAP       ACCEPTED
