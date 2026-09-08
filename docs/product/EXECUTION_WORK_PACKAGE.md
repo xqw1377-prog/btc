@@ -341,3 +341,14 @@ INCIDENT KILL                    ACTIVE
 它不能证明持续自动交易资格。  
 `SYSTEM EXECUTION QUALIFIED = YES` **不是**本包副作用。  
 是否需要第二轮 forward qualification、以及什么证据才足以解除事故运行锁，必须另裁。
+
+---
+
+## P1-GOV-3（登记，未实施）：LIVE endpoint contract
+
+当前 `ALLOWED_LIVE_HOSTS` 只含 `fapi.binance.com`；SDK 构造期 spot
+ping（api.binance.com）不在白名单 → armed-LIVE 即便授权齐全也在
+构造前拒绝（BLOCKED_BEFORE_CLIENT，G0-4D 探测已确认该行为）。
+这是策略性正确行为，但 LIVE 端点合同从未正式定义。LIVE 解冻评审
+前必须冻结：构造期/交易期各自允许的主机集合、出网守卫口径、
+以及"策略不满足即构造前拒绝"的正式表达。状态：PLANNED / NOT-STARTED。

@@ -7,6 +7,7 @@ D: SAFEEXECUTOR_PRODUCTION_UNREACHABLE
 """
 import importlib
 import os
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -220,6 +221,30 @@ class StateIsolationTests(unittest.TestCase):
             self.assertEqual(migrated.kill_state()["engaged"], 1)  # kill 保留
             migrated.close()
             self.assertIsNone(ensure_ledger_migrated(legacy, target))  # 幂等
+
+    def test_ledger_migration_refuses_missing_incident_authority(self):
+        from aurora.armed_runtime import ensure_ledger_migrated
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy = os.path.join(tmp, "missing-incident.db")
+            target = os.path.join(tmp, "testnet", "fp", "kernel_ledger.db")
+            with self.assertRaises(SafetyViolation) as ctx:
+                ensure_ledger_migrated(legacy, target)
+            self.assertIn("INCIDENT_STATE_UNKNOWN", str(ctx.exception))
+            self.assertFalse(os.path.exists(target))
+
+    def test_existing_target_without_kill_state_is_refused(self):
+        from aurora.armed_runtime import ensure_ledger_migrated
+        from aurora.kernel.ledger import Ledger
+        with tempfile.TemporaryDirectory() as tmp:
+            legacy = os.path.join(tmp, "kernel_ledger.db")
+            ledger = Ledger(legacy)
+            ledger.close()
+            target = os.path.join(tmp, "testnet", "fp", "kernel_ledger.db")
+            os.makedirs(os.path.dirname(target))
+            sqlite3.connect(target).close()
+            with self.assertRaises(SafetyViolation) as ctx:
+                ensure_ledger_migrated(legacy, target)
+            self.assertIn("kill state missing", str(ctx.exception))
 
 
 class AccountIdentityTests(unittest.TestCase):

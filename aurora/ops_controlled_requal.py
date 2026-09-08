@@ -24,6 +24,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from aurora.config_source import ConfigSource, repo_default_env_file
+from aurora.incident_governance import read_incident_state
 from aurora.p0_boundary import (
     RunMode,
     SafetyViolation,
@@ -167,26 +168,8 @@ def assert_identity(source: ConfigSource,
 
 
 def incident_kill_snapshot() -> Dict[str, Any]:
-    """只读打开事故账本。禁止经 Ledger() 写入 WAL/schema。"""
-    import sqlite3
-
-    path = incident_ledger_path()
-    if not os.path.exists(path):
-        return {"status": "ABSENT", "path": path, "digest": None}
-    digest = _file_digest(path)
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
-    try:
-        row = conn.execute(
-            "SELECT engaged FROM kill_switch WHERE id = 1").fetchone()
-    finally:
-        conn.close()
-    engaged = int(row[0]) if row is not None else 0
-    return {
-        "status": "ACTIVE" if engaged == 1 else "CLEAR",
-        "engaged": engaged,
-        "digest": digest,
-        "written": False,
-    }
+    """只读打开事故账本；缺失/非法绝不解释为 CLEAR。"""
+    return read_incident_state(incident_ledger_path())
 
 
 def _file_digest(path: str) -> str:
@@ -388,15 +371,18 @@ def assert_write_gates(
     now: Optional[datetime] = None,
     session_id: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """R2 最终形态真实写权限门。缺一即 DENY BEFORE CLIENT WRITE。
+    """冻结合同 6b2cc7c 的真实写权限门。缺一即 DENY BEFORE CLIENT WRITE。
 
-    REAL WRITE AUTHORITY = valid START ORDER + matching exact-session
-    scoped permit + explicit operator flag（调用方保证）+ 无终态记录。
-    EXECUTE_AUTHORIZED 常量降级为 legacy dead-man 指示，不再是门。
+    REAL WRITE AUTHORITY = EXECUTE_AUTHORIZED + valid START ORDER
+    + matching exact-session scoped permit + explicit operator flag（CLI）
+    + 无终态记录。
     """
+    if EXECUTE_AUTHORIZED is not True:
+        raise SafetyViolation(
+            "[CTR] EXECUTE_AUTHORIZED=false; refuse before write client.")
     conditions = check_execution_conditions(
         fingerprint=fingerprint, now=now, session_id=session_id)
-    conditions["legacyDeadManIndicator"] = EXECUTE_AUTHORIZED
+    conditions["executeAuthorized"] = True
     return conditions
 
 
@@ -712,8 +698,9 @@ def plan(
     session_path = session_ledger_path(fp, session_id)
     assert_session_ledger_isolated(session_path, session_id)
     kill = incident_kill_snapshot()
-    if kill.get("status") == "CLEAR":
-        raise SafetyViolation("[CTR] incident kill unexpectedly CLEAR; refuse.")
+    if kill.get("status") != "ACTIVE":
+        raise SafetyViolation(
+            f"[CTR] incident state {kill.get('status')} != ACTIVE; refuse.")
     return {
         "package": "CONTROLLED_TESTNET_REQUAL",
         "execute": "DENIED",
@@ -1031,8 +1018,9 @@ def execute_live(
     START ORDER OPEN + matching exact-session scoped permit
     + explicit operator flag + 无终态会话记录。
     """
-    if not EXECUTE_AUTHORIZED:
-        pass  # legacy dead-man 指示：不构成门
+    if EXECUTE_AUTHORIZED is not True:
+        raise SafetyViolation(
+            "[CTR] EXECUTE_AUTHORIZED=false; refuse before write client.")
     if source is None or stop_price is None:
         raise SafetyViolation(
             "[CTR] execute requires config source and stop price; "

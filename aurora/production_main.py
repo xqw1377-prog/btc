@@ -49,6 +49,32 @@ from aurora.p0_boundary import (
 
 FORBIDDEN_IMPORTS = ("aurora_hf_kernel", "aurora_final")
 SYMBOL = "BTCUSDT"
+ENABLE_TOKEN = "true"
+
+
+def _trading_requested(source: ConfigSource) -> bool:
+    return (
+        source.get("AURORA_ENABLE_TRADING") or ""
+    ).strip().lower() == ENABLE_TOKEN
+
+
+def assert_production_execution_governance(source: ConfigSource) -> None:
+    """事故期生产入口不得获得写能力；UNKNOWN 也不得默认放行。
+
+    Controlled Start Order / permit 只属于 ops_controlled_requal 的单次
+    lifecycle，不能授权无限循环的 production_main。
+    """
+    mode = source.mode()
+    if mode not in (RunMode.TESTNET, RunMode.LIVE):
+        return
+    from aurora.incident_governance import assert_incident_clear
+
+    assert_incident_clear()
+    if mode == RunMode.TESTNET and _trading_requested(source):
+        raise SafetyViolation(
+            "[P0] AUTO TESTNET DENIED; production_main cannot consume a "
+            "controlled qualification permit. Use ops_controlled_requal only."
+        )
 
 
 class BinanceBroker:
@@ -163,6 +189,9 @@ def run_boot(env_file: Optional[str] = None) -> BootContext:
         # 未武装：双重授权可校验，但绝不能构造主网客户端
         assert_live_dual_auth(source.as_environ())
         assert_not_live_trading(mode, source.as_environ())
+    # 必须先于任何 Binance Client 构造：ACTIVE / UNKNOWN 都不能让生产
+    # 入口获得可写客户端。SHADOW 是事故期唯一联网只读入口。
+    assert_production_execution_governance(source)
     if mode in (RunMode.TESTNET, RunMode.SHADOW, RunMode.LIVE):
         broker = _build_network_broker(mode, source)
     # 指纹必须先于状态路径解析（命名空间含指纹）；缺密钥/指纹在此拒启。

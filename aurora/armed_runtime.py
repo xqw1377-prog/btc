@@ -15,6 +15,7 @@ import os
 import sqlite3
 from typing import Any, Dict, Optional
 
+from aurora.incident_governance import read_incident_state
 from aurora.kernel.binance_exchange import BinanceExchange
 from aurora.kernel.ledger import Ledger
 from aurora.kernel.orchestrator import Orchestrator
@@ -37,13 +38,22 @@ def namespaced_ledger_path(mode: RunMode, fingerprint: str) -> str:
 def ensure_ledger_migrated(legacy_path: str, target_path: str) -> Optional[str]:
     """把遗留账本只读接管到命名空间路径（G0-5B）。
 
-    - 目标已存在：不做任何事（幂等）。
-    - 遗留不存在：不做任何事（全新命名空间）。
+    - 权威事故账本缺失/非法：UNKNOWN，拒绝创建默认 CLEAR 的新账本。
+    - 目标已存在：校验 kill 行后不做任何事（幂等）。
     - 两者皆备：sqlite backup API 复制（含 kill_switch 事实），原文件
       以只读方式打开，绝不写回；复制后校验目标可打开且 kill 行存在。
     返回迁移说明（未迁移返回 None）。
     """
-    if os.path.exists(target_path) or not os.path.exists(legacy_path):
+    legacy_state = read_incident_state(legacy_path)
+    if legacy_state["status"] == "UNKNOWN":
+        raise SafetyViolation(
+            "[P0] INCIDENT_STATE_UNKNOWN: cannot create or trust a "
+            "namespaced execution ledger.")
+    if os.path.exists(target_path):
+        target_state = read_incident_state(target_path)
+        if target_state["status"] == "UNKNOWN":
+            raise SafetyViolation(
+                "[P0] namespaced ledger kill state missing or invalid.")
         return None
     os.makedirs(os.path.dirname(target_path) or ".", exist_ok=True)
     src = sqlite3.connect(f"file:{legacy_path}?mode=ro", uri=True)
