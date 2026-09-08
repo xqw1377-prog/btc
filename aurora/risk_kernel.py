@@ -398,7 +398,7 @@ class InstitutionalRiskKernel:
             self._score_limit(self.consecutive_losses, self.limits.max_consecutive_losses) * 0.10,
             self._score_limit(metrics.var_95, self.limits.var_max_pct) * 0.15,
             self._score_limit(metrics.cvar_95, self.limits.cvar_max_pct) * 0.10,
-            self._score_limit(volatility, 0.03) * 0.10,
+            self._score_limit(volatility, 0.05) * 0.10,
             self._score_limit(position_pct, self.limits.max_position_pct) * 0.10,
             self._score_limit(funding_rate, self.limits.max_funding_rate_pct) * 0.05,
             self._score_limit(spread_pct, self.limits.max_spread_pct) * 0.05,
@@ -412,7 +412,7 @@ class InstitutionalRiskKernel:
             self._score_limit(daily_loss, self.limits.max_daily_loss_pct) * 0.20,
             self._score_limit(consec, self.limits.max_consecutive_losses) * 0.15,
             self._score_limit(var, self.limits.var_max_pct) * 0.20,
-            self._score_limit(vol, 0.03) * 0.20,
+            self._score_limit(vol, 0.05) * 0.20,
         ]
         return min(sum(scores), 1.0)
 
@@ -433,7 +433,7 @@ class InstitutionalRiskKernel:
     def _calculate_max_position(self, risk_score: float, volatility: float, confidence: float) -> float:
         base = self.limits.max_position_pct
         risk_adj = max(0.2, 1.0 - risk_score * 0.6)
-        vol_adj = 1.0 / (1.0 + volatility * 50)
+        vol_adj = 1.0 / (1.0 + volatility * 5)
         conf_adj = 0.5 + confidence * 0.5
         consec_adj = max(0.3, 1.0 - self.consecutive_losses * 0.15)
         return base * risk_adj * vol_adj * conf_adj * consec_adj

@@ -64,7 +64,7 @@ Acceptance checks:
 
 ## Explicit non-goals (remain E1+)
 
-- Risk-budget sizing — **E1 CLOSED-OFFLINE**（见 E1_RISK_SEMANTICS.md）
-- Unified SL/TP semantics — **E1 CLOSED-OFFLINE**（见 E1_RISK_SEMANTICS.md）
+- Risk-budget sizing (`risk_usdt / stop_distance`)
+- Unified SL/TP semantics
 - BTC HODL benchmark / backtest harness
 - LIVE / AUTO TESTNET authorization

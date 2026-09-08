@@ -68,8 +68,6 @@ class FeatureEngine:
         df['momentum_pct'] = df['momentum'] / df['close'].shift(5)
         
         df['volatility'] = df['log_ret'].rolling(20).std() * np.sqrt(24 * 365)
-        df['vol_atr_pct'] = df['atr'] / df['close'].replace(0, np.nan)
-        df['vol_daily'] = df['log_ret'].rolling(20).std() * np.sqrt(1440)
         
         df['vwap'] = self.compute_vwap_rolling(df, 20)
         
@@ -107,8 +105,6 @@ class FeatureEngine:
             'momentum': float(latest['momentum']),
             'momentum_pct': float(latest['momentum_pct']),
             'volatility': float(latest['volatility']),
-            'vol_atr_pct': float(latest['vol_atr_pct']) if pd.notna(latest['vol_atr_pct']) else 0.0,
-            'vol_daily': float(latest['vol_daily']) if pd.notna(latest['vol_daily']) else 0.0,
             'vwap': float(latest['vwap']),
             'ema_slope': float(latest['ema_slope']),
             'atr_mean': float(df['atr'].mean()),

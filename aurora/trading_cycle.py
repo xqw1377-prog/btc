@@ -24,11 +24,6 @@ from aurora.kernel_types import Intent, TradeIntent
 from aurora.market_state_engine_v2 import MarketStateEngineV2
 from aurora.p0_boundary import RunMode, SafetyViolation
 from aurora.portfolio_brain_v2 import PortfolioBrainV2
-from aurora.risk_semantics import (
-    estimate_spread_pct,
-    fetch_funding_rate,
-    qty_from_authorized_intent,
-)
 from aurora.signal_providers import (
     BreakoutSignalProvider,
     MeanReversionSignalProvider,
@@ -180,10 +175,6 @@ class TradingCycle:
             self.momentum.generate(feats),
             self.mr.generate(feats),
         ]
-        funding_rate = fetch_funding_rate(self.client, self.symbol)
-        if funding_rate is None:
-            funding_rate = 0.0
-        spread_pct = estimate_spread_pct(feats)
         intent = self.brain.process(
             signals=signals,
             regime=regime["regime"],
@@ -194,8 +185,6 @@ class TradingCycle:
             current_ts=time.time(),
             features=feats,
             bar_id=bar_id,
-            funding_rate=funding_rate,
-            spread_pct=spread_pct,
         )
         if bar_id is not None and regime.get("bar_status") == "NEW_CLOSED_BAR":
             self._save_evidence(bar_id)
@@ -220,36 +209,6 @@ class TradingCycle:
         snapshot.last_applied_fill_id = self._last_applied_fill_id
         persist_accounting(snapshot, self.accounting_path)
         self.capital = snapshot.equity
-        self.brain.risk_gate.funding_incomplete = bool(snapshot.funding_incomplete)
-
-    def _sync_funding_events(self) -> None:
-        """Best-effort pull of funding income into ledger; fail-closed for OPEN only."""
-        ledger = getattr(self.runtime, "ledger", None)
-        if ledger is None or not hasattr(ledger, "insert_income_event"):
-            return
-        if self.client is None or not hasattr(self.client, "futures_income_history"):
-            return
-        self.brain.risk_gate.funding_incomplete = False
-        try:
-            start_ms = ledger.max_income_time_ms("FUNDING_FEE") + 1
-            rows = self.client.futures_income_history(
-                symbol=self.symbol,
-                incomeType="FUNDING_FEE",
-                startTime=start_ms,
-                limit=1000,
-            )
-            for row in rows or []:
-                income_id = f"{row.get('tranId')}:{row.get('time')}:{self.symbol}"
-                ledger.insert_income_event(
-                    income_id=income_id,
-                    symbol=self.symbol,
-                    income_type="FUNDING_FEE",
-                    amount=float(row.get("income") or 0.0),
-                    time_ms=int(row.get("time") or 0),
-                    asset=str(row.get("asset") or "USDT"),
-                )
-        except Exception:
-            self.brain.risk_gate.funding_incomplete = True
 
     def sync_brain_from_exchange(self) -> None:
         pos = self.runtime.exchange.position(self.symbol)
@@ -281,11 +240,9 @@ class TradingCycle:
         if not enable:
             return {"submitted": False, "action": intent.action, "reason": "trading disabled; intent not sent"}
         if intent.action == "OPEN":
-            if self.brain.risk_gate.funding_incomplete:
-                return {"submitted": False, "action": "HOLD", "reason": "funding ledger incomplete"}
             if price <= 0:
                 return {"submitted": False, "action": "HOLD", "reason": "invalid price"}
-            qty = qty_from_authorized_intent(self.brain.capital, intent.size_pct, price, MIN_QTY)
+            qty = round(self.brain.capital * intent.size_pct / price, 3)
             if qty < MIN_QTY:
                 return {"submitted": False, "action": "HOLD", "reason": "size below minimum"}
             sl = price * (1 - intent.stop_loss_pct) if intent.side == Intent.LONG else price * (1 + intent.stop_loss_pct)
@@ -315,7 +272,6 @@ class TradingCycle:
         if self.runtime.ledger.kill_state().get("engaged"):
             return {"action": "HOLD", "reason": "kill switch engaged", "recover": report}
         self.sync_brain_from_exchange()
-        self._sync_funding_events()
         self._sync_accounting()
         try:
             df = self.fetch_klines()
