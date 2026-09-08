@@ -100,7 +100,8 @@ KILL                          ACTIVE
 G0-4A                         CLOSED-OFFLINE
 G0-4B                         CLOSED-OFFLINE
 G0-4B_COMMIT                  1bb1ecf
-G0-4C                         HOLD
+G0-4C                         CLOSED-OFFLINE
+G0-4D                         HOLD
 AUTO_TESTNET                  DENIED
 LIVE                          NO-GO
 ```

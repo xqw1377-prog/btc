@@ -22,7 +22,9 @@ from hypothesis import given, settings, strategies as st  # noqa: E402
 from tests.kernel_test_open import bind_explicit_protect_prices  # noqa: E402
 from aurora.kernel.coverage import compute_protection_status  # noqa: E402
 from aurora.kernel.fake_exchange import FakeExchange  # noqa: E402
-from aurora.kernel.ledger import Ledger, PositionFactState  # noqa: E402
+from aurora.kernel.ledger import (  # noqa: E402
+    CLOSE_PROVENANCE_UNKNOWN, Ledger, PositionFactState,
+)
 from aurora.kernel.orchestrator import Orchestrator  # noqa: E402
 from aurora.kernel.port import OrderKind, OrderRequest  # noqa: E402
 from aurora.kernel.state_machine import IntentState  # noqa: E402
@@ -48,15 +50,24 @@ class LifecycleHarness(unittest.TestCase):
         return self.orch
 
     def _craft_filled_unprotected(self, iid, qty, price=100.0,
-                                  with_active_sl=False, sl_qty=None):
+                                  with_active_sl=False, sl_qty=None,
+                                  mid_state="FILLED_UNPROTECTED"):
         """构造"入场已成交、保护未挂/部分挂"的崩溃遗留形态。"""
         self.ledger.create_intent(iid, "BTCUSDT", "LONG", qty)
         self.ledger.claim_intent(iid, "craft")
         self.ledger.transition_intent(
             iid, IntentState.SUBMITTING, "craft: entry submit")
-        self.ledger.transition_intent(
-            iid, IntentState.FILLED_UNPROTECTED,
-            "craft: entry filled; crash before protection")
+        if mid_state == "PARTIALLY_FILLED":
+            self.ledger.transition_intent(
+                iid, IntentState.PARTIALLY_FILLED, "craft: partial fill")
+        else:
+            self.ledger.transition_intent(
+                iid, IntentState.FILLED_UNPROTECTED,
+                "craft: entry filled; crash before protection")
+            if mid_state == "PROTECTION_SUBMITTING":
+                self.ledger.transition_intent(
+                    iid, IntentState.PROTECTION_SUBMITTING,
+                    "craft: crash during protection submit")
         cid = f"{iid}-ENTRY"
         self.ledger.record_order_submitting(
             client_order_id=cid, intent_id=iid, order_kind="ENTRY",
@@ -257,6 +268,77 @@ class ProtectionRecoveryTests(LifecycleHarness):
             self.assertEqual(len(self._sl_submissions()), 1, f"round {i}")
             self.assertEqual(fills(), 1, f"round {i}")
             self.assertFalse(self.ledger.kill_state()["engaged"], f"round {i}")
+
+    def test_M13_protection_submitting_restart_recognizes_active_sl(self):
+        self._boot()
+        self._craft_filled_unprotected(
+            "C13", 0.007, with_active_sl=True, sl_qty=0.007,
+            mid_state="PROTECTION_SUBMITTING")
+        self._restart("g04c-C13")
+        report = self.orch.recover()
+        self.assertEqual(
+            self.ledger.get_intent("C13")["state"], IntentState.PROTECTED.value)
+        self.assertEqual(len(self._sl_submissions()), 1)
+        self.assertFalse(any(
+            e.get("fact") == "PROTECTION_RECOVERY" for e in report["unresolved"]))
+
+    def test_M14_unprotected_flat_is_close_provenance_unknown(self):
+        self._boot()
+        self._craft_filled_unprotected("C14", 0.007)
+        self.exchange.flatten_without_fill()
+        report = self.orch.recover()
+        facts = [e.get("fact") for e in report["unresolved"]]
+        self.assertIn(CLOSE_PROVENANCE_UNKNOWN, facts)
+        self.assertEqual(
+            self.ledger.get_intent("C14")["state"],
+            IntentState.RECOVERY_REQUIRED.value)
+        self.assertNotEqual(
+            self.ledger.get_intent("C14")["state"],
+            IntentState.RECONCILED.value)
+        self.assertEqual(
+            self.ledger.get_position_fact("BTCUSDT")["source"],
+            CLOSE_PROVENANCE_UNKNOWN)
+        sells = []
+        for order in self.ledger.orders_for_intent("C14"):
+            sells.extend(
+                f for f in self.ledger.fills_for_order(order["client_order_id"])
+                if f["side"] == "SELL")
+        self.assertEqual(sells, [])
+
+    def test_M15_repair_flatten_without_fill_is_provenance_not_reconciled(self):
+        self._boot()
+        self._craft_filled_unprotected(
+            "C15", 0.007, with_active_sl=True, sl_qty=0.010)
+        self.exchange.flatten_on_cancel = True
+        report = self.orch.recover()
+        self.assertNotEqual(
+            self.ledger.get_intent("C15")["state"],
+            IntentState.RECONCILED.value)
+        self.assertEqual(
+            self.ledger.get_intent("C15")["state"],
+            IntentState.RECOVERY_REQUIRED.value)
+        self.assertEqual(
+            self.ledger.get_position_fact("BTCUSDT")["source"],
+            CLOSE_PROVENANCE_UNKNOWN)
+        self.assertTrue(
+            any(e.get("fact") in (CLOSE_PROVENANCE_UNKNOWN, "ORPHAN_PROTECTION")
+                for e in report["unresolved"]))
+        self.assertEqual(self.ledger.fills_for_order("C15-SL"), [])
+
+    def test_M16_repair_position_change_rebuilds_at_live_qty(self):
+        self._boot()
+        self._craft_filled_unprotected(
+            "C16", 0.007, with_active_sl=True, sl_qty=0.010)
+        self.exchange.position_delta_on_cancel = -0.003
+        report = self.orch.recover()
+        self.assertEqual(
+            self.ledger.get_intent("C16")["state"], IntentState.PROTECTED.value)
+        sl = self._sl_submissions()
+        self.assertEqual(len(sl), 2)
+        self.assertAlmostEqual(sl[1].quantity, 0.004, places=10)
+        self.assertFalse(self.ledger.kill_state()["engaged"])
+        self.assertFalse(any(
+            e.get("fact") == "PROTECTION_RECOVERY" for e in report["unresolved"]))
 
 
 class LifecyclePropertyTests(LifecycleHarness):

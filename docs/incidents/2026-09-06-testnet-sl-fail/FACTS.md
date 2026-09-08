@@ -33,7 +33,8 @@ LIVE                           NO-GO
 G0-4A                          CLOSED-OFFLINE
 G0-4B                          CLOSED-OFFLINE
 G0-4B_COMMIT                   1bb1ecf
-G0-4C                          HOLD
+G0-4C                          CLOSED-OFFLINE
+G0-4D                          HOLD
 ```
 
 事故调查 **不是 CLOSED-CLEAN**。仓位风险可关；证据残留保持 OPEN。

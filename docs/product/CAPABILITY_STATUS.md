@@ -13,7 +13,6 @@
 ```text
 G0-4A_COMMIT                  7a10302
 G0-4B_COMMIT                  1bb1ecf
-HEAD                          cd93850
 WORKTREE                      禁止对交易所运行；ops_testnet_probe 保持未提交
 
 G0-1A                         CLOSED
@@ -34,7 +33,8 @@ MANUAL_CLOSE_ORDER            NOT_FOUND
 
 G0-4A                         CLOSED-OFFLINE
 G0-4B                         CLOSED-OFFLINE
-G0-4C                         HOLD
+G0-4C                         CLOSED-OFFLINE
+G0-4D                         HOLD
 G0-5                          OPEN
 KILL                          ACTIVE
 INCIDENT_LOCK                 ACTIVE
@@ -90,7 +90,7 @@ STRATEGY / V2                 HOLD
 | G0-3 UNKNOWN | **CLOSED**（`e4af236`） | 性质测试钉死；不重造状态机 |
 | G0-4A Algo/HEDGE 协议 | **CLOSED-OFFLINE** | fake transport。ObservedPositionMode 注入、HEDGE 减仓 `side+positionSide+qty`、`-1106` 不改参重试、Algo 终态≠fill、KNOWN_FLAT+CLOSE_PROVENANCE_UNKNOWN。REAL ORDER/ALGO/MODE MUTATION/KILL CLEAR = 0 |
 | G0-4B 执行事实真源 | **CLOSED-OFFLINE**（`1bb1ecf`） | B1 保护数量 = fills 权威聚合→仓位事实，ACK executedQty 仅为早期观察；订单投影单调收敛于 fills；`0 < protection_qty ≤ confirmed_position_qty`；保护计划价持久化于 intents（PRAGMA+ALTER 增量迁移，不改历史行）。B2 紧急平仓四态（ATTEMPTED/REJECTED/UNKNOWN/CONFIRMED），kill 理由禁"executed"假成功，仅权威事实可 CONFIRMED。B3 缺/非法 SL 价 → OPEN DENIED；99/101 哨兵废除；TP 可明确 NOT_CONFIGURED。回归：tests/test_g04b_contracts.py + tests/test_g04b_offline_probe.py（socket 绊网零出网）。交易所侧行为未验证（事故锁不变） |
-| G0-4C 保护生命周期恢复 | **HOLD** | HEAD 上有后续提交 `cd93850`，本对齐不把它登记为 CLOSED。需单独封点后才能改状态。 |
+| G0-4C 保护生命周期恢复 | **CLOSED-OFFLINE** | `FILLED_UNPROTECTED` / `PROTECTION_SUBMITTING` / `PARTIALLY_FILLED` 重启进入生命周期恢复；`SUBMIT_UNKNOWN` 不重提；部分覆盖不得 VERIFIED；超额覆盖撤旧按实际仓位重建；repair 窗口仓位变化按现场数量；无平仓成交的 FLAT → `CLOSE_PROVENANCE_UNKNOWN`，禁止合成 SELL / 假 RECONCILED；FLAT+ACTIVE 保护 → `ORPHAN_PROTECTION`。回归：tests/test_g04c_contracts.py。交易所生命周期仍归 G0-4D |
 | G0-5 配置来源 | **OPEN**（执行资格前置） | `production_main` 裸 `load_dotenv()` 必须与 safety_check / dashboard_feed 共用显式 ConfigSource；含 SafeExecutor 退休裁定（M2）：其交易方法在生产入口不可达（production_main 仅调 `executor.reconcile("timer")`，且仅 SHADOW 分支；SHADOW broker 拒写），TP 失败即平仓的旧合同与内核冲突暂为休眠，须在 G0-5 隔离或退休 |
 
 沿用既有登记的 G1/G4/G5 迁移项（启动余额不刷新、死配置、数量精度、

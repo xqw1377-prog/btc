@@ -63,6 +63,8 @@ class FakeExchange(ExchangePort):
         self._external: List[tuple] = []       # (signed_qty, entry_price)
         self._ambiguous_position = False        # 如 HEDGE 双腿：查询不完整 → None
         self._force_flat = False                # 仓位变 0 但无对应 fill（EXIT-PROVENANCE）
+        self.position_delta_on_cancel = 0.0     # 撤单窗口内仓位变化（G0-4C repair）
+        self.flatten_on_cancel = False          # 撤单后仓位归零且无 fill
 
     # ---- 内部 ----
 
@@ -191,6 +193,10 @@ class FakeExchange(ExchangePort):
                 order["status"] = "FILLED"
                 return False  # 撤单失败：订单已成交
         order["status"] = "CANCELLED"
+        if self.flatten_on_cancel:
+            self.flatten_without_fill()
+        elif abs(self.position_delta_on_cancel) > 1e-12:
+            self.seed_external_position(self.position_delta_on_cancel, self.price)
         return True
 
     def seed_external_position(self, signed_qty: float, entry_price: float) -> None:

@@ -246,8 +246,11 @@ class Orchestrator:
         # G0-4C C1：FILLED_UNPROTECTED 不是可忽略状态——交易所确认仍有仓位时
         # 必须进入保护生命周期恢复（识别已有保护/补齐差额/重建或安全熔断），
         # 重提交永远以权威"确认不存在"证据为前提（C2）。
-        for intent in self.ledger.list_intents(
-                states=[IntentState.FILLED_UNPROTECTED.value]):
+        for intent in self.ledger.list_intents(states=[
+            IntentState.FILLED_UNPROTECTED.value,
+            IntentState.PROTECTION_SUBMITTING.value,
+            IntentState.PARTIALLY_FILLED.value,
+        ]):
             entry = self._recover_protection_lifecycle(intent["intent_id"])
             if entry is not None:
                 report["unresolved"].append(entry)
@@ -1148,20 +1151,30 @@ class Orchestrator:
             return _recovery("exchange position UNKNOWN")
 
         if abs(pos.signed_qty) < 1e-12:
-            # 修复期间已平仓：不重建，直接对账收敛
+            # 修复窗口内仓位归零：只有权威保护/平仓成交才能干净收敛。
+            # 无成交事实 → CLOSE_PROVENANCE_UNKNOWN，禁止合成 SELL / 假 RECONCILED。
+            if self._intent_has_close_fill(intent_id):
+                _transition_idem(
+                    IntentState.CLOSING, "flat confirmed during repair")
+                _transition_idem(
+                    IntentState.CLOSED, "already flat on exchange")
+                _transition_idem(
+                    IntentState.RECONCILED,
+                    "ledger matches exchange after repair-time close")
+                self.ledger.set_position_fact(
+                    self.symbol, PositionFactState.KNOWN_FLAT, source="repair")
+                return {"success": True, "intent_id": intent_id,
+                        "state": "RECONCILED", "reason": "flat during repair"}
             _transition_idem(
-                IntentState.CLOSING,
-                "flat confirmed during repair")
-            _transition_idem(
-                IntentState.CLOSED,
-                "already flat on exchange")
-            _transition_idem(
-                IntentState.RECONCILED,
-                "ledger matches exchange after repair-time close")
-            self.ledger.set_position_fact(
-                self.symbol, PositionFactState.KNOWN_FLAT, source="repair")
-            return {"success": True, "intent_id": intent_id,
-                    "state": "RECONCILED", "reason": "flat during repair"}
+                IntentState.RECOVERY_REQUIRED,
+                f"{CLOSE_PROVENANCE_UNKNOWN}: flat during repair without close fill")
+            self._record_close_provenance_unknown(
+                None, reason=f"flat during repair; no close fill {intent_id}")
+            self.ledger.engage_kill(
+                f"{CLOSE_PROVENANCE_UNKNOWN} during protection repair {intent_id}")
+            return {"success": False, "intent_id": intent_id,
+                    "state": "RECOVERY_REQUIRED",
+                    "reason": CLOSE_PROVENANCE_UNKNOWN}
 
         remaining = abs(pos.signed_qty)
         side = "LONG" if pos.signed_qty > 0 else "SHORT"
@@ -1206,37 +1219,63 @@ class Orchestrator:
                 "tp_coverage": remaining if tp_ok else 0.0,
                 "safe_but_incomplete": not tp_ok}
 
-    def _recover_protection_lifecycle(self, intent_id: str) -> Optional[Dict[str, Any]]:
-        """G0-4C C1：FILLED_UNPROTECTED 的保护生命周期恢复。
+    def _intent_has_close_fill(self, intent_id: str) -> bool:
+        """是否存在可解释平仓的权威成交（保护腿或 CLOSE），禁止用空仓本身当 fill。"""
+        for order in self.ledger.orders_for_intent(intent_id):
+            if order["order_kind"] not in ("CLOSE", "STOP_LOSS", "TAKE_PROFIT"):
+                continue
+            if self.ledger.fills_aggregate(order["client_order_id"])["qty"] > _QTY_EPS:
+                return True
+        return False
 
-        只在交易所确认仍有仓位时行动：
-        - 覆盖超限（C3/C4 失配）→ COVERAGE_OVERFLOW → degraded 重建；
-        - 覆盖不足 → sync_protection 按角色差额补齐（C2：只补差额，
-          且重提交永远以权威"确认不存在/未存在"证据为前提）；
-        - SL 已足额 → 恢复 PROTECTED 身份，绝不重挂；
-        - 查询失败/证据不足 → 只报告未决，不猜（提交重试由 pending
-          证据解析决定，不因轮询次数而增加）。
+    def _recover_protection_lifecycle(self, intent_id: str) -> Optional[Dict[str, Any]]:
+        """G0-4C：保护中间态的生命周期恢复。
+
+        覆盖 FILLED_UNPROTECTED / PROTECTION_SUBMITTING / PARTIALLY_FILLED。
+        只在交易所确认仍有仓位时补保护：
+        - 覆盖超限（C3/C4 失配）→ COVERAGE_OVERFLOW → 撤旧按实际仓位重建；
+        - 覆盖不足 → sync_protection 按角色差额补齐（C2：不重提未知单）；
+        - SL 已足额 → 恢复 PROTECTED，绝不重挂；
+        - 仓位已空且无平仓成交 → CLOSE_PROVENANCE_UNKNOWN，不合成 SELL。
         """
         fact = self.ledger.get_position_fact(self.symbol)
         if fact is None or fact["state"] == PositionFactState.UNKNOWN.value:
             return {"intent_id": intent_id, "fact": "PROTECTION_RECOVERY",
                     "reason": "position UNKNOWN; protection recovery blocked"}
-        if fact["state"] != PositionFactState.KNOWN_OPEN.value:
-            return None  # 仓位已不在：交给 BOOT-DRIFT / provenance 判定
         pos = self._safe_position()
         if pos is None:
             return {"intent_id": intent_id, "fact": "PROTECTION_RECOVERY",
                     "reason": "exchange position query failed; recovery blocked"}
         exchange_qty = abs(pos.signed_qty)
-        if exchange_qty <= _QTY_EPS:
-            return None  # 事实层与交易所层不一致：boot audit 负责冻结
+        if (
+            fact["state"] != PositionFactState.KNOWN_OPEN.value
+            or exchange_qty <= _QTY_EPS
+        ):
+            if self._intent_has_close_fill(intent_id):
+                return None
+            current = self.ledger.get_intent(intent_id)
+            if current and IntentState(current["state"]) in (
+                IntentState.FILLED_UNPROTECTED, IntentState.PARTIALLY_FILLED,
+                IntentState.PROTECTION_SUBMITTING,
+            ):
+                self.ledger.transition_intent(
+                    intent_id, IntentState.RECOVERY_REQUIRED,
+                    f"{CLOSE_PROVENANCE_UNKNOWN}: flat without close fill",
+                    correlation_id=intent_id)
+            self._record_close_provenance_unknown(
+                None, reason=f"protection mid-state flat without close fill {intent_id}")
+            return {"intent_id": intent_id, "fact": CLOSE_PROVENANCE_UNKNOWN,
+                    "reason": "exchange flat; no matching close order/fill"}
 
         orders = self.ledger.orders_for_intent(intent_id)
         status = compute_protection_status(orders, exchange_qty)
         if status.sl_coverage > exchange_qty + _QTY_EPS:
-            # _repair_protection 自当前状态执行唯一合法转移；不得先进入
-            # PROTECTION_SUBMITTING 再由修复函数做同态转移。
-            return self._repair_protection(intent_id) or None
+            repaired = self._repair_protection(intent_id)
+            if repaired.get("success"):
+                return None
+            return {"intent_id": intent_id,
+                    "fact": repaired.get("reason") or "PROTECTION_RECOVERY",
+                    "reason": repaired.get("reason")}
 
         synced = self.sync_protection(intent_id)
         if not synced.get("success"):
@@ -1250,18 +1289,27 @@ class Orchestrator:
                     "reason": f"SL coverage insufficient after sync"
                               f" ({fresh.sl_coverage}/{exchange_qty})"}
         current = self.ledger.get_intent(intent_id)
-        if (current is None
-                or IntentState(current["state"]) != IntentState.FILLED_UNPROTECTED):
-            return None  # 同步过程中状态已收敛/失败，不再重复转移
-        self.ledger.transition_intent(
-            intent_id, IntentState.PROTECTION_SUBMITTING,
-            f"protection recovery: SL covers position ({fresh.sl_coverage})",
-            correlation_id=intent_id)
-        self.ledger.transition_intent(
-            intent_id, IntentState.PROTECTED,
-            "recovered from FILLED_UNPROTECTED"
-            + ("" if fresh.tp_ok else "; sl-only"),
-            correlation_id=intent_id)
+        if current is None:
+            return None
+        state = IntentState(current["state"])
+        if state == IntentState.PARTIALLY_FILLED:
+            self.ledger.transition_intent(
+                intent_id, IntentState.FILLED_UNPROTECTED,
+                "protection recovery: entry fills authoritative",
+                correlation_id=intent_id)
+            state = IntentState.FILLED_UNPROTECTED
+        if state == IntentState.FILLED_UNPROTECTED:
+            self.ledger.transition_intent(
+                intent_id, IntentState.PROTECTION_SUBMITTING,
+                f"protection recovery: SL covers position ({fresh.sl_coverage})",
+                correlation_id=intent_id)
+            state = IntentState.PROTECTION_SUBMITTING
+        if state == IntentState.PROTECTION_SUBMITTING:
+            self.ledger.transition_intent(
+                intent_id, IntentState.PROTECTED,
+                "recovered protection lifecycle"
+                + ("" if fresh.tp_ok else "; sl-only"),
+                correlation_id=intent_id)
         return None
 
     def _audit_orphan_protection(self, report: Dict[str, Any]) -> None:

@@ -27,7 +27,8 @@ TESTNET INCIDENT              INCIDENT_LOCKED
 G0-1A / G0-1B / G0-2 / G0-3   CLOSED
 G0-4A                         CLOSED-OFFLINE
 G0-4B                         CLOSED-OFFLINE
-G0-4C                         HOLD
+G0-4C                         CLOSED-OFFLINE
+G0-4D                         HOLD
 G0-5                          OPEN（执行资格前置）
 AUTOMATIC_TESTNET_RESUME      DENIED
 LIVE                          NO-GO
