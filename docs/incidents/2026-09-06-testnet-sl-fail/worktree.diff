@@ -1,0 +1,585 @@
+diff --git a/aurora/kernel/binance_exchange.py b/aurora/kernel/binance_exchange.py
+index 8fcacde..c12a891 100644
+--- a/aurora/kernel/binance_exchange.py
++++ b/aurora/kernel/binance_exchange.py
+@@ -26,6 +26,57 @@ from .port import (
+ _TIMEOUT_MARKS = ("timeout", "timed out", "timedout", "connection reset", "connection aborted")
+ _NOT_FOUND_MARKS = ("-2013", "order does not exist", "unknown order")
+ _DUPLICATE_MARKS = ("duplicate", "-4087", "clientorderid")
++# 明确业务拒绝：参数/模式不兼容 → fail closed，不得改写参数重试。
++_CONTRACT_MARKS = ("-4120", "stop_order_switch_algo", "-1100", "-1102",
++                   "illegal parameter", "mandatory parameter")
++# 限频/系统过载：可重试，但绝不盲目重提交（先查询再收敛）。
++_THROTTLE_MARKS = ("-1003", "-1015", "429", "too many requests")
++
++# G0-4A：USDⓈ-M 条件单已迁移 Algo 服务；旧 /fapi/v1/order 对
++# STOP_MARKET 等条件单返回 -4120。保护腿唯一路径 = Algo API。
++ALGO_ORDER_PATH = "algoOrder"
++ALGO_OPEN_PATH = "openAlgoOrders"
++# 冻结产品默认：quantity-based 保护（不传 closePosition）、MARK_PRICE。
++ALGO_WORKING_TYPE = "MARK_PRICE"
++_ALGO_SUFFIXES = ("-SL", "-TP")
++
++
++def _is_algo_leg(client_order_id: str) -> bool:
++    return client_order_id.endswith(_ALGO_SUFFIXES)
++
++
++def _algo_status(raw: dict) -> str:
++    """algoStatus → 内核订单词汇；TRIGGERED/FINISHED 不等于成交/平仓。"""
++    status = str(raw.get("algoStatus") or "").upper()
++    if status == "NEW":
++        return "NEW"
++    if status in ("CANCELED", "CANCELLED"):
++        return "CANCELLED"
++    if status in ("EXPIRED", "EXPIRED_IN_MATCH"):
++        return "EXPIRED"
++    if status in ("TRIGGERED", "FINISHED", "REJECTED"):
++        return status
++    return "UNKNOWN"
++
++
++def validate_algo_protection_contract(
++    *, close_position: bool = False, quantity=None, reduce_only: bool = False,
++) -> None:
++    """官方互斥合同：closePosition=true 不得与 quantity/reduceOnly 同传。"""
++    if close_position and quantity is not None:
++        raise OrderRejectedError(
++            "closePosition=true must not carry quantity")
++    if close_position and reduce_only:
++        raise OrderRejectedError(
++            "closePosition=true must not carry reduceOnly")
++
++
++def _is_contract_error(exc: BaseException) -> bool:
++    return any(m in _message(exc) for m in _CONTRACT_MARKS)
++
++
++def _is_throttle(exc: BaseException) -> bool:
++    return any(m in _message(exc) for m in _THROTTLE_MARKS)
+ 
+ 
+ def _message(exc: BaseException) -> str:
+@@ -60,12 +111,30 @@ def _status(raw: dict) -> str:
+ 
+ 
+ class BinanceExchange(ExchangePort):
+-    def __init__(self, client: Any, symbol: str = "BTCUSDT", allow_mutate: bool = True):
++    def __init__(self, client: Any, symbol: str = "BTCUSDT",
++                 allow_mutate: bool = True, position_mode: str = "ONE_WAY"):
+         if client is None:
+             raise SafetyViolation("[P0] armed exchange requires an injected client.")
++        if position_mode not in ("ONE_WAY", "HEDGE"):
++            raise SafetyViolation(f"[P0] unknown position_mode: {position_mode}")
+         self._client = client
+         self.symbol = symbol
+         self.allow_mutate = allow_mutate
++        # 账户 position mode 是外部事实，只能来自已验证来源，不能猜。
++        self.position_mode = position_mode
++
++    def position_mode_read(self) -> Optional[str]:
++        """读取账户实际持仓模式（外部事实，查询失败=UNKNOWN）。"""
++        try:
++            data = self._client.futures_get_position_mode()
++        except Exception:
++            return None
++        if not isinstance(data, dict):
++            return None
++        dual = data.get("dualSidePosition")
++        if isinstance(dual, str):
++            dual = dual.lower() == "true"
++        return "HEDGE" if dual else "ONE_WAY"
+ 
+     def _refuse_mutate(self, action: str) -> None:
+         if not self.allow_mutate:
+@@ -73,6 +142,10 @@ class BinanceExchange(ExchangePort):
+ 
+     def submit_order(self, req: OrderRequest) -> OrderAck:
+         self._refuse_mutate("submit")
++        if req.order_kind in (OrderKind.STOP_LOSS, OrderKind.TAKE_PROFIT):
++            # 条件保护腿唯一路径：Algo API。旧 futures_create_order(STOP_MARKET)
++            # 自 2025-12-09 起会被 -4120 拒绝，本适配器不保留旧路径 fallback。
++            return self._submit_algo(req)
+         params = self._params(req)
+         try:
+             raw = self._client.futures_create_order(**params)
+@@ -92,7 +165,88 @@ class BinanceExchange(ExchangePort):
+             avg_price=float(raw.get("avgPrice") or 0),
+         )
+ 
++    # ---- Algo 条件保护腿（G0-4A，冻结 quantity-based 合同）----
++
++    def _algo_params(self, req: OrderRequest) -> dict:
++        validate_algo_protection_contract(
++            close_position=False, quantity=req.quantity,
++            reduce_only=req.reduce_only)
++        # ONE-WAY：线上 positionSide 恒为 BOTH；HEDGE：按腿方向显式给出。
++        position_side = (
++            "BOTH" if self.position_mode == "ONE_WAY" else req.position_side
++        )
++        return {
++            "algoType": "CONDITIONAL",
++            "symbol": req.symbol,
++            "side": req.side,
++            "positionSide": position_side,
++            "type": ("STOP_MARKET" if req.order_kind == OrderKind.STOP_LOSS
++                     else "TAKE_PROFIT_MARKET"),
++            "triggerPrice": req.stop_price,
++            "quantity": req.quantity,
++            "workingType": ALGO_WORKING_TYPE,
++            "clientAlgoId": req.client_order_id,
++        }
++
++    def _algo_request(self, method: str, path: str, **kwargs):
++        return self._client._request_futures_api(method, path, True, **kwargs)
++
++    def _submit_algo(self, req: OrderRequest) -> OrderAck:
++        try:
++            raw = self._algo_request("post", ALGO_ORDER_PATH,
++                                     data=self._algo_params(req))
++        except Exception as exc:
++            if _is_timeout(exc):
++                raise SubmitUnknownError(str(exc)) from exc
++            if _is_duplicate(exc):
++                raise DuplicateClientOrderIdError(req.client_order_id) from exc
++            if _is_contract_error(exc) or _is_throttle(exc):
++                # 合同错误/限频：都不是"可以再提交一次"的证据。
++                raise OrderRejectedError(str(exc)) from exc
++            raise OrderRejectedError(str(exc)) from exc
++        if not isinstance(raw, dict) or not raw.get("algoId") or not raw.get("clientAlgoId"):
++            # 合同不完整：缺身份字段 = UNKNOWN，不得伪造成功
++            raise SubmitUnknownError("algo submit response incomplete")
++        return OrderAck(
++            client_order_id=req.client_order_id,
++            exchange_order_id=str(raw["algoId"]),
++            status=_algo_status(raw),
++            filled_qty=0.0,
++            avg_price=0.0,
++        )
++
++    def _query_algo(self, client_order_id: str) -> OrderFact:
++        try:
++            raw = self._algo_request(
++                "get", ALGO_ORDER_PATH,
++                params={"clientAlgoId": client_order_id})
++        except Exception as exc:
++            if _is_not_found(exc):
++                return OrderFact(client_order_id, "NOT_FOUND", 0.0, 0.0)
++            raise
++        if not isinstance(raw, dict) or "algoStatus" not in raw:
++            raise RuntimeError("algo query returned incomplete contract")
++        return OrderFact(
++            client_order_id,
++            _algo_status(raw),
++            float(raw.get("executedQty") or 0),
++            float(raw.get("avgPrice") or raw.get("actualPrice") or 0),
++        )
++
++    def _cancel_algo(self, client_order_id: str) -> bool:
++        try:
++            raw = self._algo_request(
++                "delete", ALGO_ORDER_PATH,
++                params={"clientAlgoId": client_order_id})
++        except Exception as exc:
++            if _is_not_found(exc):
++                return False
++            raise CancelUnknownError(str(exc)) from exc
++        return isinstance(raw, dict)
++
+     def query_order(self, client_order_id: str) -> OrderFact:
++        if _is_algo_leg(client_order_id):
++            return self._query_algo(client_order_id)
+         try:
+             raw = self._client.futures_get_order(
+                 symbol=self.symbol, origClientOrderId=client_order_id)
+@@ -111,6 +265,8 @@ class BinanceExchange(ExchangePort):
+ 
+     def cancel_order(self, client_order_id: str) -> bool:
+         self._refuse_mutate("cancel")
++        if _is_algo_leg(client_order_id):
++            return self._cancel_algo(client_order_id)
+         try:
+             raw = self._client.futures_cancel_order(
+                 symbol=self.symbol, origClientOrderId=client_order_id)
+@@ -140,14 +296,29 @@ class BinanceExchange(ExchangePort):
+         return ExchangePosition(symbol, amt, float(row.get("entryPrice") or 0))
+ 
+     def fills(self, client_order_id: str) -> List[Fill]:
+-        try:
+-            raw = self._client.futures_get_order(
+-                symbol=self.symbol, origClientOrderId=client_order_id)
+-        except Exception:
+-            return []
+-        if not isinstance(raw, dict):
+-            return []
+-        order_id = raw.get("orderId")
++        if _is_algo_leg(client_order_id):
++            # Algo 腿：TRIGGERED 后由 actualOrderId 链接真实订单；
++            # algoStatus 本身不是成交事实，缺 actualOrderId 不得编造 fill。
++            try:
++                raw = self._algo_request(
++                    "get", ALGO_ORDER_PATH,
++                    params={"clientAlgoId": client_order_id})
++            except Exception:
++                return []
++            if not isinstance(raw, dict):
++                return []
++            order_id = raw.get("actualOrderId")
++            if order_id is None or str(order_id) == "":
++                return []
++        else:
++            try:
++                raw = self._client.futures_get_order(
++                    symbol=self.symbol, origClientOrderId=client_order_id)
++            except Exception:
++                return []
++            if not isinstance(raw, dict):
++                return []
++            order_id = raw.get("orderId")
+         try:
+             trades = self._client.futures_account_trades(symbol=self.symbol) or []
+         except Exception:
+@@ -183,14 +354,10 @@ class BinanceExchange(ExchangePort):
+         elif req.order_kind == OrderKind.CLOSE:
+             params["type"] = "MARKET"
+             params["reduceOnly"] = True
+-        elif req.order_kind == OrderKind.STOP_LOSS:
+-            params["type"] = "STOP_MARKET"
+-            params["stopPrice"] = req.stop_price
+-            params["reduceOnly"] = True
+-        elif req.order_kind == OrderKind.TAKE_PROFIT:
+-            params["type"] = "TAKE_PROFIT_MARKET"
+-            params["stopPrice"] = req.stop_price
+-            params["reduceOnly"] = True
++        elif req.order_kind in (OrderKind.STOP_LOSS, OrderKind.TAKE_PROFIT):
++            # RETIRED：条件保护腿不再走 /fapi/v1/order（-4120）。无 fallback。
++            raise OrderRejectedError(
++                "conditional orders retired on /fapi/v1/order; use Algo path")
+         else:
+             raise OrderRejectedError(f"unsupported order kind {req.order_kind}")
+         if req.reduce_only:
+diff --git a/aurora/kernel/orchestrator.py b/aurora/kernel/orchestrator.py
+index 7531b88..5e16a13 100644
+--- a/aurora/kernel/orchestrator.py
++++ b/aurora/kernel/orchestrator.py
+@@ -108,19 +108,31 @@ class Orchestrator:
+                         self._emergency_close(intent_id, trigger="recovery protection missing")
+                     elif state == IntentState.RECOVERY_REQUIRED and not self._exchange_flat():
+                         self._emergency_close(intent_id, trigger="recovery protection missing")
+-                else:
++                elif fact.status == "NEW":
++                    self.ledger.update_order(cid, state="ACTIVE")
++                    if state == IntentState.PROTECTION_SUBMITTING:
++                        self.ledger.transition_intent(
++                            intent_id, IntentState.PROTECTED,
++                            f"recovery: protection confirmed {cid}", correlation_id=intent_id)
++                    report["resolved"].append(entry)
++                elif fact.status in ("FILLED", "PARTIALLY_FILLED"):
+                     self.ledger.update_order(
+-                        cid,
+-                        state="ACTIVE" if fact.status == "NEW" else "FILLED",
+-                        filled_qty=fact.filled_qty if fact.status != "NEW" else None,
+-                        avg_price=fact.avg_price if fact.status != "NEW" else None)
+-                    if fact.status in ("FILLED", "PARTIALLY_FILLED"):
+-                        self._apply_fills(cid)
++                        cid, state="FILLED",
++                        filled_qty=fact.filled_qty, avg_price=fact.avg_price)
++                    self._apply_fills(cid)
+                     if state == IntentState.PROTECTION_SUBMITTING:
+                         self.ledger.transition_intent(
+                             intent_id, IntentState.PROTECTED,
+                             f"recovery: protection confirmed {cid}", correlation_id=intent_id)
+-                report["resolved"].append(entry)
++                    report["resolved"].append(entry)
++                else:
++                    # TRIGGERED / FINISHED / EXPIRED / CANCELLED / UNKNOWN：
++                    # 状态名不等于成交或平仓事实；保持未决，等待 fill/position 证据。
++                    self.ledger.update_order(cid, state=fact.status)
++                    report["unresolved"].append({
++                        **entry,
++                        "reason": "non-fill status; protection leg awaits fill/position evidence",
++                    })
+ 
+             elif order["order_kind"] == "CLOSE":
+                 if fact.status == "FILLED" or self._exchange_flat():
+@@ -615,6 +627,11 @@ class Orchestrator:
+                         self.ledger.engage_kill(
+                             f"sibling cancel unknown after exchange close {cid}")
+                         cancel_unknown = True
++                elif fact.status not in ("CANCELLED", "NOT_FOUND"):
++                    self.ledger.update_order(cid, state=fact.status)
++                    self.ledger.engage_kill(
++                        f"protection execution unverified {cid}: {fact.status}")
++                    cancel_unknown = True
+             if cancel_unknown:
+                 self.ledger.transition_intent(
+                     iid, IntentState.RECOVERY_REQUIRED,
+@@ -692,6 +709,17 @@ class Orchestrator:
+                     filled_qty=pf.filled_qty, avg_price=pf.avg_price)
+             elif pf.status == "CANCELLED":
+                 self.ledger.update_order(order["client_order_id"], state="CANCELLED")
++            elif pf.status == "NEW":
++                self.ledger.update_order(order["client_order_id"], state="ACTIVE")
++            else:
++                cid = order["client_order_id"]
++                self.ledger.update_order(cid, state=pf.status)
++                self.ledger.set_position_fact(
++                    self.symbol, PositionFactState.UNKNOWN,
++                    source="protection-sync",
++                    note=f"protection execution unverified {cid}: {pf.status}")
++                return {"success": False, "intent_id": intent_id,
++                        "reason": f"protection execution unverified {cid}: {pf.status}"}
+ 
+         pos = self._safe_position()
+         exchange_qty = abs(pos.signed_qty) if pos is not None else None
+diff --git a/tests/test_binance_exchange.py b/tests/test_binance_exchange.py
+index d3762c1..7f06fc3 100644
+--- a/tests/test_binance_exchange.py
++++ b/tests/test_binance_exchange.py
+@@ -32,13 +32,52 @@ def _req(kind=OrderKind.ENTRY, cid="E1", reduce_only=False, stop=None):
+ class RecordingClient:
+     def __init__(self):
+         self.creates = []
++        self.algo_calls = []          # (method, path, signed, kwargs)
+         self.orders = {}
++        self.algo_orders = {}
+         self.trades = []
+         self.rows = []
++        self.dual_side = "false"
+         self.fail_create = None
+         self.fail_query = None
+         self.fail_cancel = None
+         self.fail_position = False
++        self.fail_algo = None
++
++    def _request_futures_api(self, method, path, signed=False, version=1, **kwargs):
++        self.algo_calls.append((method, path, signed, kwargs))
++        if self.fail_algo:
++            raise self.fail_algo
++        params = kwargs.get("data") or kwargs.get("params") or {}
++        cid = params.get("clientAlgoId")
++        if method == "post" and path == "algoOrder":
++            rec = {
++                "algoId": 9000 + len(self.algo_calls),
++                "clientAlgoId": cid,
++                "algoStatus": "NEW",
++                "symbol": params.get("symbol"),
++                "side": params.get("side"),
++                "positionSide": params.get("positionSide"),
++                "type": params.get("type"),
++                "triggerPrice": params.get("triggerPrice"),
++                "quantity": params.get("quantity"),
++                "workingType": params.get("workingType"),
++            }
++            self.algo_orders[cid] = rec
++            return rec
++        if method == "get" and path == "algoOrder":
++            if cid not in self.algo_orders:
++                raise RuntimeError("algo order does not exist -2013")
++            return self.algo_orders[cid]
++        if method == "delete" and path == "algoOrder":
++            if cid not in self.algo_orders:
++                raise RuntimeError("algo order does not exist -2013")
++            self.algo_orders[cid]["algoStatus"] = "CANCELED"
++            return self.algo_orders[cid]
++        raise RuntimeError(f"unexpected api call {method} {path}")
++
++    def futures_get_position_mode(self):
++        return {"dualSidePosition": self.dual_side}
+ 
+     def futures_create_order(self, **params):
+         self.creates.append(params)
+@@ -103,10 +142,136 @@ class BinanceExchangeTests(unittest.TestCase):
+         ack = ex.submit_order(_req())
+         self.assertEqual(ack.status, "FILLED")
+         self.assertEqual(client.creates[0]["type"], "MARKET")
+-        sl = ex.submit_order(_req(OrderKind.STOP_LOSS, "SL", stop=99.0))
++        sl = ex.submit_order(_req(OrderKind.STOP_LOSS, "G4-SL", stop=99.0))
+         self.assertEqual(sl.status, "NEW")
+-        self.assertEqual(client.creates[1]["type"], "STOP_MARKET")
+-        self.assertTrue(client.creates[1]["reduceOnly"])
++        # 条件保护腿唯一路径：Algo API；不再调 futures_create_order。
++        self.assertEqual(len(client.creates), 1)
++        method, path, signed, kwargs = client.algo_calls[0]
++        self.assertEqual((method, path), ("post", "algoOrder"))
++        params = kwargs["data"]
++        self.assertEqual(params["algoType"], "CONDITIONAL")
++        self.assertEqual(params["type"], "STOP_MARKET")
++        self.assertEqual(params["triggerPrice"], 99.0)
++        self.assertEqual(params["quantity"], 0.01)
++        self.assertEqual(params["workingType"], "MARK_PRICE")
++        self.assertEqual(params["clientAlgoId"], "G4-SL")
++        self.assertEqual(params["positionSide"], "BOTH")  # ONE-WAY 合同
++        self.assertNotIn("closePosition", params)
++        self.assertNotIn("reduceOnly", params)
++        self.assertNotIn("newClientOrderId", params)
++
++    def test_algo_submit_side_contract_all_four(self):
++        # LONG仓→SELL，SHORT仓→BUY；HEDGE 模式按腿方向显式 positionSide。
++        client = RecordingClient()
++        ex = BinanceExchange(client)
++        ex.submit_order(_req(OrderKind.STOP_LOSS, "a-SL", stop=99.0))
++        p = client.algo_calls[0][3]["data"]
++        self.assertEqual((p["side"], p["positionSide"]), ("SELL", "BOTH"))
++
++        hedge = BinanceExchange(RecordingClient(), position_mode="HEDGE")
++        short_tp = _req(OrderKind.TAKE_PROFIT, "b-TP", stop=110.0)
++        hedge.submit_order(
++            OrderRequest(**{**short_tp.__dict__, "side": "BUY",
++                            "position_side": "SHORT"}))
++        p = hedge._client.algo_calls[0][3]["data"]
++        self.assertEqual((p["side"], p["positionSide"]), ("BUY", "SHORT"))
++
++    def test_algo_response_missing_identity_is_unknown(self):
++        class BadClient(RecordingClient):
++            def _request_futures_api(self, *a, **k):
++                return {"algoStatus": "NEW"}  # 缺 algoId/clientAlgoId
++        with self.assertRaises(SubmitUnknownError):
++            BinanceExchange(BadClient()).submit_order(
++                _req(OrderKind.STOP_LOSS, "x-SL", stop=99.0))
++
++    def test_algo_submit_timeout_and_contract_error(self):
++        client = RecordingClient()
++        client.fail_algo = TimeoutError("read timed out")
++        with self.assertRaises(SubmitUnknownError):
++            BinanceExchange(client).submit_order(
++                _req(OrderKind.STOP_LOSS, "t-SL", stop=99.0))
++        client = RecordingClient()
++        client.fail_algo = RuntimeError("-4120 STOP_ORDER_SWITCH_ALGO")
++        with self.assertRaises(OrderRejectedError):
++            BinanceExchange(client).submit_order(
++                _req(OrderKind.STOP_LOSS, "t-SL", stop=99.0))
++
++    def test_legacy_conditional_path_retired(self):
++        from aurora.kernel.binance_exchange import BinanceExchange as BE
++        client = RecordingClient()
++        ex = BE(client)
++        with self.assertRaises(OrderRejectedError):
++            BE._params(_req(OrderKind.STOP_LOSS, "z-SL", stop=99.0))
++        self.assertEqual(client.creates, [])
++        self.assertEqual(client.algo_calls, [])
++
++    def test_close_position_mutex_rejected_locally(self):
++        from aurora.kernel.binance_exchange import (
++            validate_algo_protection_contract)
++        with self.assertRaises(OrderRejectedError):
++            validate_algo_protection_contract(close_position=True, quantity=0.01)
++        with self.assertRaises(OrderRejectedError):
++            validate_algo_protection_contract(close_position=True,
++                                              reduce_only=True)
++        # 合法组合不报错
++        validate_algo_protection_contract(close_position=False, quantity=0.01,
++                                          reduce_only=True)
++        validate_algo_protection_contract(close_position=True)
++
++    def test_algo_query_and_cancel_contract(self):
++        client = RecordingClient()
++        ex = BinanceExchange(client)
++        ex.submit_order(_req(OrderKind.TAKE_PROFIT, "q-TP", stop=110.0))
++        fact = ex.query_order("q-TP")
++        self.assertEqual(fact.status, "NEW")
++        self.assertTrue(ex.cancel_order("q-TP"))
++        fact = ex.query_order("q-TP")
++        self.assertEqual(fact.status, "CANCELLED")
++        fact = ex.query_order("ghost-SL")
++        self.assertEqual(fact.status, "NOT_FOUND")
++
++    def test_algo_triggered_not_treated_as_filled_by_adapter(self):
++        client = RecordingClient()
++        ex = BinanceExchange(client)
++        ex.submit_order(_req(OrderKind.STOP_LOSS, "u-SL", stop=99.0))
++        client.algo_orders["u-SL"]["algoStatus"] = "TRIGGERED"
++        fact = ex.query_order("u-SL")
++        self.assertEqual(fact.status, "TRIGGERED")  # 不是 FILLED
++        # TRIGGERED 但 actualOrderId 缺失/为空 → 不得编造 fill
++        self.assertEqual(ex.fills("u-SL"), [])
++        client.algo_orders["u-SL"]["actualOrderId"] = ""
++        self.assertEqual(ex.fills("u-SL"), [])
++        # actualOrderId 存在但无权威成交记录 → 仍无财务事实
++        client.algo_orders["u-SL"]["actualOrderId"] = 777
++        client.trades = []
++        self.assertEqual(ex.fills("u-SL"), [])
++        # actualOrderId + 权威成交 → 才能产生 fill
++        client.trades = [{"orderId": 777, "id": 1, "qty": "0.01",
++                          "price": "99", "commission": "0", "side": "SELL",
++                          "time": "t"}]
++        fills = ex.fills("u-SL")
++        self.assertEqual(len(fills), 1)
++        self.assertEqual(fills[0].qty, 0.01)
++
++    def test_algo_finished_not_filled(self):
++        client = RecordingClient()
++        ex = BinanceExchange(client)
++        ex.submit_order(_req(OrderKind.STOP_LOSS, "f-SL", stop=99.0))
++        client.algo_orders["f-SL"]["algoStatus"] = "FINISHED"
++        fact = ex.query_order("f-SL")
++        self.assertEqual(fact.status, "FINISHED")
++        self.assertNotEqual(fact.status, "FILLED")
++
++    def test_position_mode_is_external_fact(self):
++        client = RecordingClient()
++        client.dual_side = "true"
++        self.assertEqual(BinanceExchange(client).position_mode_read(), "HEDGE")
++        client.dual_side = "false"
++        self.assertEqual(BinanceExchange(client).position_mode_read(), "ONE_WAY")
++        class Bad(RecordingClient):
++            def futures_get_position_mode(self):
++                raise RuntimeError("down")
++        self.assertIsNone(BinanceExchange(Bad()).position_mode_read())
+ 
+     def test_timeout_is_submit_unknown(self):
+         client = RecordingClient()
+diff --git a/tests/test_kernel_binance_exchange_mapping.py b/tests/test_kernel_binance_exchange_mapping.py
+index 758c69b..9a200f2 100644
+--- a/tests/test_kernel_binance_exchange_mapping.py
++++ b/tests/test_kernel_binance_exchange_mapping.py
+@@ -5,9 +5,9 @@ docs/baseline/reference_tests/）验证已退役 BinancePort 的 raw→typed 映
+ 同一业务合同在当前内核适配器上仍然成立：本文件针对
+ aurora/kernel/binance_exchange.py 重写，使用 MagicMock client，不触网。
+ 
+-仍为 G0-4 的部分（不在本批实现，仅登记）：workingType/closePosition/
+-timeInForce/price 等条件单字段、HEDGE 与 ONE_WAY 账户模式核对、错误码与
+-限频语义、真实 testnet 协议验证。
++G0-4A 已落地的部分：条件保护腿迁移 Algo API（见 test_binance_exchange.py）、
++workingType/closePosition 互斥合同、HEDGE/ONE_WAY 参数映射、-4120/限频
++错误码分类。仍留 G0-4B/C：真实 testnet 端点探测与 Algo 生命周期实证。
+ """
+ import os
+ import sys
+diff --git a/tests/test_p0c_gates.py b/tests/test_p0c_gates.py
+index b51504c..0f0248f 100644
+--- a/tests/test_p0c_gates.py
++++ b/tests/test_p0c_gates.py
+@@ -263,5 +263,32 @@ class G10GhostAndUnknownEnterRecovery(KernelHarness):
+         self.assertEqual(rec.status, ReconcileStatus.DRIFT_DETECTED)
+ 
+ 
++class G4AlgoLegNotAutoFill(KernelHarness):
++    """G0-4A：Algo 状态名不是成交事实——TRIGGERED/FINISHED 保护腿保持未决。"""
++
++    def test_triggered_protection_leg_stays_unresolved(self):
++        self.orch.open_position("LONG", 0.01, intent_id="G4T")
++        # 模拟 Algo 状态迁移到 TRIGGERED（尚未有实际订单/成交证据）
++        self.exchange._orders["G4T-SL"]["status"] = "TRIGGERED"
++        report = self.orch.recover()
++        order = self.ledger.get_order("G4T-SL")
++        self.assertEqual(order["state"], "TRIGGERED")
++        self.assertNotEqual(order["state"], "FILLED")
++        self.assertEqual(self.ledger.fills_for_order("G4T-SL"), [])
++        self.assertTrue(any("G4T-SL" in e.get("cid", "")
++                            or "G4T-SL" in str(e) for e in report["unresolved"]))
++
++    def test_finished_protection_leg_not_treated_as_close(self):
++        self.orch.open_position("LONG", 0.01, intent_id="G4F")
++        self.exchange._orders["G4F-SL"]["status"] = "FINISHED"
++        report = self.orch.recover()
++        order = self.ledger.get_order("G4F-SL")
++        self.assertEqual(order["state"], "FINISHED")
++        # FINISHED ≠ 平仓事实：仓位仍是 open，无 fill 入账
++        self.assertEqual(self.ledger.fills_for_order("G4F-SL"), [])
++        pos = self.exchange.position("BTCUSDT")
++        self.assertNotEqual(pos.signed_qty, 0.0)
++
++
+ if __name__ == "__main__":
+     unittest.main()

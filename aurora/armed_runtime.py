@@ -52,9 +52,17 @@ class ArmedRuntime:
             assert_not_live_trading(mode)
         if mode not in (RunMode.TESTNET, RunMode.LIVE):
             raise SafetyViolation(f"[P0] cannot arm execution in mode={mode}")
-        exchange = BinanceExchange(client, symbol=symbol, allow_mutate=True)
+        probe = BinanceExchange(client, symbol=symbol, allow_mutate=False)
+        observed = probe.position_mode_read()
         expected = expected_position_mode().value
-        exchange.verify_position_mode(expected)
+        if observed is None:
+            raise SafetyViolation(
+                "[P0] position mode UNKNOWN; refuse execution attach.")
+        if observed != expected:
+            raise SafetyViolation(
+                f"[P0] position mode {observed} != approved {expected}; refuse attach.")
+        exchange = BinanceExchange(
+            client, symbol=symbol, allow_mutate=True, position_mode=observed)
         path = ledger_path or os.getenv("AURORA_LEDGER_PATH") or default_ledger_path()
         os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         ledger = Ledger(path)

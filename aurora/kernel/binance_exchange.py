@@ -31,7 +31,8 @@ _NOT_FOUND_MARKS = ("-2013", "order does not exist", "unknown order")
 _DUPLICATE_MARKS = ("duplicate", "-4087", "clientorderid")
 # 明确业务拒绝：参数/模式不兼容 → fail closed，不得改写参数重试。
 _REJECT_MARKS = (
-    "-1100", "-1102", "-2021", "-4120", "-4164", "min_notional",
+    "-1100", "-1102", "-1106", "-2021", "-4120", "-4164", "min_notional",
+    "reduceonly", "reduce only",
     "stop_order_switch_algo", "illegal parameter", "mandatory parameter",
 )
 # 限频/系统过载：可重试，但绝不盲目重提交（先查询再收敛）。
@@ -119,6 +120,59 @@ def _algo_status(raw: dict) -> str:
     return "UNKNOWN"
 
 
+def reduce_side_for(economic_side: str) -> str:
+    if economic_side == "LONG":
+        return "SELL"
+    if economic_side == "SHORT":
+        return "BUY"
+    raise OrderRejectedError(
+        f"reduce positionSide must be LONG or SHORT, got {economic_side}")
+
+
+def entry_side_for(economic_side: str) -> str:
+    if economic_side == "LONG":
+        return "BUY"
+    if economic_side == "SHORT":
+        return "SELL"
+    raise OrderRejectedError(
+        f"entry positionSide must be LONG or SHORT, got {economic_side}")
+
+
+def wire_position_side(position_mode: str, economic_side: str) -> str:
+    if position_mode == "ONE_WAY":
+        return "BOTH"
+    if position_mode == "HEDGE":
+        if economic_side not in ("LONG", "SHORT"):
+            raise OrderRejectedError(
+                f"HEDGE positionSide must be LONG or SHORT, got {economic_side}")
+        return economic_side
+    raise SafetyViolation(
+        "[P0] position mode not verified; refuse order mapping.")
+
+
+def validate_reduce_direction(
+    *, position_mode: str, side: str, economic_side: str,
+) -> None:
+    """减仓方向合同：不得靠 reduceOnly 单独保证不扩大风险。"""
+    if position_mode not in ("ONE_WAY", "HEDGE"):
+        raise SafetyViolation(
+            "[P0] position mode not verified; refuse reduce mapping.")
+    if economic_side not in ("LONG", "SHORT"):
+        raise OrderRejectedError(
+            f"reduce economic side must be LONG or SHORT, got {economic_side}")
+    expected = reduce_side_for(economic_side)
+    if side != expected:
+        raise OrderRejectedError(
+            f"reduce side {side} invalid for {economic_side}")
+
+
+def validate_entry_direction(*, side: str, economic_side: str) -> None:
+    expected = entry_side_for(economic_side)
+    if side != expected:
+        raise OrderRejectedError(
+            f"entry side {side} invalid for {economic_side}")
+
+
 def validate_algo_protection_contract(
     *, close_position: bool = False, quantity=None, reduce_only: bool = False,
 ) -> None:
@@ -177,6 +231,10 @@ class BinanceExchange(ExchangePort):
             raise SafetyViolation("[P0] armed exchange requires an injected client.")
         if position_mode not in (None, "ONE_WAY", "HEDGE"):
             raise SafetyViolation(f"[P0] unknown position_mode: {position_mode}")
+        if allow_mutate and position_mode is None:
+            raise SafetyViolation(
+                "[P0] mutating exchange requires injected ObservedPositionMode; "
+                "no ONE_WAY/HEDGE default.")
         self._client = client
         self.symbol = symbol
         self.allow_mutate = allow_mutate
@@ -215,6 +273,7 @@ class BinanceExchange(ExchangePort):
 
     def submit_order(self, req: OrderRequest) -> OrderAck:
         self._refuse_mutate("submit")
+        self._require_observed_mode()
         if req.order_kind in (OrderKind.STOP_LOSS, OrderKind.TAKE_PROFIT):
             # 条件保护腿唯一路径：Algo API。旧 futures_create_order(STOP_MARKET)
             # 自 2025-12-09 起会被 -4120 拒绝，本适配器不保留旧路径 fallback。
@@ -227,6 +286,7 @@ class BinanceExchange(ExchangePort):
                 raise SubmitUnknownError(str(exc)) from exc
             if _is_duplicate(exc):
                 raise DuplicateClientOrderIdError(req.client_order_id) from exc
+            # -1106 等业务拒绝：fail closed，不得改写参数重试。
             raise OrderRejectedError(str(exc)) from exc
         if not isinstance(raw, dict):
             raise SubmitUnknownError("submit returned non-dict")
@@ -240,25 +300,47 @@ class BinanceExchange(ExchangePort):
 
     # ---- Algo 条件保护腿（G0-4A，冻结 quantity-based 合同）----
 
-    def _algo_params(self, req: OrderRequest) -> dict:
-        if self.position_mode is None:
+    def _require_observed_mode(self) -> str:
+        if self.position_mode not in ("ONE_WAY", "HEDGE"):
             raise SafetyViolation(
-                "[P0] position mode not verified; refuse Algo protection submit.")
+                "[P0] position mode not verified; refuse order submit.")
+        return self.position_mode
+
+    def _assert_reduce_qty_not_enlarging(self, req: OrderRequest) -> None:
+        """减仓数量 ≤ 当前仓位；仓位 UNKNOWN 则拒绝（不能证明不扩大风险）。"""
+        if req.quantity is None or float(req.quantity) <= 0:
+            raise OrderRejectedError("reduce quantity must be positive")
+        pos = self.position(req.symbol)
+        if pos is None:
+            raise OrderRejectedError(
+                "reduce refused: position UNKNOWN; cannot prove risk does not enlarge")
+        held = abs(pos.signed_qty)
+        if held <= 1e-12:
+            raise OrderRejectedError("reduce refused: no position to reduce")
+        if float(req.quantity) > held + 1e-12:
+            raise OrderRejectedError(
+                "reduce quantity exceeds current position; would enlarge risk")
+        if self.position_mode == "HEDGE":
+            if req.position_side == "LONG" and pos.signed_qty <= 0:
+                raise OrderRejectedError(
+                    "HEDGE LONG reduce requires a LONG position")
+            if req.position_side == "SHORT" and pos.signed_qty >= 0:
+                raise OrderRejectedError(
+                    "HEDGE SHORT reduce requires a SHORT position")
+
+    def _algo_params(self, req: OrderRequest) -> dict:
+        mode = self._require_observed_mode()
         validate_algo_protection_contract(
             close_position=False, quantity=req.quantity,
             reduce_only=req.reduce_only)
-        if req.position_side not in ("LONG", "SHORT"):
-            raise OrderRejectedError("protection positionSide must be LONG or SHORT")
-        expected_side = "SELL" if req.position_side == "LONG" else "BUY"
-        if req.side != expected_side:
-            raise OrderRejectedError(
-                f"protection side {req.side} invalid for {req.position_side}")
+        validate_reduce_direction(
+            position_mode=mode, side=req.side, economic_side=req.position_side)
+        self._assert_reduce_qty_not_enlarging(req)
         params = {
             "algoType": "CONDITIONAL",
             "symbol": req.symbol,
             "side": req.side,
-            "positionSide": ("BOTH" if self.position_mode == "ONE_WAY"
-                             else req.position_side),
+            "positionSide": wire_position_side(mode, req.position_side),
             "type": ("STOP_MARKET" if req.order_kind == OrderKind.STOP_LOSS
                      else "TAKE_PROFIT_MARKET"),
             "triggerPrice": req.stop_price,
@@ -266,7 +348,9 @@ class BinanceExchange(ExchangePort):
             "workingType": ALGO_WORKING_TYPE,
             "clientAlgoId": req.client_order_id,
         }
-        if self.position_mode == "ONE_WAY":
+        # HEDGE 用 positionSide 定向减仓；reduceOnly 不是唯一安全机制，
+        # 收到 -1106 后也不得静默去掉该参数重试。ONE_WAY 才带 reduceOnly。
+        if mode == "ONE_WAY":
             params["reduceOnly"] = True
         return params
 
@@ -445,26 +529,31 @@ class BinanceExchange(ExchangePort):
             ))
         return out
 
-    @staticmethod
-    def _params(req: OrderRequest) -> dict:
+    def _params(self, req: OrderRequest) -> dict:
+        mode = self._require_observed_mode()
         params = {
             "symbol": req.symbol,
             "side": req.side,
-            "positionSide": req.position_side,
             "quantity": req.quantity,
             "newClientOrderId": req.client_order_id,
         }
         if req.order_kind == OrderKind.ENTRY:
+            validate_entry_direction(side=req.side, economic_side=req.position_side)
             params["type"] = "MARKET"
+            params["positionSide"] = wire_position_side(mode, req.position_side)
         elif req.order_kind == OrderKind.CLOSE:
+            validate_reduce_direction(
+                position_mode=mode, side=req.side, economic_side=req.position_side)
+            self._assert_reduce_qty_not_enlarging(req)
             params["type"] = "MARKET"
-            params["reduceOnly"] = True
+            params["positionSide"] = wire_position_side(mode, req.position_side)
+            if mode == "ONE_WAY":
+                params["reduceOnly"] = True
+            # HEDGE：不传 reduceOnly。安全证明来自 side + positionSide + qty。
         elif req.order_kind in (OrderKind.STOP_LOSS, OrderKind.TAKE_PROFIT):
             # RETIRED：条件保护腿不再走 /fapi/v1/order（-4120）。无 fallback。
             raise OrderRejectedError(
                 "conditional orders retired on /fapi/v1/order; use Algo path")
         else:
             raise OrderRejectedError(f"unsupported order kind {req.order_kind}")
-        if req.reduce_only:
-            params["reduceOnly"] = True
         return params

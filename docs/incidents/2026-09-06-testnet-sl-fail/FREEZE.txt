@@ -1,0 +1,8 @@
+captured_at_utc=2026-09-08T02:16:14Z
+captured_at_local=2026-09-08T10:16:14+0800
+hostname=xinquandeMacBook-Air.local
+pwd=/Users/xinquanwang/AURORA
+HEAD=e4af236c5338187ac24f5473163440b7010d4a0f
+branch=safety/p0a-mainnet-isolation
+worktree_dirty=yes
+freeze=production_main_not_running kill_not_cleared ledger_not_edited algo_not_submitted

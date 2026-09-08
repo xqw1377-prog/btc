@@ -53,6 +53,18 @@ class ArmGateTests(unittest.TestCase):
                     ArmedRuntime.attach(RunMode.TESTNET, UnknownMode(), path)
             self.assertFalse(os.path.exists(os.path.dirname(path)))
 
+    def test_attach_injects_observed_hedge_mode(self):
+        client = RecordingClient()
+        client.dual_side = "true"
+        with tempfile.TemporaryDirectory() as tmp, mock.patch.dict(
+                os.environ, {"AURORA_EXPECTED_POSITION_MODE": "HEDGE"}):
+            rt = ArmedRuntime.attach(
+                RunMode.TESTNET, client, os.path.join(tmp, "l.db"))
+            try:
+                self.assertEqual(rt.exchange.position_mode, "HEDGE")
+            finally:
+                rt.close()
+
 
 class ArmedKernelTests(unittest.TestCase):
     def test_testnet_open_protect_close(self):

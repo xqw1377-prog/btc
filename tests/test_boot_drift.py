@@ -93,18 +93,25 @@ class BootDriftDiscoveryTests(BootDriftHarness):
         self.assertFalse(result["success"])
         ledger2.close()
 
-    def test_ledger_open_exchange_flat_without_evidence_is_drift(self):
-        # 账本记 KNOWN_OPEN 但交易所确认空仓、且无任何成交/平仓证据：
-        # 识别差异，不虚构成交，保持恢复未完成。
+    def test_ledger_open_exchange_flat_without_evidence_is_known_flat_unknown_provenance(self):
+        # EXIT-PROVENANCE：账本记 KNOWN_OPEN，交易所确认空仓、无成交/平仓证据。
+        # 仓位事实 = KNOWN_FLAT；不得虚构成交；证据残留保持未决。
+        from aurora.kernel.ledger import CLOSE_PROVENANCE_UNKNOWN
         self.ledger.set_position_fact(
             "BTCUSDT", PositionFactState.KNOWN_OPEN,
             qty=0.1, side="LONG", source="test")
         report = self.orch.recover()
         self.assertTrue(
-            any(e.get("fact") == "BOOT_DRIFT" for e in report["unresolved"])
+            any(e.get("fact") == CLOSE_PROVENANCE_UNKNOWN
+                for e in report["unresolved"])
         )
-        self.assertEqual(self._fact()["state"], PositionFactState.UNKNOWN.value)
-        self.assertEqual(self.exchange.submit_log, [])  # 未制造平仓单
+        self.assertEqual(self._fact()["state"], PositionFactState.KNOWN_FLAT.value)
+        self.assertEqual(self._fact()["source"], CLOSE_PROVENANCE_UNKNOWN)
+        self.assertEqual(self.exchange.submit_log, [])
+        self.assertEqual(self.ledger.fills_for_order("missing"), [])
+        # 证据残留 ≠ 永久禁开仓：kill 未合上、仓位 KNOWN_FLAT 时内核允许新开。
+        opened = self.orch.open_position("LONG", 0.01, stop_price=99000.0)
+        self.assertTrue(opened.get("success") or opened.get("intent_id"))
 
     def test_clean_flat_boot_allows_open(self):
         report = self.orch.recover()

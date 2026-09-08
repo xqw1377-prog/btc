@@ -29,6 +29,14 @@ def _req(kind=OrderKind.ENTRY, cid="E1", reduce_only=False, stop=None):
     )
 
 
+def _seed_long(client, qty=0.01):
+    client.rows = [{"positionAmt": str(qty), "entryPrice": "100"}]
+
+
+def _seed_short(client, qty=0.01):
+    client.rows = [{"positionAmt": str(-qty), "entryPrice": "100"}]
+
+
 class RecordingClient:
     def __init__(self):
         self.creates = []
@@ -93,7 +101,12 @@ class RecordingClient:
                 "avgPrice": 100.0,
             }
             signed = params["quantity"] if params["side"] == "BUY" else -params["quantity"]
-            if params.get("reduceOnly"):
+            ps = params.get("positionSide")
+            is_reduce = bool(params.get("reduceOnly")) or (
+                (ps == "LONG" and params["side"] == "SELL")
+                or (ps == "SHORT" and params["side"] == "BUY")
+            )
+            if is_reduce:
                 self.rows = []
             else:
                 self.rows = [{"positionAmt": str(signed), "entryPrice": "100"}]
@@ -172,6 +185,10 @@ class BinanceExchangeTests(unittest.TestCase):
         for kind, position_side, side, cid in cases:
             with self.subTest(kind=kind, position_side=position_side):
                 client = RecordingClient()
+                if position_side == "LONG":
+                    _seed_long(client)
+                else:
+                    _seed_short(client)
                 ex = BinanceExchange(client, position_mode="HEDGE")
                 req = _req(kind, cid, stop=99.0)
                 ex.submit_order(OrderRequest(**{
@@ -194,7 +211,9 @@ class BinanceExchangeTests(unittest.TestCase):
     def test_unverified_position_mode_refuses_algo_submit(self):
         client = RecordingClient()
         with self.assertRaises(SafetyViolation):
-            BinanceExchange(client).submit_order(
+            BinanceExchange(client)
+        with self.assertRaises(SafetyViolation):
+            BinanceExchange(client, allow_mutate=False).submit_order(
                 _req(OrderKind.STOP_LOSS, "mode-SL", stop=99.0))
         self.assertEqual(client.algo_calls, [])
 
@@ -202,9 +221,10 @@ class BinanceExchangeTests(unittest.TestCase):
         class BadClient(RecordingClient):
             def _request_futures_api(self, *a, **k):
                 return {"algoStatus": "NEW"}  # 缺 algoId/clientAlgoId
+        client = BadClient()
+        _seed_long(client)
         with self.assertRaises(SubmitUnknownError):
-            BinanceExchange(
-                BadClient(), position_mode="ONE_WAY").submit_order(
+            BinanceExchange(client, position_mode="ONE_WAY").submit_order(
                 _req(OrderKind.STOP_LOSS, "x-SL", stop=99.0))
 
     def test_algo_terminal_submit_response_is_rejected_not_filled(self):
@@ -215,12 +235,14 @@ class BinanceExchangeTests(unittest.TestCase):
                     raw["algoStatus"] = status
                     return raw
             with self.subTest(status=status), self.assertRaises(OrderRejectedError):
-                BinanceExchange(
-                    TerminalClient(), position_mode="ONE_WAY").submit_order(
+                client = TerminalClient()
+                _seed_long(client)
+                BinanceExchange(client, position_mode="ONE_WAY").submit_order(
                     _req(OrderKind.STOP_LOSS, "terminal-SL", stop=99.0))
 
     def test_algo_submit_timeout_throttle_and_contract_error(self):
         client = RecordingClient()
+        _seed_long(client)
         client.fail_algo = TimeoutError("read timed out")
         with self.assertRaises(SubmitUnknownError):
             BinanceExchange(client, position_mode="ONE_WAY").submit_order(
@@ -228,18 +250,21 @@ class BinanceExchangeTests(unittest.TestCase):
         for message in ("HTTP 429 too many requests", "-1003 rate limit",
                         "-1008 system overload", "HTTP 503 service unavailable"):
             client = RecordingClient()
+            _seed_long(client)
             client.fail_algo = RuntimeError(message)
             with self.assertRaises(SubmitUnknownError):
                 BinanceExchange(client, position_mode="ONE_WAY").submit_order(
                     _req(OrderKind.STOP_LOSS, "rate-SL", stop=99.0))
             self.assertEqual(len(client.algo_calls), 1)  # 无自动重提交
         client = RecordingClient()
+        _seed_long(client)
         client.fail_algo = RuntimeError("-4120 STOP_ORDER_SWITCH_ALGO")
         with self.assertRaises(OrderRejectedError):
             BinanceExchange(client, position_mode="ONE_WAY").submit_order(
                 _req(OrderKind.STOP_LOSS, "t-SL", stop=99.0))
         for message in ("TLS handshake failed", "unclassified HTTP 500"):
             client = RecordingClient()
+            _seed_long(client)
             client.fail_algo = RuntimeError(message)
             with self.assertRaises(SubmitUnknownError):
                 BinanceExchange(client, position_mode="ONE_WAY").submit_order(
@@ -248,9 +273,9 @@ class BinanceExchangeTests(unittest.TestCase):
     def test_legacy_conditional_path_retired(self):
         from aurora.kernel.binance_exchange import BinanceExchange as BE
         client = RecordingClient()
-        ex = BE(client)
+        ex = BE(client, position_mode="ONE_WAY")
         with self.assertRaises(OrderRejectedError):
-            BE._params(_req(OrderKind.STOP_LOSS, "z-SL", stop=99.0))
+            ex._params(_req(OrderKind.STOP_LOSS, "z-SL", stop=99.0))
         self.assertEqual(client.creates, [])
         self.assertEqual(client.algo_calls, [])
 
@@ -269,6 +294,7 @@ class BinanceExchangeTests(unittest.TestCase):
 
     def test_algo_query_and_cancel_contract(self):
         client = RecordingClient()
+        _seed_long(client)
         ex = BinanceExchange(client, position_mode="ONE_WAY")
         ex.submit_order(_req(OrderKind.TAKE_PROFIT, "q-TP", stop=110.0))
         fact = ex.query_order("q-TP")
@@ -298,6 +324,7 @@ class BinanceExchangeTests(unittest.TestCase):
 
     def test_algo_cancel_timeout_is_unknown_without_retry(self):
         client = RecordingClient()
+        _seed_long(client)
         ex = BinanceExchange(client, position_mode="ONE_WAY")
         ex.submit_order(_req(OrderKind.STOP_LOSS, "cancel-SL", stop=99.0))
         client.fail_algo = TimeoutError("cancel timed out")
@@ -308,6 +335,7 @@ class BinanceExchangeTests(unittest.TestCase):
 
     def test_algo_query_incomplete_or_working_type_mismatch_fails_closed(self):
         client = RecordingClient()
+        _seed_long(client)
         ex = BinanceExchange(client, position_mode="ONE_WAY")
         ex.submit_order(_req(OrderKind.STOP_LOSS, "query-SL", stop=99.0))
         del client.algo_orders["query-SL"]["positionSide"]
@@ -315,6 +343,7 @@ class BinanceExchangeTests(unittest.TestCase):
             ex.query_order("query-SL")
 
         client = RecordingClient()
+        _seed_long(client)
         ex = BinanceExchange(client, position_mode="ONE_WAY")
         ex.submit_order(_req(OrderKind.STOP_LOSS, "working-SL", stop=99.0))
         client.algo_orders["working-SL"]["workingType"] = "CONTRACT_PRICE"
@@ -323,6 +352,7 @@ class BinanceExchangeTests(unittest.TestCase):
 
     def test_algo_triggered_not_treated_as_filled_by_adapter(self):
         client = RecordingClient()
+        _seed_long(client)
         ex = BinanceExchange(client, position_mode="ONE_WAY")
         ex.submit_order(_req(OrderKind.STOP_LOSS, "u-SL", stop=99.0))
         client.algo_orders["u-SL"]["algoStatus"] = "TRIGGERED"
@@ -346,6 +376,7 @@ class BinanceExchangeTests(unittest.TestCase):
 
     def test_recovery_suffixes_route_to_algo_query(self):
         client = RecordingClient()
+        _seed_long(client)
         ex = BinanceExchange(client, position_mode="ONE_WAY")
         for cid in ("x-SL2", "x-TP3", "x-SL-TOPUP", "x-TP-TOPUP2",
                     "x-SL-R", "x-TP-R2"):
@@ -359,6 +390,7 @@ class BinanceExchangeTests(unittest.TestCase):
 
     def test_algo_finished_not_filled(self):
         client = RecordingClient()
+        _seed_long(client)
         ex = BinanceExchange(client, position_mode="ONE_WAY")
         ex.submit_order(_req(OrderKind.STOP_LOSS, "f-SL", stop=99.0))
         client.algo_orders["f-SL"]["algoStatus"] = "FINISHED"
@@ -375,16 +407,17 @@ class BinanceExchangeTests(unittest.TestCase):
         class Bad(RecordingClient):
             def futures_get_position_mode(self):
                 raise RuntimeError("down")
-        self.assertIsNone(BinanceExchange(Bad()).position_mode_read())
+        self.assertIsNone(BinanceExchange(Bad(), allow_mutate=False).position_mode_read())
         for bad in ({}, {"dualSidePosition": None},
                     {"dualSidePosition": "garbage"}):
             client = RecordingClient()
             client.futures_get_position_mode = lambda value=bad: value
-            self.assertIsNone(BinanceExchange(client).position_mode_read())
+            self.assertIsNone(
+                BinanceExchange(client, allow_mutate=False).position_mode_read())
 
         client = RecordingClient()
         client.dual_side = "true"
-        ex = BinanceExchange(client)
+        ex = BinanceExchange(client, allow_mutate=False)
         with self.assertRaises(SafetyViolation):
             ex.verify_position_mode("ONE_WAY")
         self.assertIsNone(ex.position_mode)
@@ -403,7 +436,8 @@ class BinanceExchangeTests(unittest.TestCase):
             BinanceExchange(client, position_mode="ONE_WAY").submit_order(_req())
 
     def test_query_not_found(self):
-        fact = BinanceExchange(RecordingClient()).query_order("missing")
+        fact = BinanceExchange(
+            RecordingClient(), allow_mutate=False).query_order("missing")
         self.assertEqual(fact.status, "NOT_FOUND")
 
     def test_cancel_timeout_is_unknown(self):
@@ -431,6 +465,71 @@ class BinanceExchangeTests(unittest.TestCase):
             ex.submit_order(_req())
         with self.assertRaises(SafetyViolation):
             ex.cancel_order("X")
+
+    def test_one_way_entry_maps_position_side_both(self):
+        client = RecordingClient()
+        BinanceExchange(client, position_mode="ONE_WAY").submit_order(_req())
+        self.assertEqual(client.creates[0]["positionSide"], "BOTH")
+        self.assertNotIn("reduceOnly", client.creates[0])
+
+    def test_hedge_close_omits_reduce_only(self):
+        client = RecordingClient()
+        _seed_long(client, 0.007)
+        close = OrderRequest(
+            client_order_id="C1", symbol="BTCUSDT", order_kind=OrderKind.CLOSE,
+            side="SELL", position_side="LONG", quantity=0.007, reduce_only=True,
+        )
+        BinanceExchange(client, position_mode="HEDGE").submit_order(close)
+        params = client.creates[0]
+        self.assertEqual(params["side"], "SELL")
+        self.assertEqual(params["positionSide"], "LONG")
+        self.assertNotIn("reduceOnly", params)
+
+    def test_one_way_close_sends_reduce_only_and_both(self):
+        client = RecordingClient()
+        _seed_long(client)
+        close = OrderRequest(
+            client_order_id="C2", symbol="BTCUSDT", order_kind=OrderKind.CLOSE,
+            side="SELL", position_side="LONG", quantity=0.01, reduce_only=True,
+        )
+        BinanceExchange(client, position_mode="ONE_WAY").submit_order(close)
+        params = client.creates[0]
+        self.assertEqual(params["positionSide"], "BOTH")
+        self.assertTrue(params["reduceOnly"])
+
+    def test_reduce_qty_exceeding_position_refused_locally(self):
+        client = RecordingClient()
+        _seed_long(client, 0.007)
+        ex = BinanceExchange(client, position_mode="HEDGE")
+        with self.assertRaises(OrderRejectedError):
+            ex.submit_order(OrderRequest(
+                client_order_id="over-SL", symbol="BTCUSDT",
+                order_kind=OrderKind.STOP_LOSS, side="SELL",
+                position_side="LONG", quantity=0.02, stop_price=99.0,
+            ))
+        self.assertEqual(client.algo_calls, [])
+        with self.assertRaises(OrderRejectedError):
+            ex.submit_order(OrderRequest(
+                client_order_id="over-C", symbol="BTCUSDT",
+                order_kind=OrderKind.CLOSE, side="SELL",
+                position_side="LONG", quantity=0.02, reduce_only=True,
+            ))
+        self.assertEqual(client.creates, [])
+
+    def test_reduceonly_1106_is_rejected_without_param_rewrite_retry(self):
+        client = RecordingClient()
+        _seed_long(client)
+        client.fail_create = RuntimeError(
+            "APIError(code=-1106): Parameter 'reduceonly' sent when not required.")
+        with self.assertRaises(OrderRejectedError) as ctx:
+            BinanceExchange(client, position_mode="ONE_WAY").submit_order(
+                OrderRequest(
+                    client_order_id="C3", symbol="BTCUSDT",
+                    order_kind=OrderKind.CLOSE, side="SELL",
+                    position_side="LONG", quantity=0.01, reduce_only=True,
+                ))
+        self.assertIn("-1106", str(ctx.exception))
+        self.assertEqual(len(client.creates), 1)
 
 
 if __name__ == "__main__":

@@ -11,7 +11,10 @@
   （sha256 `56551236…1b4bf`，10408 bytes）
 - **基线封存记录**：[docs/baseline/G1_BASELINE.md](docs/baseline/G1_BASELINE.md)
 - **工程路线图**：[RECOVERY_PLAN.md](RECOVERY_PLAN.md)
-- **启动步骤**：[TESTNET_BOOT.md](TESTNET_BOOT.md)
+- **TESTNET 操作合同（当前 INCIDENT_LOCKED，不是启动清单）**：
+  [TESTNET_BOOT.md](TESTNET_BOOT.md)
+- **TESTNET 事故现场（2026-09-06 会话）**：
+  [docs/incidents/2026-09-06-testnet-sl-fail/FACTS.md](docs/incidents/2026-09-06-testnet-sl-fail/FACTS.md)
 
 > LIVE = NO-GO。任何文档中的能力描述都以
 > `docs/product/CAPABILITY_STATUS.md` 的逐项登记为准。

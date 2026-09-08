@@ -59,7 +59,7 @@ class BinanceExchangeMappingTests(unittest.TestCase):
         # 请求映射：client_order_id → newClientOrderId，positionSide 透传
         sent = client.futures_create_order.call_args.kwargs
         self.assertEqual(sent["newClientOrderId"], "AURORA_open_001")
-        self.assertEqual(sent["positionSide"], "LONG")
+        self.assertEqual(sent["positionSide"], "BOTH")
         self.assertEqual(sent["type"], "MARKET")
         self.assertEqual(ack.status, "FILLED")
         self.assertEqual(ack.filled_qty, 0.1)

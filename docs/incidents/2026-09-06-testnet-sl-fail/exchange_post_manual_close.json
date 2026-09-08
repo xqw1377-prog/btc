@@ -1,0 +1,169 @@
+{
+  "captured_at": "2026-09-08T02:38:29.893900+00:00",
+  "purpose": "post-manual-close read-only verification",
+  "position_mode": {
+    "ok": true,
+    "data": {
+      "dualSidePosition": true
+    }
+  },
+  "positions": {
+    "ok": true,
+    "data": [
+      {
+        "symbol": "BTCUSDT",
+        "positionAmt": "0.0000",
+        "entryPrice": "0.0",
+        "breakEvenPrice": "0.0",
+        "markPrice": "0.00000000",
+        "unRealizedProfit": "0.00000000",
+        "liquidationPrice": "0",
+        "leverage": "0",
+        "maxNotionalValue": "500000000",
+        "marginType": "cross",
+        "isolatedMargin": "0.00000000",
+        "isAutoAddMargin": "false",
+        "positionSide": "LONG",
+        "notional": "0",
+        "isolatedWallet": "0",
+        "updateTime": 0,
+        "isolated": false,
+        "adlQuantile": 0
+      },
+      {
+        "symbol": "BTCUSDT",
+        "positionAmt": "0.0000",
+        "entryPrice": "0.0",
+        "breakEvenPrice": "0.0",
+        "markPrice": "0.00000000",
+        "unRealizedProfit": "0.00000000",
+        "liquidationPrice": "0",
+        "leverage": "0",
+        "maxNotionalValue": "500000000",
+        "marginType": "cross",
+        "isolatedMargin": "0.00000000",
+        "isAutoAddMargin": "false",
+        "positionSide": "SHORT",
+        "notional": "0",
+        "isolatedWallet": "0",
+        "updateTime": 0,
+        "isolated": false,
+        "adlQuantile": 0
+      }
+    ]
+  },
+  "open_orders": {
+    "ok": true,
+    "data": []
+  },
+  "open_algo": {
+    "ok": true,
+    "data": [
+      {
+        "algoId": 1000000192798918,
+        "clientAlgoId": "V5S_XRP_1788567120000_0001",
+        "algoType": "CONDITIONAL",
+        "orderType": "STOP_MARKET",
+        "symbol": "XRPUSDT",
+        "side": "BUY",
+        "positionSide": "SHORT",
+        "timeInForce": "GTC",
+        "quantity": "3222.3",
+        "algoStatus": "NEW",
+        "actualOrderId": "",
+        "actualQty": "0.0",
+        "triggerPrice": "1.438",
+        "price": "0.0",
+        "icebergQuantity": null,
+        "selfTradePreventionMode": "EXPIRE_MAKER",
+        "workingType": "CONTRACT_PRICE",
+        "priceMatch": "NONE",
+        "closePosition": false,
+        "priceProtect": false,
+        "reduceOnly": true,
+        "createTime": 1788567331558,
+        "updateTime": 1788567331563,
+        "triggerTime": 0,
+        "goodTillDate": 0
+      },
+      {
+        "algoId": 1000000192625242,
+        "clientAlgoId": "V5S_ENA_1788551460000_0001",
+        "algoType": "CONDITIONAL",
+        "orderType": "STOP_MARKET",
+        "symbol": "ENAUSDT",
+        "side": "SELL",
+        "positionSide": "LONG",
+        "timeInForce": "GTC",
+        "quantity": "12151.0",
+        "algoStatus": "NEW",
+        "actualOrderId": "",
+        "actualQty": "0.0",
+        "triggerPrice": "0.1555",
+        "price": "0.0",
+        "icebergQuantity": null,
+        "selfTradePreventionMode": "EXPIRE_MAKER",
+        "workingType": "CONTRACT_PRICE",
+        "priceMatch": "NONE",
+        "closePosition": false,
+        "priceProtect": false,
+        "reduceOnly": true,
+        "createTime": 1788551664569,
+        "updateTime": 1788551664570,
+        "triggerTime": 0,
+        "goodTillDate": 0
+      },
+      {
+        "algoId": 1000000192352173,
+        "clientAlgoId": "V5S_DOGE_1788529140000_0001",
+        "algoType": "CONDITIONAL",
+        "orderType": "STOP_MARKET",
+        "symbol": "DOGEUSDT",
+        "side": "SELL",
+        "positionSide": "LONG",
+        "timeInForce": "GTC",
+        "quantity": "21606.0",
+        "algoStatus": "NEW",
+        "actualOrderId": "",
+        "actualQty": "0.0",
+        "triggerPrice": "0.07877",
+        "price": "0.0",
+        "icebergQuantity": null,
+        "selfTradePreventionMode": "EXPIRE_MAKER",
+        "workingType": "CONTRACT_PRICE",
+        "priceMatch": "NONE",
+        "closePosition": false,
+        "priceProtect": false,
+        "reduceOnly": true,
+        "createTime": 1788529351291,
+        "updateTime": 1788529351291,
+        "triggerTime": 0,
+        "goodTillDate": 0
+      }
+    ]
+  },
+  "trades": {
+    "ok": true,
+    "data": [
+      {
+        "symbol": "BTCUSDT",
+        "id": 535229485,
+        "orderId": 28574233916,
+        "pair": "BTCUSDT",
+        "side": "BUY",
+        "price": "79680.20",
+        "qty": "0.0070",
+        "realizedPnl": "0",
+        "quoteQty": "557.761400",
+        "commission": "0.22310456",
+        "commissionAsset": "USDT",
+        "time": 1788711270591,
+        "buyer": true,
+        "maker": false,
+        "positionSide": "LONG",
+        "baseQty": "0",
+        "marginAsset": "USDT"
+      }
+    ]
+  }
+}

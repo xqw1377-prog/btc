@@ -105,6 +105,12 @@ class PositionFactState(Enum):
     UNKNOWN = "UNKNOWN"
 
 
+# 交易所已确认空仓，但没有可引用的平仓 order/fill。
+# 不得为了账本平衡补造 SELL / fee / pnl。
+# 这是证据残留，不是永久交易禁令；运行锁由 kill / incident disposition 单独决定。
+CLOSE_PROVENANCE_UNKNOWN = "CLOSE_PROVENANCE_UNKNOWN"
+
+
 PENDING_ORDER_STATES = (
     "SUBMITTING",
     "SUBMIT_UNKNOWN",

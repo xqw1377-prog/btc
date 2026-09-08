@@ -14,7 +14,7 @@ import uuid
 from typing import Any, Dict, Optional
 
 from .coverage import compute_protection_status
-from .ledger import Ledger, PositionFactState
+from .ledger import CLOSE_PROVENANCE_UNKNOWN, Ledger, PositionFactState
 from .port import (
     CancelUnknownError,
     Fill,
@@ -146,15 +146,12 @@ class Orchestrator:
                     })
 
             elif order["order_kind"] == "CLOSE":
-                if fact.status == "FILLED" or self._exchange_flat():
+                if fact.status == "FILLED":
                     # 订单行事实同步 + 成交明细入账
-                    if fact.status == "FILLED":
-                        self.ledger.update_order(
-                            cid, state="FILLED",
-                            filled_qty=fact.filled_qty, avg_price=fact.avg_price)
-                        self._apply_fills(cid)
-                    else:
-                        self.ledger.update_order(cid, state="FILLED")
+                    self.ledger.update_order(
+                        cid, state="FILLED",
+                        filled_qty=fact.filled_qty, avg_price=fact.avg_price)
+                    self._apply_fills(cid)
                     intent = self.ledger.get_intent(intent_id)
                     state = IntentState(intent["state"]) if intent else None
                     # 合法收敛路径按当前状态选择：RECOVERY_REQUIRED 只能直达
@@ -172,6 +169,10 @@ class Orchestrator:
                             intent_id, IntentState.RECONCILED,
                             "recovery: ledger matches exchange (flat)", correlation_id=intent_id)
                     report["resolved"].append(entry)
+                elif self._exchange_flat():
+                    # 仓位已空 ≠ 本 CLOSE 单成交。禁止把订单标成 FILLED 或补造 SELL。
+                    self._record_close_provenance_unknown(
+                        report, reason=f"exchange flat; close {cid} has no fill")
                 elif fact.status == "NOT_FOUND" and not self._exchange_flat():
                     intent = self.ledger.get_intent(intent_id)
                     # 幂等恢复：已在 RECOVERY_REQUIRED 则不重复自环转移
@@ -272,18 +273,16 @@ class Orchestrator:
                     "reason": "exchange open, ledger has no intent/order/position record",
                 })
         elif fact["state"] == PositionFactState.KNOWN_FLAT.value:
-            if (
-                pre_fact is not None
-                and pre_fact["state"] == PositionFactState.KNOWN_OPEN.value
-                and not close_evidence
-            ):
-                self.ledger.set_position_fact(
-                    self.symbol, PositionFactState.UNKNOWN, source="boot-audit",
-                    note="BOOT-DRIFT: ledger open but exchange flat; no close/fill evidence")
-                report["unresolved"].append({
-                    "fact": "BOOT_DRIFT",
-                    "reason": "ledger open, exchange flat; no close evidence",
-                })
+            unexplained = (not close_evidence) and (
+                (pre_fact is not None
+                 and pre_fact["state"] == PositionFactState.KNOWN_OPEN.value)
+                or (pre_fact is not None
+                    and pre_fact.get("source") == CLOSE_PROVENANCE_UNKNOWN)
+            )
+            if unexplained:
+                self._record_close_provenance_unknown(
+                    report,
+                    reason="exchange flat; no matching close order/fill")
 
     def open_position(
         self, side: str, quantity: float,
@@ -345,6 +344,9 @@ class Orchestrator:
                 intent_id, IntentState.REJECTED,
                 "position already open", correlation_id=intent_id)
             return self._refuse("position already open")
+        # CLOSE_PROVENANCE_UNKNOWN 是证据残留，不是永久开仓禁令。
+        # 当前事故运行锁（kill / INCIDENT_LOCKED）另层拒绝新风险。
+        # 未来 incident disposition 可以在残留仍 OPEN 时批准新的 qualification。
 
         self._protect_px[intent_id] = (
             float(stop_price) if stop_price else 99.0,
@@ -669,11 +671,18 @@ class Orchestrator:
                 self.ledger.transition_intent(
                     iid, IntentState.RECOVERY_REQUIRED,
                     f"exchange-side close detected but sibling cancel/query unknown"
-                    f" ({'+'.join(fired) if fired else 'external close'})",
+                    f" ({'+'.join(fired) if fired else CLOSE_PROVENANCE_UNKNOWN})",
                     correlation_id=iid)
-                self.ledger.set_position_fact(
-                    self.symbol, PositionFactState.UNKNOWN,
-                    source="reconcile", note=f"sibling cancel unknown {iid}")
+                self._record_close_provenance_unknown(
+                    None, reason=f"exchange flat; sibling cancel/query unknown {iid}")
+                continue
+            if not fired:
+                self.ledger.transition_intent(
+                    iid, IntentState.RECOVERY_REQUIRED,
+                    f"{CLOSE_PROVENANCE_UNKNOWN}: exchange flat without matching fill",
+                    correlation_id=iid)
+                self._record_close_provenance_unknown(
+                    None, reason="exchange flat without matching protection/close fill")
                 continue
             self.ledger.transition_intent(
                 iid, IntentState.CLOSING,
@@ -1191,6 +1200,26 @@ class Orchestrator:
             return None
         return ("FILLED" if filled_qty + 1e-12 >= float(order["quantity"])
                 else "PARTIALLY_FILLED")
+
+    def _record_close_provenance_unknown(
+        self, report: Optional[Dict[str, Any]], reason: str,
+    ) -> None:
+        """记录仓位已空但平仓来源未知。
+
+        position truth ≠ financial provenance truth。
+        该残留可永久 OPEN / APPEND-ONLY；不因此永久禁止账户未来交易。
+        新风险是否放开只取决于事故运行锁 / 明确 incident disposition。
+        """
+        self.ledger.set_position_fact(
+            self.symbol, PositionFactState.KNOWN_FLAT,
+            source=CLOSE_PROVENANCE_UNKNOWN, note=reason)
+        if report is not None and not any(
+            e.get("fact") == CLOSE_PROVENANCE_UNKNOWN for e in report["unresolved"]
+        ):
+            report["unresolved"].append({
+                "fact": CLOSE_PROVENANCE_UNKNOWN,
+                "reason": reason,
+            })
 
     def _safe_query_order(self, client_order_id: str):
         try:

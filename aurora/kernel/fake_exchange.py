@@ -60,6 +60,7 @@ class FakeExchange(ExchangePort):
         # BOOT-DRIFT 测试辅助：账本/本 fake 订单系统之外的外部持仓。
         self._external: List[tuple] = []       # (signed_qty, entry_price)
         self._ambiguous_position = False        # 如 HEDGE 双腿：查询不完整 → None
+        self._force_flat = False                # 仓位变 0 但无对应 fill（EXIT-PROVENANCE）
 
     # ---- 内部 ----
 
@@ -180,9 +181,16 @@ class FakeExchange(ExchangePort):
         """模拟多腿/覆盖不足的仓位查询：返回 None（UNKNOWN），绝不净额成 FLAT。"""
         self._ambiguous_position = flag
 
+    def flatten_without_fill(self) -> None:
+        """交易所仓位归零，但不产生任何 order/fill。禁止测试据此补造 SELL。"""
+        self._force_flat = True
+        self._external = []
+
     def position(self, symbol: str) -> Optional[ExchangePosition]:
         if self._fail_position or self._ambiguous_position:
             return None  # 交易所事实不可知 = UNKNOWN，绝不能解释为空仓
+        if self._force_flat:
+            return ExchangePosition(symbol, 0.0, 0.0)
         signed = 0.0
         entry_price = 0.0
         for qty, px in self._external:

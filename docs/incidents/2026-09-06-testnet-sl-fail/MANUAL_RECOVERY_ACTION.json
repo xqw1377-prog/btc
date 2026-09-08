@@ -1,0 +1,69 @@
+{
+  "type": "MANUAL_RECOVERY_ACTION",
+  "meaning": "OPERATOR_DISPOSITION_RECORD_NOT_FILL_FACT",
+  "do_not_interpret_as": [
+    "manual close fill fact",
+    "authoritative SELL trade",
+    "financial PnL/fee of the exit"
+  ],
+  "reason": "TESTNET_INCIDENT_UNPROTECTED_POSITION",
+  "symbol": "BTCUSDT",
+  "side_declared": "CLOSE_LONG",
+  "qty_declared": 0.007,
+  "source": "OPERATOR_BINANCE_TESTNET_UI",
+  "operator_declared_at_local": "2026-09-08T10:37:00+08:00",
+  "read_only_verified_at": "2026-09-08T02:38:29.893900+00:00",
+  "pre_close_last_seen_open": "2026-09-08T02:34:36.519203+00:00",
+  "exchange_evidence_window": {
+    "02:34:36Z": "BTCUSDT LONG 0.007",
+    "02:38:29Z": "BTCUSDT position = 0",
+    "userTrades": "no matching SELL",
+    "allOrders": "no matching close order",
+    "AURORA_Algo": "none",
+    "ordinary_order": "none"
+  },
+  "exchange_final": {
+    "BTCUSDT_LONG_positionAmt": "0.0000",
+    "BTCUSDT_SHORT_positionAmt": "0.0000",
+    "positionSide_rows": ["LONG", "SHORT"],
+    "ordinary_open_orders": 0,
+    "AURORA_or_BTCUSDT_open_algo": 0,
+    "account_dualSidePosition": true,
+    "account_nonzero_positions": 0
+  },
+  "manual_close_fill": {
+    "status": "NOT_FOUND",
+    "userTrades_BTCUSDT": [
+      {
+        "id": 535229485,
+        "orderId": 28574233916,
+        "side": "BUY",
+        "positionSide": "LONG",
+        "qty": "0.0070",
+        "price": "79680.20",
+        "time": 1788711270591,
+        "note": "incident ENTRY only"
+      }
+    ],
+    "sell_trades": [],
+    "close_orders": [],
+    "order_id": null,
+    "trade_id": null,
+    "fill_price": null,
+    "fill_time": null
+  },
+  "rulings": {
+    "POSITION_RISK_RECOVERED": "YES",
+    "FINAL_POSITION": "KNOWN_FLAT",
+    "EXIT_MECHANISM": "UNKNOWN",
+    "MANUAL_CLOSE_FILL": "NOT_FOUND",
+    "MANUAL_CLOSE_ORDER": "NOT_FOUND",
+    "INCIDENT_POSITION_STATE": "RECOVERED",
+    "INCIDENT_EVIDENCE_STATE": "OPEN_RESIDUAL",
+    "residual_id": "EXIT-PROVENANCE-01",
+    "SYSTEM_EXECUTION_QUALIFIED": "NO",
+    "KILL": "ACTIVE (unchanged; live ledger not edited)",
+    "synthetic_sell_fill": "FORBIDDEN",
+    "old_entry_order_row": "NOT MODIFIED"
+  }
+}

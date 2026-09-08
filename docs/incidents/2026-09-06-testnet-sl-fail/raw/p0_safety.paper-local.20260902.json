@@ -1,0 +1,19 @@
+{
+  "halt": "NONE",
+  "halt_reason": "",
+  "kill_switch": false,
+  "kill_reason": "",
+  "daily_pnl": 0.0,
+  "drawdown": 0.0,
+  "pending_orders": [],
+  "close_failed": false,
+  "account_fingerprint": "paper-local",
+  "brain": {
+    "is_open": false,
+    "side": "FLAT",
+    "size": 0.0,
+    "entry_price": 0.0
+  },
+  "last_reconcile": "UNKNOWN",
+  "updated_at": "2026-09-02T00:59:42.805270+00:00"
+}

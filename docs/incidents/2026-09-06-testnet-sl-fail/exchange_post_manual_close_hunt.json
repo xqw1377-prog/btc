@@ -1,0 +1,148 @@
+{
+  "captured_at": "2026-09-08T02:41:56.458551+00:00",
+  "trades_from_entry": {
+    "ok": true,
+    "data": [
+      {
+        "symbol": "BTCUSDT",
+        "id": 535229485,
+        "orderId": 28574233916,
+        "pair": "BTCUSDT",
+        "side": "BUY",
+        "price": "79680.20",
+        "qty": "0.0070",
+        "realizedPnl": "0",
+        "quoteQty": "557.761400",
+        "commission": "0.22310456",
+        "commissionAsset": "USDT",
+        "time": 1788711270591,
+        "buyer": true,
+        "maker": false,
+        "positionSide": "LONG",
+        "baseQty": "0",
+        "marginAsset": "USDT"
+      }
+    ]
+  },
+  "all_orders": {
+    "ok": true,
+    "data": [
+      {
+        "orderId": 28574233916,
+        "symbol": "BTCUSDT",
+        "status": "FILLED",
+        "clientOrderId": "AURORA-0650a39f56e3-ENTRY",
+        "price": "0",
+        "avgPrice": "79680.200000",
+        "origQty": "0.0070",
+        "executedQty": "0.0070",
+        "cumQuote": "557.761400",
+        "cumBase": "0",
+        "timeInForce": "GTC",
+        "type": "MARKET",
+        "reduceOnly": false,
+        "closePosition": false,
+        "side": "BUY",
+        "positionSide": "LONG",
+        "stopPrice": "0",
+        "workingType": "CONTRACT_PRICE",
+        "priceMatch": "NONE",
+        "selfTradePreventionMode": "EXPIRE_MAKER",
+        "goodTillDate": 0,
+        "priceProtect": false,
+        "origType": "MARKET",
+        "time": 1788711270591,
+        "updateTime": 1788711270591,
+        "pair": "BTCUSDT"
+      }
+    ]
+  },
+  "income": {
+    "ok": true,
+    "data": [
+      {
+        "symbol": "BTCUSDT",
+        "incomeType": "COMMISSION",
+        "income": "-0.22310456",
+        "asset": "USDT",
+        "time": 1788711270000,
+        "info": "535229485",
+        "tranId": 90031535229485,
+        "tradeId": "535229485"
+      },
+      {
+        "symbol": "BTCUSDT",
+        "incomeType": "FUNDING_FEE",
+        "income": "-0.02739709",
+        "asset": "USDT",
+        "time": 1788739200000,
+        "info": "FUNDING_FEE",
+        "tranId": 1491319223544834580,
+        "tradeId": ""
+      },
+      {
+        "symbol": "BTCUSDT",
+        "incomeType": "FUNDING_FEE",
+        "income": "-0.05555278",
+        "asset": "USDT",
+        "time": 1788768000000,
+        "info": "FUNDING_FEE",
+        "tranId": 1492527205242758230,
+        "tradeId": ""
+      },
+      {
+        "symbol": "BTCUSDT",
+        "incomeType": "FUNDING_FEE",
+        "income": "-0.05513627",
+        "asset": "USDT",
+        "time": 1788796800000,
+        "info": "FUNDING_FEE",
+        "tranId": 1493735145584847420,
+        "tradeId": ""
+      },
+      {
+        "symbol": "BTCUSDT",
+        "incomeType": "FUNDING_FEE",
+        "income": "-0.05536027",
+        "asset": "USDT",
+        "time": 1788825600000,
+        "info": "FUNDING_FEE",
+        "tranId": 1494943105556278100,
+        "tradeId": ""
+      }
+    ]
+  },
+  "all_orders_nolimit_window": {
+    "ok": true,
+    "data": [
+      {
+        "orderId": 28574233916,
+        "symbol": "BTCUSDT",
+        "status": "FILLED",
+        "clientOrderId": "AURORA-0650a39f56e3-ENTRY",
+        "price": "0",
+        "avgPrice": "79680.200000",
+        "origQty": "0.0070",
+        "executedQty": "0.0070",
+        "cumQuote": "557.761400",
+        "cumBase": "0",
+        "timeInForce": "GTC",
+        "type": "MARKET",
+        "reduceOnly": false,
+        "closePosition": false,
+        "side": "BUY",
+        "positionSide": "LONG",
+        "stopPrice": "0",
+        "workingType": "CONTRACT_PRICE",
+        "priceMatch": "NONE",
+        "selfTradePreventionMode": "EXPIRE_MAKER",
+        "goodTillDate": 0,
+        "priceProtect": false,
+        "origType": "MARKET",
+        "time": 1788711270591,
+        "updateTime": 1788711270591,
+        "pair": "BTCUSDT"
+      }
+    ]
+  }
+}
