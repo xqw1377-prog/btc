@@ -172,6 +172,13 @@ class DashboardFeed:
             "protectionStatus": "NOT_VERIFIED",
         }
 
+    def _trades_payload(self) -> Dict[str, Any]:
+        m = self.meta["trades"]
+        return {"items": self.trade_data,
+                "meta": {"status": m["status"], "source": "EXCHANGE_READONLY",
+                         "updatedAt": m["updated_at"],
+                         "lastError": m["last_error"]}}
+
     def _envelope(self, msg_type: str, section: str, payload: Any) -> str:
         if isinstance(payload, dict):
             payload = {**payload, "meta": self._meta_block(section)}
@@ -191,7 +198,7 @@ class DashboardFeed:
             self._envelope("risk", "risk", self.risk_data),
             json.dumps({"type": "pnl", "payload": self.pnl_data}),
             json.dumps({"type": "score", "payload": 0}),
-            self._envelope("trades", "trades", self.trade_data),
+            self._envelope("trades", "trades", self._trades_payload()),
         ):
             await websocket.send(msg)
 
@@ -377,7 +384,7 @@ class DashboardFeed:
                 await self.broadcast(self._envelope("system", "account", self._system_payload()))
                 await self.broadcast(self._envelope("risk", "risk", self.risk_data))
                 await self.broadcast(json.dumps({"type": "pnl", "payload": self.pnl_data}))
-                await self.broadcast(self._envelope("trades", "trades", self.trade_data))
+                await self.broadcast(self._envelope("trades", "trades", self._trades_payload()))
                 score = int((self.market_data.get("confidence") or 0) * 100)
                 await self.broadcast(json.dumps({"type": "score", "payload": score}))
                 print(
