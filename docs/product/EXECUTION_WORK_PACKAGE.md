@@ -4,8 +4,9 @@
 > 封点提交：`6b2cc7c`（用户已接受为正式边界封点）  
 > 冻结日：2026-09-08  
 > 修订：REQUIRED AMENDMENTS 1–5 已并入  
-> 前置：Harness CLOSED-OFFLINE；EXECUTE_AUTHORIZED 已降级为 legacy dead-man 指示（不再是授权门）  
-> **本合同只把「若将来写那一笔 0.001」的边界一次性写死。不是开工令。**
+> 前置：Harness CLOSED-OFFLINE；`EXECUTE_AUTHORIZED=false`  
+> **本合同只把「若将来写那一笔 0.001」的边界一次性写死。不是开工令。**  
+> HEAD 实现偏差以本封点为准，不得反向改解释。
 
 ```text
 EXECUTION WORK PACKAGE                BOUNDARY-FROZEN   6b2cc7c
@@ -16,7 +17,7 @@ CLIENT ID NAMESPACE                   FROZEN
 QUALIFICATION LEDGER                  ISOLATED
 SCOPED SINGLE-USE PERMIT              REQUIRED
 
-EXECUTE_AUTHORIZED                    FALSE（legacy dead-man 指示；非授权门）
+EXECUTE_AUTHORIZED                    FALSE
 EXECUTION AUTHORIZATION               NOT ISSUED
 SCOPED PERMIT                         NOT ISSUED
 0.001 BTC WRITE                       NOT AUTHORIZED
@@ -33,13 +34,15 @@ SYSTEM EXECUTION                      NOT QUALIFIED
 
 「上线交易 / 启动交易」不是本包。本包若将来被单独授权执行，也只是一笔受控 TESTNET LONG 0.001。
 
-**真实写权限（R2 之后唯一口径）** =
+裸 `EXECUTE_AUTHORIZED=true` **不够**。将来写那一笔必须在构造任何写客户端之前同时满足：
 
 ```text
-valid EXECUTION START ORDER（OPEN 未过期）
-+ matching exact-session scoped single-use permit
-+ explicit operator flag
-+ no terminal session record
+EXECUTE_AUTHORIZED = true
++
+permit.session_id == execution session_id
+permit.single_use == true
+permit.scope == exact BTCUSDT/LONG/0.001
+permit.expiry valid
 ```
 
 缺一即 DENY BEFORE CLIENT WRITE。当前两者都未满足。
@@ -313,8 +316,8 @@ ONLY RISK-REDUCTION / HUMAN RECOVERY
 
 ## 将来若单独授权执行
 
-必须另发开工令，明确引用本文件。  
-开工令 = `--issue-execution-window`（同一窗口冻结 session_id、发 START ORDER 并签发 scoped permit）；执行时另需显式 operator flag 与无终态会话记录。单独改布尔值无效（该常量已是 legacy dead-man 指示）。
+必须另发开工令，明确引用 `6b2cc7c`。  
+开工令必须同时打开 `EXECUTE_AUTHORIZED` **并**签发本包 scoped permit。单独改布尔值无效。实现偏差见 [PRE_EXECUTION_CONFORMANCE.md](PRE_EXECUTION_CONFORMANCE.md)，以本合同为准。
 
 即使 P0–P22 全 PASS，最大结果也只是：
 

@@ -80,7 +80,8 @@ INCIDENT LEDGER                state/kernel_ledger.db
 INCIDENT KILL                  ACTIVE，只读，本包不得解除、不得改旧行
 
 SESSION LEDGER                 显式新路径
-                               state/testnet/3fbc5d4f1f9ddc7d/controlled_requal.db
+                               state/testnet/<fp>/qualification/<session-id>/ledger.db
+                               禁止共用 controlled_requal.db
                                禁止 ensure_ledger_migrated 从事故账本接管
 SESSION KILL                   会话内自管：UNKNOWN/失败立即 engage
                                收口成功后也必须 engage
@@ -144,5 +145,5 @@ INCIDENT KILL                         仍 ACTIVE
 --i-execute-...      仍 DENIED（旗标本身不开写）
 离线会话             开仓前 FLAT/UNKNOWN 门禁 + SL 必须低于 mark
                      保护失败 → 会话 kill
-REAL WRITE AUTHORITY = START ORDER + exact-session permit + operator flag + no terminal record（EXECUTE_AUTHORIZED 仅 legacy dead-man 指示）
+EXECUTE_AUTHORIZED   false（硬开关；构造写客户端前必须为 true，且需有效 permit）
 ```
