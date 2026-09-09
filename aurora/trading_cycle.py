@@ -80,6 +80,7 @@ class TradingCycle:
         brain: Optional[PortfolioBrainV2] = None,
         capital: float = 0.0,
         evidence_path: Optional[str] = None,
+        max_qty: Optional[float] = None,
     ):
         if mode == RunMode.PAPER:
             raise SafetyViolation("[P0] PAPER cannot run a trading cycle.")
@@ -113,6 +114,7 @@ class TradingCycle:
         self.evidence_path = (
             evidence_path if evidence_path is not None else default_evidence_path()
         )
+        self.max_qty = max_qty
         # G0-2 重启去重：有持久化证据则武装两个引擎；
         # 无证据则保守处理——第一根 bar 只标记已见、不推进确认。
         self._evidence_armed = self._load_evidence()
@@ -316,7 +318,9 @@ class TradingCycle:
                 return {"submitted": False, "action": "HOLD", "reason": "funding ledger incomplete"}
             if price <= 0:
                 return {"submitted": False, "action": "HOLD", "reason": "invalid price"}
-            qty = qty_from_authorized_intent(self.brain.capital, intent.size_pct, price, MIN_QTY)
+            qty = qty_from_authorized_intent(
+                self.brain.capital, intent.size_pct, price, MIN_QTY,
+                max_qty=self.max_qty)
             if qty < MIN_QTY:
                 return {"submitted": False, "action": "HOLD", "reason": "size below minimum"}
             sl = price * (1 - intent.stop_loss_pct) if intent.side == Intent.LONG else price * (1 + intent.stop_loss_pct)

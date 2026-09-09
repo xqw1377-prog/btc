@@ -97,10 +97,14 @@ def size_pct_from_risk_budget(
 
 def qty_from_authorized_intent(
     equity: float, size_pct: float, price: float, min_qty: float = 0.001,
+    max_qty: Optional[float] = None,
 ) -> float:
     if price <= 0 or equity <= 0 or size_pct <= 0:
         return 0.0
-    return round(equity * size_pct / price, 3)
+    qty = round(equity * size_pct / price, 3)
+    if max_qty is not None and qty > max_qty:
+        qty = round(float(max_qty), 3)
+    return max(0.0, qty)
 
 
 def fetch_funding_rate(client: Any, symbol: str) -> Optional[float]:
