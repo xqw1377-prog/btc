@@ -66,8 +66,8 @@ Full offline regression (465+ prior + E1 new)
 Exchange writes: 0
 ```
 
-## Explicit non-goals (remain E3+)
+## Explicit non-goals
 
-- Backtest / walk-forward / BTC HODL benchmark
 - LIVE / AUTO TESTNET authorization
 - Trailing stop exchange sync
+- 因 E3 OOS 回写本包常数（walk-forward 已另包 CLOSED-OFFLINE）

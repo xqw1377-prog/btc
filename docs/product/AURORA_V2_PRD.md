@@ -1,9 +1,11 @@
 # AURORA 2.0 产品方向（E2-R0 CONTRACT — 未获执行授权）
 
-> 状态：E2 策略身份合同。本文不构成交易授权、不批准任何执行范围、
-> 不宣称已有 STRATEGY EDGE。当前真实能力以
+> 状态：E2 策略身份合同。本文不构成交易授权、不批准任何执行范围。
+> STRATEGY EDGE 现为 `OFFLINE-OOS-ONLY`（E3 离线 walk-forward），
+> **仍不等于 AUTO TESTNET / LIVE**。当前真实能力以
 > [CAPABILITY_STATUS.md](CAPABILITY_STATUS.md) 为准。
-> 细则：[E2_STRATEGY_V2.md](E2_STRATEGY_V2.md)
+> 细则：[E2_STRATEGY_V2.md](E2_STRATEGY_V2.md)、
+> [E3_WALKFORWARD_OOS.md](E3_WALKFORWARD_OOS.md)
 
 ## 定位
 

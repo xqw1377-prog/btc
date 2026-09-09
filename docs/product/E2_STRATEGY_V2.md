@@ -56,15 +56,13 @@ E1 tests remain green
 Exchange writes: 0
 ```
 
-## Explicit non-goals (remain E3+)
+## Explicit non-goals
 
-- Walk-forward / OOS / BTC HODL benchmark numbers
 - Spot BTC 执行器
 - ETH 配置、配对、净空
 - LIVE / AUTO TESTNET
+- 因 E3 数字回写本包参数
 
-E3 若启动，第一原则预先冻结：
-
-```text
-Strategy V2 不允许因为回测结果不好而边看 OOS 边改参数。
-```
+E3 已 CLOSED-OFFLINE。第一原则已遵守：看到 OOS 后未改本包常数。
+Walk-forward 数字见 `docs/product/E3_WALKFORWARD_OOS.md` 与
+`evidence/e3/verdict.json`。

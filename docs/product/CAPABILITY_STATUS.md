@@ -9,7 +9,7 @@
 > 事故现场：[docs/incidents/2026-09-06-testnet-sl-fail/FACTS.md](../incidents/2026-09-06-testnet-sl-fail/FACTS.md)  
 > 处置裁定：[docs/incidents/2026-09-06-testnet-sl-fail/DISPOSITION.md](../incidents/2026-09-06-testnet-sl-fail/DISPOSITION.md)
 
-## 〇、当前正式状态（2026-09-08 仓位风险收口后）
+## 〇、当前正式状态（2026-09-09 E3 裁决后）
 
 ```text
 G0-4A_COMMIT                  7a10302
@@ -78,8 +78,8 @@ EXECUTION BOUNDARY            FROZEN      6b2cc7c
 EXECUTE_AUTHORIZED            FALSE
 EXECUTION AUTHORIZATION       NOT ISSUED
 REAL WRITE PATH               DENIED
-NEXT STAGE                    E3 BACKTEST / WALK-FORWARD / OOS（HOLD）
-STRATEGY V2 / BACKTEST        V2 CLOSED-OFFLINE / BACKTEST HOLD
+NEXT STAGE                    HOLD（无 AUTO TESTNET / 无 LIVE / 无未发令工作包）
+STRATEGY V2 / BACKTEST        V2 CLOSED-OFFLINE / E3 CLOSED-OFFLINE
 PASS-2 / THIRD SESSION        HOLD / DENIED
 E0 ACCOUNTING TRUTH           CLOSED-OFFLINE
   FILLS → PNL → CAPITAL       PASS
@@ -99,7 +99,7 @@ E1 RISK SEMANTICS             CLOSED-OFFLINE    89248f7
 E1 ≠ STRATEGY EDGE            风险语义冻结 ≠ 策略盈利证据
 ACCOUNTING TRUTH              ESTABLISHED-OFFLINE
 RISK SEMANTICS                ESTABLISHED-OFFLINE
-STRATEGY EDGE                 NO-EVIDENCE
+STRATEGY EDGE                 OFFLINE-OOS-ONLY
 E2 STRATEGY V2                CLOSED-OFFLINE
   NUMERAIRE                   BTC
   CORE                        HOLD BTC
@@ -108,8 +108,15 @@ E2 STRATEGY V2                CLOSED-OFFLINE
   NET SHORT                   FORBIDDEN
   STRATEGY IDENTITY           FROZEN
 E2 ≠ STRATEGY EDGE            身份冻结 ≠ excess BTC 证据
-E3 WALK-FORWARD/OOS           HOLD
-  NO OOS RETUNE               Strategy V2 不得边看 OOS 边改参数
+E3 WALK-FORWARD/OOS           CLOSED-OFFLINE
+  BENCHMARK                   BTC HODL = 1.0
+  SAMPLE                      local 1d CSV 2022-08-02 → 2026-09-08（已收盘；形成中 bar 剔除）；n_trades=58
+  EXCESS BTC                  +0.0338021862（fee/funding/slip 后）
+  YEAR FOLDS                  4/5 正超额（2022 负；正折占比 0.80）
+  CONCENTRATION               max_month_share=0.186；max_trade_share=0.083
+  VERDICT                     EDGE_PASS_OFFLINE
+  NO OOS RETUNE               已遵守：看到数字后未回写 E2 / E1 常数
+E3 ≠ LIVE                     离线 OOS ≠ AUTO TESTNET ≠ 实盘资格
                               仍是写盘前门 ≠ legacy dead-man
 CTR-20260908-01               STOP AT P2 / NO EXCHANGE WRITE
 EXECUTION AUTHORIZATION       NOT ISSUED
@@ -129,7 +136,7 @@ P0-GOVERNANCE-REPAIR          CLOSED          f0efb2b
   GATE-2  production_main → cannot bypass incident governance
   GATE-3  incident authority missing/unreadable/invalid → UNKNOWN
           → deny boot → never synthesize CLEAR
-OFFLINE REGRESSION            497 PASS
+OFFLINE REGRESSION            508 PASS
 REAL EXCHANGE WRITES          0
 EXECUTE_AUTHORIZED            FALSE
 INCIDENT KILL / LOCK          ACTIVE
@@ -148,7 +155,7 @@ EXECUTION_WP                  BOUNDARY-FROZEN / NOT AUTHORIZED TO EXECUTE
 LIVE                          NO-GO
 SYSTEM_EXECUTION_QUALIFIED    NO
 P0_SAFETY_STATUS              STALE / NOT AUTHORITATIVE
-STRATEGY / V2                 CLOSED-OFFLINE / NO EDGE CLAIM
+STRATEGY / V2                 CLOSED-OFFLINE / EDGE OFFLINE-OOS-ONLY
 ```
 
 证据残留可以永久 OPEN。G0-4D 只读复核：认证 PASS、普通读取 PASS、恢复证据 PARTIAL（EXIT-PROVENANCE-01 再确认 NOT_FOUND）；Algo 单查 schema 不匹配（真实字段 orderType）已经 **G0-4D-R1（95ece99）离线修复**：_algo_fact 双别名规范化（冲突 fail-closed）、list/single 分开合同、真实 fixture 回归；R1 后复测列表 PASS + 真实单查解析 PASS + workingType/身份守卫按合同工作 → 读协议升 PASS。修正附录 G0-4D-AMENDMENT.md。`CONTROLLED TESTNET REQUALIFICATION` 仅冻结写入边界，**EXECUTE DENIED**（且在 G0-4D 阻塞修复前不得解封）。`INCIDENT_LOCK` / 事故 kill / AUTO TESTNET / SYSTEM EXECUTION 均未解除。
@@ -207,11 +214,9 @@ STRATEGY / V2                 CLOSED-OFFLINE / NO EDGE CLAIM
 沿用既有登记的 G1/G4/G5 迁移项（启动余额不刷新、死配置、数量精度、
 内存移动止损、波动单位）不因未列入上表而消失。
 
-下一阶段顺序冻结为：
-`E3 BACKTEST / WALK-FORWARD / OOS`。
 E0 已 CLOSED-OFFLINE（账从 fills 重建；**不等于策略盈利证据**）。
 E1 已 CLOSED-OFFLINE（风险语义冻结；**不等于策略 edge 证据**）。
 E2 已 CLOSED-OFFLINE（BTC 本位身份冻结；**不等于 excess BTC 证据**）。
-回测主 benchmark 必须包含 `BTC HODL`，并报告 Excess BTC、
-BTC-denominated NAV / drawdown / CAGR、fee/funding drag 与 turnover；
-USDT 收益仅为第二视角。
+E3 已 CLOSED-OFFLINE（冻结 V2 vs BTC HODL；`EDGE_PASS_OFFLINE` /
+`STRATEGY EDGE = OFFLINE-OOS-ONLY`；**仍不等于 AUTO TESTNET / LIVE**）。
+下一阶段：HOLD。未发令不得开新工作包、不得因 OOS 回写 E2。
