@@ -877,6 +877,29 @@ class Orchestrator:
                     None, reason=f"exchange flat; sibling cancel/query unknown {iid}")
                 continue
             if not fired:
+                # G3: 若存在已成交并 reconciled 的独立 close intent，则原始
+                # PROTECTED intent 的生命周期已经由该平仓行为解释清楚。
+                # active position/order recovery 必须收敛为 RECONCILED；
+                # 不能仅因 "原始 SL/TP 未触发" 就把整个系统拖回 RECOVERY_REQUIRED。
+                independent_close = self._any_closed_intent_filled_close()
+                if independent_close:
+                    self.ledger.transition_intent(
+                        iid, IntentState.CLOSING,
+                        f"exchange flat via independent close {independent_close}",
+                        correlation_id=iid)
+                    self.ledger.transition_intent(
+                        iid, IntentState.CLOSED,
+                        "position closed by independent close intent",
+                        correlation_id=iid)
+                    self.ledger.transition_intent(
+                        iid, IntentState.RECONCILED,
+                        "ledger matches exchange after independent close",
+                        correlation_id=iid)
+                    self.ledger.set_position_fact(
+                        self.symbol, PositionFactState.KNOWN_FLAT,
+                        source="INDEPENDENT_CLOSE",
+                        note=f"closed by {independent_close}")
+                    continue
                 self.ledger.transition_intent(
                     iid, IntentState.RECOVERY_REQUIRED,
                     f"{CLOSE_PROVENANCE_UNKNOWN}: exchange flat without matching fill",
@@ -1235,6 +1258,28 @@ class Orchestrator:
             if self.ledger.fills_aggregate(order["client_order_id"])["qty"] > _QTY_EPS:
                 return True
         return False
+
+    def _any_closed_intent_filled_close(self) -> Optional[str]:
+        """是否存在另一个已 reconciled/closed 且含成交 close 单的 intent。
+
+        用于 _reconcile_protected_intents G3 收敛：原始 PROTECTED intent 的
+        SL/TP 虽未触发，但仓位已被独立 close intent 权威平掉。
+        """
+        for intent in self.ledger.list_intents():
+            if intent["side"] != "CLOSE":
+                continue
+            if intent["state"] not in (
+                IntentState.CLOSED.value, IntentState.RECONCILED.value,
+            ):
+                continue
+            for order in self.ledger.orders_for_intent(intent["intent_id"]):
+                if (
+                    order["order_kind"] == "CLOSE"
+                    and order["filled_qty"] > _QTY_EPS
+                    and self.ledger.fills_aggregate(order["client_order_id"])["qty"] > _QTY_EPS
+                ):
+                    return intent["intent_id"]
+        return None
 
     def _recover_protection_lifecycle(self, intent_id: str) -> Optional[Dict[str, Any]]:
         """G0-4C：保护中间态的生命周期恢复。
