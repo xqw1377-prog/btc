@@ -1,0 +1,65 @@
+{
+  "closeClientId": "AURORA-CTR-CTR-20260909-01-CLOSE",
+  "closed": {
+    "authoritative": "fill",
+    "closed": {
+      "close_outcome": "CONFIRMED",
+      "intent_id": "AURORA-CTR-CTR-20260909-01-CLOSE",
+      "state": "RECONCILED",
+      "success": true
+    },
+    "fillQty": 0.001,
+    "plan": {
+      "clientOrderId": "AURORA-CTR-CTR-20260909-01-CLOSE",
+      "closePosition": false,
+      "positionSide": "LONG",
+      "qty": 0.001,
+      "reduceOnly": "NOT_SENT_ON_HEDGE",
+      "side": "SELL",
+      "symbol": "BTCUSDT"
+    }
+  },
+  "entryClientId": "AURORA-CTR-CTR-20260909-01-ENTRY",
+  "execute": "OFFLINE_SESSION_ONLY",
+  "incidentLedgerUnchanged": true,
+  "intentId": "AURORA-CTR-CTR-20260909-01",
+  "opened": {
+    "protected_qty": 0.001,
+    "state": "PROTECTED"
+  },
+  "phase": "COMPLETE",
+  "protectionConfirmed": {
+    "qty": 0.001,
+    "slClientId": "AURORA-CTR-CTR-20260909-01-SL",
+    "status": "NEW",
+    "triggerPrice": 77491.74,
+    "workingType": "MARK_PRICE"
+  },
+  "restartInstanceId": "ctr-restart",
+  "restartRecover": "PASS",
+  "sessionId": "CTR-20260909-01",
+  "sessionKill": {
+    "engaged": 1,
+    "engaged_at": "2026-09-09T10:31:47.857592+00:00",
+    "id": 1,
+    "reason": "controlled requal session complete"
+  },
+  "slClientId": "AURORA-CTR-CTR-20260909-01-SL",
+  "success": true,
+  "wireAck": {
+    "algo": {
+      "algoStatus": "NEW",
+      "orderType": "STOP_MARKET",
+      "problems": [],
+      "qty": 0.001,
+      "triggerPrice": 77491.74
+    },
+    "entry": {
+      "ackSide": "BUY",
+      "executedQty": 0.0,
+      "problems": [],
+      "status": "NEW"
+    },
+    "submitAckContract": "OBSERVED"
+  }
+}
