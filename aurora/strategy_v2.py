@@ -19,6 +19,7 @@ risk-reducing CLOSE.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Optional
 
 import pandas as pd
@@ -31,6 +32,8 @@ CORE_POLICY = "HOLD_BTC"
 OVERLAY_INSTRUMENT = "BTCUSDT_PERP"
 HORIZON_INTERVAL = "1d"
 MIN_HORIZON_BARS = 60
+HORIZON_FETCH_LIMIT = 1500  # exchange max; same lookback E3 can consume
+DAY_MS = 86_400_000
 DAILY_ADX_MIN = 20.0
 OVERLAY_SIGNAL_SIZE_PCT = 0.10
 
@@ -100,25 +103,44 @@ class StrategyDirective:
         )
 
 
+def closed_daily_bars(df: pd.DataFrame, now_ms: Optional[int] = None) -> pd.DataFrame:
+    """Keep only daily bars whose close is already in the past (no forming bar)."""
+    if df is None or len(df) == 0:
+        return df
+    now_ms = (
+        int(now_ms)
+        if now_ms is not None
+        else int(datetime.now(timezone.utc).timestamp() * 1000)
+    )
+    times = df["time"].astype("int64")
+    return df.loc[times + DAY_MS <= now_ms].reset_index(drop=True)
+
+
 def horizon_from_frame(
     df: Optional[pd.DataFrame],
     engine: Optional[FeatureEngine] = None,
+    *,
+    now_ms: Optional[int] = None,
 ) -> HorizonSnapshot:
-    """Build daily HTF snapshot. Incomplete → fail-closed for overlay OPEN."""
+    """Build daily HTF snapshot from closed bars only.
+
+    Forming bars are dropped by wall-clock (open + 1d <= now), not by blindly
+    discarding the last row. Incomplete → fail-closed for overlay OPEN.
+    """
     if df is None or len(df) == 0:
         return HorizonSnapshot(
             interval=HORIZON_INTERVAL, complete=False,
             reason="HTF frame missing",
         )
     engine = engine or FeatureEngine()
-    closed = engine.closed_bars(df, exclude_forming=True)
+    closed = closed_daily_bars(df, now_ms=now_ms)
     if closed is None or len(closed) < MIN_HORIZON_BARS:
         n = 0 if closed is None else len(closed)
         return HorizonSnapshot(
             interval=HORIZON_INTERVAL, complete=False,
             reason=f"HTF bars {n} < {MIN_HORIZON_BARS}",
         )
-    feats = engine.get_latest_features(df, exclude_forming=True)
+    feats = engine.get_latest_features(closed, exclude_forming=False)
     close = float(feats.get("close") or 0.0)
     ema20 = float(feats.get("ema20") or 0.0)
     ema60 = float(feats.get("ema60") or 0.0)

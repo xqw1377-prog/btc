@@ -35,10 +35,11 @@ from aurora.risk_semantics import (
     size_pct_from_risk_budget,
 )
 from aurora.strategy_v2 import (
-    HORIZON_INTERVAL,
     MIN_HORIZON_BARS,
     OVERLAY_SIGNAL_SIZE_PCT,
+    DAY_MS,
     HorizonSnapshot,
+    closed_daily_bars,
     decide_overlay,
     horizon_from_frame,
 )
@@ -48,7 +49,6 @@ FROZEN_TAKER_FEE = 0.0004
 FROZEN_SLIPPAGE = 0.0005
 FUNDING_PRINTS_PER_DAY = 3.0
 CORE_BTC = 1.0
-DAY_MS = 86_400_000
 MAX_FUNDING_RATE = RiskLimits().max_funding_rate_pct
 MAX_POSITION_PCT = RiskLimits().max_position_pct
 
@@ -116,37 +116,11 @@ def _assert_e2_frozen(costs: FrozenCosts) -> None:
 
 
 def horizon_from_closed_slice(df: pd.DataFrame, engine: FeatureEngine) -> HorizonSnapshot:
-    """Historical bars in the slice are already closed; do not drop the last one."""
+    """Historical bars in the slice are already closed; pin now after the last close."""
     if df is None or len(df) == 0:
         return horizon_from_frame(None, engine)
-    if len(df) < MIN_HORIZON_BARS:
-        return HorizonSnapshot(
-            interval=HORIZON_INTERVAL, complete=False,
-            reason=f"HTF bars {len(df)} < {MIN_HORIZON_BARS}",
-        )
-    feats = engine.get_latest_features(df, exclude_forming=False)
-    close = float(feats.get("close") or 0.0)
-    ema20 = float(feats.get("ema20") or 0.0)
-    ema60 = float(feats.get("ema60") or 0.0)
-    atr = float(feats.get("atr") or 0.0)
-    if close <= 0 or ema20 <= 0 or ema60 <= 0 or atr <= 0:
-        return HorizonSnapshot(
-            interval=HORIZON_INTERVAL, complete=False,
-            reason="HTF features incomplete",
-        )
-    return HorizonSnapshot(
-        interval=HORIZON_INTERVAL,
-        complete=True,
-        close=close,
-        ema20=ema20,
-        ema60=ema60,
-        ema_slope=float(feats.get("ema_slope") or 0.0),
-        adx=float(feats.get("adx") or 0.0),
-        atr=atr,
-        vol_atr_pct=float(feats.get("vol_atr_pct") or 0.0),
-        bar_open_time=feats.get("bar_open_time"),
-        reason="HTF daily closed bar",
-    )
+    last = int(df["time"].iloc[-1])
+    return horizon_from_frame(df, engine, now_ms=last + DAY_MS)
 
 
 def simulate_overlay(
@@ -361,17 +335,6 @@ def _verdict(excess: float, n_trades: int, pos_frac: float,
     if excess <= 0:
         return "NEGATIVE_EXCESS", reasons, "NO-EVIDENCE"
     return "INSUFFICIENT_OR_CONCENTRATED", reasons, "NO-EVIDENCE"
-
-
-def closed_daily_bars(df: pd.DataFrame, now_ms: Optional[int] = None) -> pd.DataFrame:
-    """Keep only daily bars whose close is already in the past (no forming bar)."""
-    now_ms = (
-        int(now_ms)
-        if now_ms is not None
-        else int(datetime.now(timezone.utc).timestamp() * 1000)
-    )
-    times = df["time"].astype("int64")
-    return df.loc[times + DAY_MS <= now_ms].reset_index(drop=True)
 
 
 def load_ohlc_csv(path: str) -> Optional[pd.DataFrame]:

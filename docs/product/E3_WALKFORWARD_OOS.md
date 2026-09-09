@@ -94,6 +94,10 @@ max_trade_share      0.083
 Public history is supplied as a local CSV (`evidence/e3/btcusdt_1d.csv` or
 `E3_OHLC_CSV`). The harness never embeds mainnet hosts (P0 bypass scan).
 
+E4 later unified production HTF construction onto the same closed-daily
+clock rule. That package did **not** retune E2 constants or rewrite this
+verdict (`excess_btc = +0.0338021862`).
+
 ## Explicit non-goals
 
 - Retuning E2 after seeing numbers

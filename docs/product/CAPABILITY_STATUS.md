@@ -79,7 +79,7 @@ EXECUTE_AUTHORIZED            FALSE
 EXECUTION AUTHORIZATION       NOT ISSUED
 REAL WRITE PATH               DENIED
 NEXT STAGE                    HOLD（无 AUTO TESTNET / 无 LIVE / 无未发令工作包）
-STRATEGY V2 / BACKTEST        V2 CLOSED-OFFLINE / E3 CLOSED-OFFLINE
+STRATEGY V2 / BACKTEST        V2 / E3 / E4 CLOSED-OFFLINE
 PASS-2 / THIRD SESSION        HOLD / DENIED
 E0 ACCOUNTING TRUTH           CLOSED-OFFLINE
   FILLS → PNL → CAPITAL       PASS
@@ -117,7 +117,15 @@ E3 WALK-FORWARD/OOS           CLOSED-OFFLINE
   VERDICT                     EDGE_PASS_OFFLINE
   NO OOS RETUNE               已遵守：看到数字后未回写 E2 / E1 常数
 E3 ≠ LIVE                     离线 OOS ≠ AUTO TESTNET ≠ 实盘资格
-                              仍是写盘前门 ≠ legacy dead-man
+E4 RUNTIME PARITY             CLOSED-OFFLINE
+  HTF SOURCE                  closed_daily_bars（时钟剔形成中 bar，不盲丢末根）
+  LOOKBACK                    HORIZON_FETCH_LIMIT=1500
+  DIRECTIVE                   与 E3 同一已收盘日线前缀 → 同一 overlay action
+  1M                          不能单独武装 overlay
+  PAPER CYCLE                 仍禁止
+  E3 VERDICT                  未改写（excess_btc +0.0338021862 / 58 trades）
+E4 ≠ LIVE                     裁决对等 ≠ AUTO TESTNET ≠ 实盘资格
+WRITE FRONT DOOR              EXECUTE_AUTHORIZED ≠ legacy dead-man
 CTR-20260908-01               STOP AT P2 / NO EXCHANGE WRITE
 EXECUTION AUTHORIZATION       NOT ISSUED
 SCOPED PERMIT                 VOIDED（该 session）
@@ -136,7 +144,7 @@ P0-GOVERNANCE-REPAIR          CLOSED          f0efb2b
   GATE-2  production_main → cannot bypass incident governance
   GATE-3  incident authority missing/unreadable/invalid → UNKNOWN
           → deny boot → never synthesize CLEAR
-OFFLINE REGRESSION            508 PASS
+OFFLINE REGRESSION            516 PASS
 REAL EXCHANGE WRITES          0
 EXECUTE_AUTHORIZED            FALSE
 INCIDENT KILL / LOCK          ACTIVE
@@ -219,4 +227,6 @@ E1 已 CLOSED-OFFLINE（风险语义冻结；**不等于策略 edge 证据**）�
 E2 已 CLOSED-OFFLINE（BTC 本位身份冻结；**不等于 excess BTC 证据**）。
 E3 已 CLOSED-OFFLINE（冻结 V2 vs BTC HODL；`EDGE_PASS_OFFLINE` /
 `STRATEGY EDGE = OFFLINE-OOS-ONLY`；**仍不等于 AUTO TESTNET / LIVE**）。
+E4 已 CLOSED-OFFLINE（生产 overlay 裁决与 E3 对同一已收盘日线一致；
+**仍不等于 AUTO TESTNET / LIVE**）。
 下一阶段：HOLD。未发令不得开新工作包、不得因 OOS 回写 E2。

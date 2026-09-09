@@ -64,5 +64,7 @@ Exchange writes: 0
 - 因 E3 数字回写本包参数
 
 E3 已 CLOSED-OFFLINE。第一原则已遵守：看到 OOS 后未改本包常数。
-Walk-forward 数字见 `docs/product/E3_WALKFORWARD_OOS.md` 与
-`evidence/e3/verdict.json`。
+Walk-forward 数字见 `docs/product/E3_WALKFORWARD_OOS.md`。
+E4 已把生产 HTF 看回接到同一已收盘日线口径（见
+`docs/product/E4_RUNTIME_PARITY.md`）；ADX / overlay size / risk-budget
+仍是本包冻结值。

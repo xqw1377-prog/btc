@@ -29,7 +29,11 @@ from aurora.risk_semantics import (
     fetch_funding_rate,
     qty_from_authorized_intent,
 )
-from aurora.strategy_v2 import decide_overlay, horizon_from_frame
+from aurora.strategy_v2 import (
+    HORIZON_FETCH_LIMIT,
+    decide_overlay,
+    horizon_from_frame,
+)
 from aurora.signal_providers import (
     BreakoutSignalProvider,
     MeanReversionSignalProvider,
@@ -164,7 +168,7 @@ class TradingCycle:
         rows = self.client.futures_klines(symbol=self.symbol, interval="1m", limit=limit)
         return klines_to_frame(rows)
 
-    def fetch_horizon_klines(self, limit: int = 120) -> Optional[pd.DataFrame]:
+    def fetch_horizon_klines(self, limit: int = HORIZON_FETCH_LIMIT) -> Optional[pd.DataFrame]:
         """Read-only daily bars for Strategy V2. Failure → incomplete HTF, not a write."""
         try:
             rows = self.client.futures_klines(
@@ -173,7 +177,14 @@ class TradingCycle:
         except Exception:
             return None
 
-    def decide(self, df: pd.DataFrame) -> Dict[str, Any]:
+    def overlay_directive(self, overlay_open: Optional[bool] = None, now_ms: Optional[int] = None):
+        """Same HTF thesis E3 uses. 1m bars are not consulted."""
+        raw = self.fetch_horizon_klines()
+        if overlay_open is None:
+            overlay_open = self.brain.position_mgr.position.is_open
+        return decide_overlay(horizon_from_frame(raw, self.features, now_ms=now_ms), overlay_open)
+
+    def decide(self, df: pd.DataFrame, now_ms: Optional[int] = None) -> Dict[str, Any]:
         feats = self.features.get_latest_features(df, exclude_forming=True)
         if not feats or not feats.get("close"):
             return {"action": "HOLD", "reason": "no closed-bar features", "intent": None, "features": feats}
@@ -191,9 +202,7 @@ class TradingCycle:
             self.momentum.generate(feats),
             self.mr.generate(feats),
         ]
-        horizon = horizon_from_frame(self.fetch_horizon_klines(), self.features)
-        directive = decide_overlay(
-            horizon, overlay_open=self.brain.position_mgr.position.is_open)
+        directive = self.overlay_directive(now_ms=now_ms)
         funding_rate = fetch_funding_rate(self.client, self.symbol)
         if funding_rate is None:
             funding_rate = 0.0
@@ -223,6 +232,7 @@ class TradingCycle:
             "bar_id": bar_id,
             "bar_status": regime.get("bar_status"),
             "strategy": {
+                "action": directive.action,
                 "sleeve": directive.sleeve,
                 "thesis": directive.thesis,
                 "htf_complete": directive.htf_complete,
