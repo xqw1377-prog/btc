@@ -1,0 +1,130 @@
+{
+  "close_result": {
+    "close_outcome": "CONFIRMED",
+    "intent_id": "AURORA-CLOSE-59a67284d0c8",
+    "state": "RECONCILED",
+    "success": true
+  },
+  "cycles": [
+    {
+      "action": "OPEN",
+      "at": "2026-09-10T01:02:50.751072+00:00",
+      "cycle": 1,
+      "kill_engaged": false,
+      "reason": "HTF daily bullish; optional perp overlay vs BTC HODL",
+      "recover_unresolved": false,
+      "submitted": true
+    },
+    {
+      "action": "HOLD",
+      "at": "2026-09-10T01:03:22.522290+00:00",
+      "cycle": 2,
+      "kill_engaged": false,
+      "reason": "HTF thesis intact; maintain overlay",
+      "recover_unresolved": false,
+      "submitted": false
+    },
+    {
+      "action": "HOLD",
+      "at": "2026-09-10T01:03:54.326562+00:00",
+      "cycle": 3,
+      "kill_engaged": false,
+      "reason": "HTF thesis intact; maintain overlay",
+      "recover_unresolved": false,
+      "submitted": false
+    },
+    {
+      "action": "HOLD",
+      "at": "2026-09-10T01:04:26.112796+00:00",
+      "cycle": 4,
+      "kill_engaged": false,
+      "reason": "HTF thesis intact; maintain overlay",
+      "recover_unresolved": false,
+      "submitted": false
+    },
+    {
+      "action": "HOLD",
+      "at": "2026-09-10T01:04:57.818534+00:00",
+      "cycle": 5,
+      "kill_engaged": false,
+      "reason": "HTF thesis intact; maintain overlay",
+      "recover_unresolved": false,
+      "submitted": false
+    },
+    {
+      "action": "HOLD",
+      "at": "2026-09-10T01:05:29.782587+00:00",
+      "cycle": 6,
+      "kill_engaged": false,
+      "reason": "HTF thesis intact; maintain overlay",
+      "recover_unresolved": false,
+      "submitted": false
+    },
+    {
+      "action": "HOLD",
+      "at": "2026-09-10T01:06:01.517594+00:00",
+      "cycle": 7,
+      "kill_engaged": false,
+      "reason": "HTF thesis intact; maintain overlay",
+      "recover_unresolved": false,
+      "submitted": false
+    },
+    {
+      "action": "HOLD",
+      "at": "2026-09-10T01:06:33.369746+00:00",
+      "cycle": 8,
+      "kill_engaged": false,
+      "reason": "HTF thesis intact; maintain overlay",
+      "recover_unresolved": false,
+      "submitted": false
+    },
+    {
+      "action": "HOLD",
+      "at": "2026-09-10T01:07:05.278486+00:00",
+      "cycle": 9,
+      "kill_engaged": false,
+      "reason": "HTF thesis intact; maintain overlay",
+      "recover_unresolved": false,
+      "submitted": false
+    },
+    {
+      "action": "HOLD",
+      "at": "2026-09-10T01:07:36.974286+00:00",
+      "cycle": 10,
+      "kill_engaged": false,
+      "reason": "HTF thesis intact; maintain overlay",
+      "recover_unresolved": false,
+      "submitted": false
+    }
+  ],
+  "cycles_run": 10,
+  "end_at": "2026-09-10T01:07:38.510949+00:00",
+  "final_kill": {
+    "engaged": 0,
+    "engaged_at": null,
+    "id": 1,
+    "reason": ""
+  },
+  "final_position_fact": {
+    "note": "closed by AURORA-CLOSE-59a67284d0c8",
+    "qty": 0.0,
+    "side": "FLAT",
+    "source": "INDEPENDENT_CLOSE",
+    "state": "KNOWN_FLAT",
+    "symbol": "BTCUSDT",
+    "updated_at": "2026-09-10T01:07:38.503829+00:00"
+  },
+  "final_recover_unresolved": [],
+  "incident_digest_after": "d0b4e3f7e1ddc56471d97c38e69b5cde9a0d50638a969e0bbd59585252f65ae8",
+  "incident_digest_before": "d0b4e3f7e1ddc56471d97c38e69b5cde9a0d50638a969e0bbd59585252f65ae8",
+  "incident_ledger_unchanged": true,
+  "max_cycles": 10,
+  "max_qty": 0.001,
+  "max_runtime_sec": 300,
+  "schema": "t3-session-report-v1",
+  "session_id": "T3-20260910-02",
+  "session_ledger": "/Users/xinquanwang/AURORA/state/testnet/3fbc5d4f1f9ddc7d/t3/T3-20260910-02/ledger.db",
+  "start_at": "2026-09-10T01:02:47.983119+00:00",
+  "stop_reason": "max_cycles",
+  "success": true
+}

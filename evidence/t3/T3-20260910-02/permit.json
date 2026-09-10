@@ -1,0 +1,19 @@
+{
+  "account_fingerprint": "3fbc5d4f1f9ddc7d",
+  "cycle_interval_sec": 30,
+  "cycles_used": 10,
+  "env": "TESTNET",
+  "expires_at": "2026-09-10T02:02:33.197458+00:00",
+  "issued_at": "2026-09-10T01:02:33.197458+00:00",
+  "issued_by": "xinquanwang",
+  "max_cycles": 10,
+  "max_notional_usdt": 120.0,
+  "max_qty": 0.001,
+  "max_runtime_sec": 300,
+  "schema": "t3-permit-v1",
+  "session_id": "T3-20260910-02",
+  "side": "LONG",
+  "single_use": false,
+  "symbol": "BTCUSDT",
+  "voided": false
+}

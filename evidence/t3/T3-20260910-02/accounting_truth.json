@@ -1,0 +1,20 @@
+{
+  "closed_trade_count": 0,
+  "drawdown": 6.2542e-06,
+  "equity": 4999.57603613,
+  "fill_count": 1,
+  "funding_incomplete": false,
+  "funding_net": -0.19344641,
+  "funding_paid": 0.19344641,
+  "gross_realized_pnl": 0.0,
+  "initial_capital": 4999.80075254,
+  "last_applied_fill_id": "536271301",
+  "last_fill_id": "536271301",
+  "ledger_path": "/Users/xinquanwang/AURORA/state/testnet/3fbc5d4f1f9ddc7d/t3/T3-20260910-02/ledger.db",
+  "net_pnl": -0.22471641,
+  "peak_equity": 4999.80075254,
+  "rebuilt_at": "2026-09-10T01:07:36.443285+00:00",
+  "schema": "accounting-truth-v1",
+  "source": "ledger_rebuild",
+  "total_fees": 0.03127
+}

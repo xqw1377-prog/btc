@@ -1,0 +1,21 @@
+{
+  "account_fingerprint": "3fbc5d4f1f9ddc7d",
+  "closed_at": "2026-09-10T01:07:38.510379+00:00",
+  "closed_reason": "max_cycles",
+  "env": "TESTNET",
+  "expires_at": "2026-09-10T02:02:33.197458+00:00",
+  "issued_at": "2026-09-10T01:02:33.197458+00:00",
+  "issued_by": "xinquanwang",
+  "schema": "t3-start-order-v1",
+  "scope": {
+    "cycle_interval_sec": 30,
+    "max_cycles": 10,
+    "max_notional_usdt": 120.0,
+    "max_qty": 0.001,
+    "max_runtime_sec": 300
+  },
+  "session_id": "T3-20260910-02",
+  "side": "LONG",
+  "status": "CLOSED",
+  "symbol": "BTCUSDT"
+}
