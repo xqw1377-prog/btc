@@ -47,7 +47,8 @@ from aurora.safety import build_client
 from aurora.trading_cycle import TradingCycle
 
 
-T3_EXECUTE_AUTHORIZED = False
+# arm: T3-20260910-02 TESTNET smoke for T3-R1 convergence validation.
+T3_EXECUTE_AUTHORIZED = True
 T3_CLIENT_ID_NS = "AURORA-T3-"
 T3_PERMIT_SCHEMA = "t3-permit-v1"
 T3_START_ORDER_SCHEMA = "t3-start-order-v1"
