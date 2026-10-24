@@ -171,6 +171,16 @@ DASHBOARD OBSERVATORY
   D1.5 / D1.6 / D2            HOLD
 STRATEGY V2 / BACKTEST        V2 / E3 / E4 CLOSED-OFFLINE
 
+W43 OFFLINE ABSORPTION = SELF-VERIFIED / REVIEW-PENDING（复验收紧已并入：
+  成交身份冲突告警同ID不同内容 raise；A1 跨真实进程重启 submit=1 已证；
+  funding Decimal/原始串/分资产/窗口完整性 PARTIAL_LATE 语义；-1125
+  分类限定订单操作域；假件 diff 存证 evidence/w43/）
+USER-STREAM RECOVERY   = NOT IMPLEMENTED（A2 仅为 REST 替代性约束）
+FUNDING INGESTION      = MODULE IMPLEMENTED / NOT INTEGRATED（E0/D2 待办）
+HEDGE DUAL-LEG         = FAIL-CLOSED / NOT FULLY SUPPORTED
+TRADING AUTHORITY      = UNCHANGED
+HYPOTHESIS             = PINNED 6.141.1（requirements-dev 锁定；
+  镜像不可达 6.170.8；不涉及该回归场景；0 skipped ≠ 生成空间充分）
 EXTERNAL DIGEST 2026-W43         ABSORBED（测试+状态机约束；零交易依赖变更）
   A1 NT#5375 未知提交重启归属：原 ID 查询/外部归属成交→ORPHAN 熔断
      /绝不铸造新 ENTRY ID（tests/test_external_digest_w43.py）

@@ -146,6 +146,10 @@ PENDING_ORDER_STATES = (
 )
 
 
+class FillIdentityConflict(Exception):
+    """同一 fill_id 以不同内容重放——身份冲突，必须告警。"""
+
+
 class Ledger:
     def __init__(self, path: str):
         self.path = path
@@ -356,7 +360,13 @@ class Ledger:
         synthetic: bool = False, replaces_synthetic_fill_id: Optional[str] = None,
         covered_by_fact_id: Optional[str] = None, economic_effect_applied: bool = True,
     ) -> bool:
-        """幂等入账：fill_id 已存在返回 False，不重复记账。"""
+        """幂等入账：fill_id 已存在且内容一致返回 False（不重复记账）。
+
+        W43 复审收紧：同一 fill_id 以**不同内容**（qty/price/side/
+        client_order_id）再次到达 = 身份冲突，抛 FillIdentityConflict
+        告警——绝不静默忽略。fill_id 的作用域由账本的物理命名空间
+        state/<mode>/<fingerprint>/ 结构性保证（账户+环境隔离）。
+        """
         try:
             with self._conn:
                 self._conn.execute(
@@ -370,6 +380,20 @@ class Ledger:
                      covered_by_fact_id, int(economic_effect_applied)),
                 )
         except sqlite3.IntegrityError:
+            existing = self._conn.execute(
+                "SELECT client_order_id, qty, price, side FROM fills"
+                " WHERE fill_id = ?", (fill_id,)).fetchone()
+            if existing is not None and (
+                    existing["client_order_id"] != client_order_id
+                    or abs(float(existing["qty"]) - float(qty)) > 1e-12
+                    or abs(float(existing["price"]) - float(price)) > 1e-9
+                    or existing["side"] != side):
+                raise FillIdentityConflict(
+                    f"fill_id {fill_id!r} re-observed with different content: "
+                    f"stored=(cid={existing['client_order_id']}, "
+                    f"qty={existing['qty']}, price={existing['price']}, "
+                    f"side={existing['side']}) incoming=(cid={client_order_id}, "
+                    f"qty={qty}, price={price}, side={side})")
             return False
         return True
 

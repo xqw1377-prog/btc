@@ -1,0 +1,39 @@
+diff --git a/tests/test_g04b_contracts.py b/tests/test_g04b_contracts.py
+index 7436755..e4801de 100644
+--- a/tests/test_g04b_contracts.py
++++ b/tests/test_g04b_contracts.py
+@@ -112,7 +112,7 @@ class ProtectionQuantityTruthTests(unittest.TestCase):
+     def test_execution_qty_drift_does_not_pick_min_or_max(self):
+         self._tmp, _, self.exchange, self.ledger, self.orch = _boot()
+         self.exchange.ack_executed_qty = 0.0
+-        self.exchange.seed_external_position(-0.002, 100.0)
++        self.exchange.seed_external_position(-0.002, 100.0, leg="LONG")
+         opened = self.orch.open_position(
+             "LONG", 0.007, intent_id="DRIFT",
+             stop_price=99.0, take_profit_price=101.0)
+diff --git a/tests/test_g04c_contracts.py b/tests/test_g04c_contracts.py
+index 661cfa1..24443ce 100644
+--- a/tests/test_g04c_contracts.py
++++ b/tests/test_g04c_contracts.py
+@@ -187,7 +187,7 @@ class ProtectionRecoveryTests(LifecycleHarness):
+     def test_M6_position_reduction_rebuilds_protection(self):
+         self._boot()
+         self.orch.open_position("LONG", 0.007, intent_id="C6red")
+-        self.exchange.seed_external_position(-0.002, 100.0)  # 外部/手工减仓
++        self.exchange.seed_external_position(-0.002, 100.0, leg="LONG")  # 外部/手工减仓
+         report = self.orch.recover()
+         self.assertEqual(
+             self.ledger.get_intent("C6red")["state"], IntentState.PROTECTED.value)
+diff --git a/tests/test_p0c_gates.py b/tests/test_p0c_gates.py
+index 22496a7..b062531 100644
+--- a/tests/test_p0c_gates.py
++++ b/tests/test_p0c_gates.py
+@@ -324,7 +324,7 @@ class G4AlgoLegNotAutoFill(KernelHarness):
+                     orch.recover()
+                     self.assertTrue(orch.open_position(
+                         "LONG", 0.01, intent_id="flat-algo")["success"])
+-                    exchange.seed_external_position(-0.01, 100.0)
++                    exchange.flatten_without_fill()
+                     exchange._orders["flat-algo-SL"]["status"] = status
+                     for _ in range(3):
+                         report = orch.recover()
