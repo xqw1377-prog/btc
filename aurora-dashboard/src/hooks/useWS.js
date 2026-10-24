@@ -52,6 +52,7 @@ export default function useWS() {
     meta: { status: 'unknown', source: 'EXCHANGE_READONLY', updatedAt: null }
   });
   const [connected, setConnected] = useState(false);
+  const [observatory, setObservatory] = useState(null);
 
   const handleSystemUpdate = useCallback((data) => {
     setSystem(prev => ({ ...prev, ...data }));
@@ -75,16 +76,18 @@ export default function useWS() {
     }
   }, []);
 
-  const handleTradeUpdate = useCallback((data) => {
-    setTrades(prev => ({ ...prev, items: [data, ...prev.items].slice(0, 20) }));
-  }, []);
-
   const handleTradesUpdate = useCallback((data) => {
     if (Array.isArray(data)) {
       // 旧 list envelope 没有 freshness metadata，不能把收到数组等同于 fresh。
       setTrades(prev => ({ ...prev, items: data }));
     } else if (data && Array.isArray(data.items)) {
       setTrades({ items: data.items, meta: data.meta || { status: 'unknown' } });
+    }
+  }, []);
+
+  const handleObservatoryUpdate = useCallback((data) => {
+    if (data && typeof data === 'object') {
+      setObservatory(data);
     }
   }, []);
 
@@ -109,8 +112,8 @@ export default function useWS() {
     wsClient.on('risk', handleRiskUpdate);
     wsClient.on('score', handleScoreUpdate);
     wsClient.on('pnl', handlePnlUpdate);
-    wsClient.on('trade', handleTradeUpdate);
     wsClient.on('trades', handleTradesUpdate);
+    wsClient.on('observatory', handleObservatoryUpdate);
 
     return () => {
       wsClient.off('open', handleOpen);
@@ -120,10 +123,10 @@ export default function useWS() {
       wsClient.off('risk', handleRiskUpdate);
       wsClient.off('score', handleScoreUpdate);
       wsClient.off('pnl', handlePnlUpdate);
-      wsClient.off('trade', handleTradeUpdate);
       wsClient.off('trades', handleTradesUpdate);
+      wsClient.off('observatory', handleObservatoryUpdate);
     };
-  }, [handleSystemUpdate, handleMarketUpdate, handleRiskUpdate, handleScoreUpdate, handlePnlUpdate, handleTradeUpdate, handleTradesUpdate]);
+  }, [handleSystemUpdate, handleMarketUpdate, handleRiskUpdate, handleScoreUpdate, handlePnlUpdate, handleTradesUpdate, handleObservatoryUpdate]);
 
   return {
     system,
@@ -132,6 +135,7 @@ export default function useWS() {
     score,
     pnlData,
     trades,
+    observatory,
     connected
   };
 }

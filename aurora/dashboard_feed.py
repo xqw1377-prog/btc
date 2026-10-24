@@ -29,6 +29,9 @@ from typing import Any, Dict, Iterable, List, Optional, Set
 
 from aurora.feature_engine import FeatureEngine
 from aurora.market_state_engine_v2 import MarketStateEngineV2
+from aurora.funding_truth import fetch_funding_snapshot
+from aurora.observatory_snapshots import build_observatory_bundle
+from aurora.trend_truth import fetch_klines_by_tf
 from aurora.p0_boundary import RunMode, SafetyViolation, resolve_mode
 from aurora.safety import read_only_client
 
@@ -38,6 +41,8 @@ READ_METHODS = frozenset({
     "futures_klines",
     "futures_account",
     "futures_account_trades",
+    "futures_mark_price",
+    "futures_funding_rate",
 })
 
 _SECRET_KEY_MARKS = (
@@ -157,6 +162,12 @@ class DashboardFeed:
         }
         self.pnl_data: list = []
         self.trade_data: list = []
+        self.btc_klines_by_tf: Dict[str, list] = {}
+        self.eth_klines_by_tf: Dict[str, list] = {}
+        self.btc_funding: Dict[str, Any] = {}
+        self.eth_funding: Dict[str, Any] = {}
+        self.observatory: Dict[str, Any] = {}
+        self.eth_btc_allocation_previous: Dict[str, Any] = {}
 
     # ---- 元数据与输出包封 ----
 
@@ -199,6 +210,7 @@ class DashboardFeed:
             json.dumps({"type": "pnl", "payload": self.pnl_data}),
             json.dumps({"type": "score", "payload": 0}),
             self._envelope("trades", "trades", self._trades_payload()),
+            json.dumps({"type": "observatory", "payload": self.observatory}),
         ):
             await websocket.send(msg)
 
@@ -273,6 +285,23 @@ class DashboardFeed:
         self.market_data["regime"] = market_state.get("regime", "TRANSITION")
         self.market_data["confidence"] = market_state.get("confidence", 0)
 
+        self.btc_klines_by_tf = fetch_klines_by_tf(self.client, "BTCUSDT")
+        self.market_data["klines3m"] = self.btc_klines_by_tf.get("3m") or []
+
+        try:
+            self.eth_klines_by_tf = fetch_klines_by_tf(self.client, "ETHUSDT")
+        except Exception:
+            self.eth_klines_by_tf = {}
+
+        # Funding is fetched inside a successful market cycle — treat as ok here;
+        # meta["market"] is still pre-ok until _run_fetch returns.
+        self.btc_funding = fetch_funding_snapshot(
+            self.client, "BTCUSDT", market_freshness="ok",
+        )
+        self.eth_funding = fetch_funding_snapshot(
+            self.client, "ETHUSDT", market_freshness="ok",
+        )
+
     def fetch_account_data(self):
         account = self.client.futures_account()
         balance = 0.0
@@ -336,6 +365,41 @@ class DashboardFeed:
         else:
             self.risk_data["status"] = "SAFE"
 
+    def _has_eth_allocation(self) -> bool:
+        for asset in self.account_data.get("assets") or []:
+            if (asset.get("asset") or "").upper() != "ETH":
+                continue
+            wallet = float(asset.get("walletBalance") or 0)
+            if wallet > 0:
+                return True
+        return False
+
+    def build_observatory(self):
+        from aurora.ops_controlled_requal import EXECUTE_AUTHORIZED
+
+        self.observatory = build_observatory_bundle(
+            btc_klines_by_tf=self.btc_klines_by_tf,
+            eth_klines_by_tf=self.eth_klines_by_tf,
+            btc_funding=self.btc_funding,
+            eth_funding=self.eth_funding,
+            account_data=self.account_data,
+            risk_data=self.risk_data,
+            account_meta=self._meta_block("account"),
+            market_meta=self._meta_block("market"),
+            mode=self.mode.value,
+            execute_authorized=bool(EXECUTE_AUTHORIZED),
+            previous_eth_btc_allocation=self.eth_btc_allocation_previous,
+            has_eth_allocation=self._has_eth_allocation(),
+        )
+        alloc = (self.observatory.get("eth_btc") or {}).get("allocation")
+        if alloc:
+            self.eth_btc_allocation_previous = {
+                "state": alloc.get("state"),
+                "allocation_signal": alloc.get("allocation_signal"),
+                "state_transition_key": alloc.get("state_transition_key"),
+                "rearm_state": alloc.get("rearm_state"),
+            }
+
     def update_pnl_history(self):
         # 账户段未成功采集时，不写入由旧值拼出的假净值点。
         if self.meta["account"]["status"] != "ok":
@@ -379,12 +443,14 @@ class DashboardFeed:
             self._run_fetch("risk", self.fetch_risk_data)
             self._run_fetch("trades", self.fetch_trades)
             self.update_pnl_history()
+            self.build_observatory()
             try:
                 await self.broadcast(self._envelope("market", "market", self.market_data))
                 await self.broadcast(self._envelope("system", "account", self._system_payload()))
                 await self.broadcast(self._envelope("risk", "risk", self.risk_data))
                 await self.broadcast(json.dumps({"type": "pnl", "payload": self.pnl_data}))
                 await self.broadcast(self._envelope("trades", "trades", self._trades_payload()))
+                await self.broadcast(json.dumps({"type": "observatory", "payload": self.observatory}))
                 score = int((self.market_data.get("confidence") or 0) * 100)
                 await self.broadcast(json.dumps({"type": "score", "payload": score}))
                 print(

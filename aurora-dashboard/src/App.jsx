@@ -1,123 +1,104 @@
-import KLineChart from './components/KLineChart';
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
-  CapitalObjective,
-  DataFreshness,
-  GlobalSafety,
-  MarketEvidence,
-  ObservedRisk,
-  PositionTruth,
-  ProtectionTruth,
-  RecoveryEvidence,
-  TradeObservations,
-  AccountAssets,
-  zhLabel,
-} from './components/ObservatoryPanels';
-import useWS from './hooks/useWS';
+  AnalysisRow,
+  DecisionBrain,
+  GlobalBar,
+  OperationsRow,
+} from "./cockpit/CockpitPanels";
+import { SCENARIOS, scenarioById } from "./cockpit/fixtures";
+import { sceneFromFeed } from "./cockpit/sceneFromFeed";
+import useWS from "./hooks/useWS";
+import PrototypeDock from "./prototype/PrototypeDock";
 
-const POLICY_SNAPSHOT = Object.freeze({
-  incidentLock: 'INCIDENT_LOCKED',
-  kill: 'ACTIVE',
-  executionQualified: false,
-  autoTestnet: 'DENIED',
-  live: 'NO_GO',
-  authority: '内部权威 · 静态快照',
-  source: '能力台账',
-  baseline: '8026c69',
-});
+const OBSERVE_ID = "observe";
+
+function parseHash() {
+  const raw = window.location.hash.replace("#", "");
+  const [id] = raw.split("/");
+  if (id === OBSERVE_ID || id === "live") return { id: OBSERVE_ID, diag: false };
+  return {
+    id: SCENARIOS.some((s) => s.id === id) ? id : "disconnected",
+    diag: false,
+  };
+}
+
+function useScenario() {
+  const [scenarioId, setScenarioId] = useState(() => parseHash().id);
+  const writeHash = useCallback((id) => {
+    if (window.location.hash.replace("#", "") !== id) {
+      window.location.hash = id;
+    }
+  }, []);
+  const setScenario = useCallback(
+    (id) => {
+      setScenarioId(id);
+      writeHash(id);
+    },
+    [writeHash],
+  );
+  useEffect(() => {
+    const onHash = () => setScenarioId(parseHash().id);
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+  }, []);
+  return [scenarioId, setScenario];
+}
 
 function App() {
-  const { system, market, risk, score, pnlData, trades, connected } = useWS();
-  const accountMeta = system.meta || {};
-  const marketMeta = market.meta || {};
-  const riskMeta = risk.meta || {};
-  const tradesMeta = trades.meta || {};
-  const tradeRows = Array.isArray(trades.items) ? trades.items : [];
+  const [scenarioId, setScenario] = useScenario();
+  const [focus, setFocus] = useState(null);
+  const isObserve = scenarioId === OBSERVE_ID;
+  const { observatory, connected, market, system } = useWS();
 
-  const freshnessSections = [
-    { name: '交易所账户', meta: accountMeta },
-    { name: '行情K线', meta: marketMeta },
-    { name: '风险观察', meta: riskMeta },
-    { name: '用户成交', meta: tradesMeta },
-    { name: '内核账本', meta: { status: 'unknown', source: 'NOT CONNECTED', updatedAt: null } },
-  ];
+  const scene = useMemo(() => {
+    if (isObserve) {
+      return sceneFromFeed({
+        observatory,
+        connected,
+        marketMeta: market.meta,
+        accountMeta: system.meta,
+      });
+    }
+    return scenarioById(scenarioId);
+  }, [isObserve, observatory, connected, market.meta, system.meta, scenarioId]);
+
+  const handleCardSelect = useCallback((id) => {
+    setFocus((prev) => (prev === id ? null : id));
+  }, []);
+
+  useEffect(() => {
+    if (!focus) return undefined;
+    const timer = window.setTimeout(() => setFocus(null), 2500);
+    return () => window.clearTimeout(timer);
+  }, [focus]);
+
+  useEffect(() => {
+    const onKey = (event) => {
+      if (event.metaKey || event.ctrlKey || event.altKey) return;
+      if (event.key >= "1" && event.key <= "5") {
+        const next = SCENARIOS[Number(event.key) - 1];
+        if (next) setScenario(next.id);
+      }
+      if (event.key === "6" || event.key === "o" || event.key === "O") {
+        setScenario(OBSERVE_ID);
+      }
+      if (event.key === "Escape") setFocus(null);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [setScenario]);
 
   return (
-    <div className="observatory-shell">
-      <a className="skip-link" href="#main-content">跳到主要内容</a>
-      <GlobalSafety policy={POLICY_SNAPSHOT} system={system} connected={connected} />
-
-      <main id="main-content" className="observatory-main">
-        <div className="section-intro">
-          <div>
-            <div className="eyebrow">运行真相优先</div>
-            <h2>运行真相总览</h2>
-          </div>
-          <p>先确认授权、仓位、保护与恢复证据，再观察资本与市场。此界面不提供任何交易写能力。</p>
+    <div className="cockpit-shell">
+      <GlobalBar scene={scene} />
+      <div className="cockpit-body">
+        <DecisionBrain scene={scene} focus={focus} onCardSelect={handleCardSelect} />
+        <div className="cockpit-right">
+          <AnalysisRow scene={scene} focus={focus} />
+          <OperationsRow scene={scene} focus={focus} />
         </div>
-
-        <div className="dashboard-grid primary-grid">
-          <PositionTruth system={system} />
-          <ProtectionTruth system={system} />
-          <RecoveryEvidence policy={POLICY_SNAPSHOT} />
-        </div>
-
-        <div className="dashboard-grid capital-grid">
-          <CapitalObjective />
-          <AccountAssets account={system} />
-          <DataFreshness sections={freshnessSections} connected={connected} />
-        </div>
-
-        <div className="section-intro secondary-intro">
-          <div>
-            <div className="eyebrow">观察 · 无执行权限</div>
-            <h2>市场与账户观察</h2>
-          </div>
-          <p>以下数据不生成交易许可；查询失败时保持未知，不以零值或空列表替代。</p>
-        </div>
-
-        <div className="dashboard-grid evidence-grid">
-          <section className="panel chart-panel">
-            <header className="panel-header">
-              <div>
-                <div className="eyebrow">L2 · 交易所行情观察</div>
-                <h2>BTCUSDT · 1 分钟</h2>
-              </div>
-              <span className="read-only-label">只读</span>
-            </header>
-            <div className="source-meta">
-              <span>{zhLabel(marketMeta.source) || '来源未知'}</span>
-              <span>·</span>
-              <span>{zhLabel((marketMeta.status || 'UNKNOWN').toUpperCase())}</span>
-              <span>·</span>
-              <span>{marketMeta.updatedAt ? new Date(marketMeta.updatedAt).toLocaleTimeString('zh-CN', { hour12: false }) : '无时间戳'}</span>
-            </div>
-            <div className="panel-body chart-body">
-              <KLineChart marketData={market} />
-            </div>
-          </section>
-          <MarketEvidence market={market} score={score} />
-          <ObservedRisk risk={risk} />
-        </div>
-
-        <TradeObservations trades={tradeRows} meta={tradesMeta} />
-
-        <section className="evidence-disclaimer" aria-label="观察面限制">
-          <div className="disclaimer-index">边界</div>
-          <div>
-            <strong>交易所观察 ≠ 账本对账 ≠ 执行资格</strong>
-            <p>
-              当前前台未接入内核投影。PnL 历史仅是当前会话中、账户快照成功时采集的未实现盈亏观察，
-              共 {Array.isArray(pnlData) ? pnlData.length : 0} 个数据点，不构成资本绩效证明。
-            </p>
-          </div>
-        </section>
-      </main>
-
-      <footer className="observatory-footer">
-        <span>AURORA · 资本与安全观察台</span>
-        <span>只读观察面</span>
-        <span>实盘 · 禁止</span>
-      </footer>
+      </div>
+      <PrototypeDock scenarioId={scenarioId} onScenario={setScenario} diagnosticOpen={false} onDiagnostic={() => {}} hideDiagnostic />
     </div>
   );
 }

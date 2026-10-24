@@ -1,420 +1,259 @@
-// 状态徽章：底层值保持后端英文枚举（逻辑判断不受影响），显示层映射中文。
-const STATUS_MAP = {
-  PASS: 'verified',
-  VERIFIED: 'verified',
-  OK: 'verified',
-  ACTIVE: 'danger',
-  INCIDENT_LOCKED: 'danger',
-  NO_GO: 'danger',
-  DENIED: 'danger',
-  DRIFT: 'danger',
-  UNKNOWN: 'unknown',
-  STALE: 'unknown',
-  NOT_VERIFIED: 'unknown',
-  NOT_AVAILABLE: 'neutral',
-  NOT_OBSERVED: 'unknown',
-};
-
 const ZH_LABELS = {
-  PASS: '通过',
-  VERIFIED: '已验证',
-  OK: '正常',
-  ACTIVE: '已生效',
-  INCIDENT_LOCKED: '事故锁定',
-  NO_GO: '禁止',
-  DENIED: '已拒绝',
-  DRIFT: '漂移',
-  UNKNOWN: '未知',
-  STALE: '已过期',
-  NOT_VERIFIED: '未核验',
-  NOT_AVAILABLE: '不可用',
-  NOT_OBSERVED: '未观测',
-  FLAT: '空仓',
-  OPEN: '持仓中',
-  QUALIFIED: '合格',
-  NOT_QUALIFIED: '不合格',
-  SAFE: '安全',
-  WARNING: '警告',
-  DANGER: '危险',
-  LONG: '做多',
-  SHORT: '做空',
-  EXCHANGE: '交易所',
-  EXCHANGE_READONLY: '交易所只读',
-  SOURCE_UNKNOWN: '来源未知',
-  'NOT CONNECTED': '未连接',
-  NOT_CONNECTED: '未连接',
-  'NO TIMESTAMP': '无时间戳',
-  NO_TIMESTAMP: '无时间戳',
-  TRANSITION: '过渡',
-  TREND: '趋势',
-  RANGE: '震荡',
-  DRAWDOWN_LE2: '回撤 ≤ 2%',
-  DRAWDOWN_2_5: '回撤 2–5%',
-  DRAWDOWN_GT5: '回撤 > 5%',
+  UNKNOWN: "未知",
+  STALE: "已过期",
+  FLAT: "空仓",
+  OPEN: "持仓中",
+  LONG: "做多",
+  SHORT: "做空",
+  BUY: "买入",
+  SELL: "卖出",
+  TREND: "趋势",
+  RANGE: "震荡",
+  TRANSITION: "过渡",
 };
 
 export function zhLabel(value) {
-  if (value === null || value === undefined || value === '') return value;
-  const normalized = String(value).toUpperCase().replaceAll(' ', '_');
+  if (value === null || value === undefined || value === "") return value;
+  const normalized = String(value).toUpperCase().replaceAll(" ", "_");
   return ZH_LABELS[normalized] || value;
 }
 
-export function StatusBadge({ value = 'UNKNOWN', tone, compact = false }) {
-  const normalized = String(value || 'UNKNOWN').toUpperCase().replaceAll(' ', '_');
-  const display = zhLabel(normalized);
+export function formatStamp(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "—";
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const day = String(d.getUTCDate()).padStart(2, "0");
+  const h = String(d.getUTCHours()).padStart(2, "0");
+  const min = String(d.getUTCMinutes()).padStart(2, "0");
+  return `${y}-${m}-${day}T${h}:${min}Z`;
+}
+
+export function isObservable(meta) {
+  const status = meta?.status;
+  return status === "ok" || status === "stale";
+}
+
+export function KnownValue({ value, meta, format = (v) => v, suffix = "", className = "" }) {
+  if (!isObservable(meta) || value === null || value === undefined || !Number.isFinite(Number(value))) {
+    return <span className={`val-unknown ${className}`}>未知</span>;
+  }
+  return <span className={className}>{format(Number(value))}{suffix}</span>;
+}
+
+/** L0 — 能不能写？ */
+export function GovernanceBand({ policy, connected }) {
+  const gates = [
+    `LOCK ${policy.incidentLock === "INCIDENT_LOCKED" ? "ACTIVE" : policy.incidentLock}`,
+    `KILL ${policy.kill}`,
+    `EXECUTE ${policy.executeAuthorized ? "AUTHORIZED" : "DENIED"}`,
+    `LIVE ${policy.live.replace("_", "-")}`,
+  ].join(" · ");
+
   return (
-    <span className={`status-badge status-${tone || STATUS_MAP[normalized] || 'neutral'} ${compact ? 'status-compact' : ''}`}>
-      <span className="status-mark" aria-hidden="true" />
-      {display}
-    </span>
+    <header className="gov-band" aria-labelledby="observatory-title">
+      <h1 id="observatory-title" className="obs-title">
+        AURORA · BTC NUMERAIRE OBSERVATORY
+      </h1>
+      <p className="gov-gates">{gates}</p>
+      <p className="gov-meta">
+        STATIC SNAPSHOT · {formatStamp(policy.capturedAt)} · {policy.sourceCommit}
+        {" · "}
+        <span className={connected ? "ws-up" : "ws-down"}>
+          WS {connected ? "CONNECTED" : "DISCONNECTED"} · LINK ONLY
+        </span>
+      </p>
+    </header>
   );
 }
 
-export function SourceMeta({ meta, fallbackSource = '未观测' }) {
-  const status = (meta?.status || 'unknown').toUpperCase();
+/** L1 — 策略在做什么？ */
+export function StrategyBand({ policy, overlay }) {
+  const identity = policy.identity;
+  const action = overlay?.action || "UNKNOWN";
+  const fixture = overlay?.sourceKind === "PROTOTYPE FIXTURE";
+  const htfKnown = fixture && action !== "UNKNOWN";
+  const asOf = overlay?.asOf ? formatStamp(overlay.asOf) : "—";
+  const dash = "—";
+
+  let footnote = `HTF unavailable · no 1m fallback · ${identity.sourceCommit}`;
+  if (fixture) footnote = `PROTOTYPE FIXTURE · 禁止当成实盘指令 · ${identity.sourceCommit}`;
+  else if (htfKnown) footnote = `CLOSED 1D BAR · ${identity.sourceCommit}`;
+
   return (
-    <div className="source-meta">
-      <span>{zhLabel(meta?.source) || fallbackSource}</span>
-      <span aria-hidden="true">·</span>
-      <StatusBadge value={status} compact />
-      <span aria-hidden="true">·</span>
-      <time>{meta?.updatedAt ? new Date(meta.updatedAt).toLocaleTimeString('zh-CN', { hour12: false }) : '无时间戳'}</time>
+    <section className="strategy-band" aria-labelledby="strategy-title">
+      <h2 id="strategy-title" className="visually-hidden">策略身份</h2>
+      <div className="strategy-trio">
+        <div className="strategy-cell">
+          <span>CORE</span>
+          <strong>{identity.core}</strong>
+        </div>
+        <div className={`strategy-cell strategy-hero overlay-${action.toLowerCase()} ${fixture ? "is-fixture" : ""}`}>
+          <span>OVERLAY</span>
+          <strong>{action}</strong>
+          {fixture ? <em className="fixture-mark">PROTOTYPE FIXTURE</em> : null}
+        </div>
+        <div className="strategy-cell">
+          <span>AS OF</span>
+          <strong className={overlay?.asOf ? "" : "val-unknown"}>{asOf}</strong>
+        </div>
+      </div>
+      <p className="strategy-metrics">
+        close {htfKnown ? overlay.close.toLocaleString("en-US") : dash}
+        {" · "}
+        ema20 {htfKnown ? overlay.ema20.toLocaleString("en-US") : dash}
+        {" · "}
+        ema60 {htfKnown ? overlay.ema60.toLocaleString("en-US") : dash}
+        {" · "}
+        ADX {htfKnown ? overlay.adx.toFixed(1) : dash}
+      </p>
+      <p className="strategy-foot">{footnote}</p>
+    </section>
+  );
+}
+
+function walletLine(assets, stale) {
+  if (!assets.length) return stale ? "未知 · STALE" : "未知";
+  const primary = assets.find((a) => a.asset === "USDT") || assets[0];
+  const bal = Number(primary.walletBalance).toLocaleString("en-US", { maximumFractionDigits: 2 });
+  const suffix = stale ? " · STALE" : "";
+  return `${bal} ${primary.asset}${suffix}`;
+}
+
+function positionLine(system, stale) {
+  const meta = system.meta || {};
+  const observable = isObservable(meta);
+  if (!observable) return "UNKNOWN";
+  const state = system.positionsState || "UNKNOWN";
+  const positions = Array.isArray(system.positions) ? system.positions : [];
+  if (state === "FLAT") return "FLAT";
+  if (positions.length === 0) return stale ? `${state} · STALE` : state;
+  const leg = positions[0];
+  const side = (leg.positionSide || leg.side || "LONG").toUpperCase();
+  const size = Number.isFinite(Number(leg.size)) ? leg.size : "?";
+  return `${side} ${size}${stale ? " · STALE" : ""}`;
+}
+
+/** L2 — 交易所实际看见什么？ */
+export function ExchangeObservation({ system, connected }) {
+  const meta = system.meta || {};
+  const observable = isObservable(meta);
+  const stale = meta.status === "stale";
+  const assets = observable && Array.isArray(system.assets) ? system.assets : [];
+  const stateKind = !observable ? "unknown" : stale ? "stale" : system.positionsState === "FLAT" ? "flat" : "ok";
+
+  let headline;
+  let subline;
+  if (!observable) {
+    headline = connected ? "交易所观察不可用" : "交易所观察不可用";
+    subline = "不能解释为空仓";
+  } else if (stale) {
+    headline = `仓位 ${positionLine(system, true)}`;
+    subline = "过期快照 · 数字不是当前事实 · 不得刷新为空仓";
+  } else if (system.positionsState === "FLAT") {
+    headline = "交易所报告空仓";
+    subline = "FLAT = 权威事实 · 非账本对账";
+  } else {
+    headline = `仓位 ${positionLine(system, false)}`;
+    subline = null;
+  }
+
+  const source = observable
+    ? (meta.source === "EXCHANGE_READONLY" ? "EXCHANGE OBSERVATION" : meta.source || "EXCHANGE OBSERVATION")
+    : "UNKNOWN";
+
+  return (
+    <section className={`exchange-band state-${stateKind}`} aria-labelledby="exchange-title">
+      <h2 id="exchange-title" className="exchange-headline">{headline}</h2>
+      {subline ? <p className="exchange-subline">{subline}</p> : null}
+      <dl className="exchange-facts">
+        <div><dt>Wallet</dt><dd className={!observable ? "val-unknown" : stale ? "val-stale" : ""}>{observable ? walletLine(assets, stale) : "UNKNOWN"}</dd></div>
+        <div><dt>Position</dt><dd className={!observable ? "val-unknown" : stale ? "val-stale" : stateKind === "flat" ? "val-flat" : ""}>{observable ? positionLine(system, stale) : "UNKNOWN"}</dd></div>
+        <div><dt>Source</dt><dd>{source}</dd></div>
+      </dl>
+    </section>
+  );
+}
+
+/** 缺口 — 永远一行 */
+export function GapLine() {
+  return (
+    <p className="gap-line" aria-label="未接入缺口">
+      缺口 · 账本未知 · BTC NAV 未接 · 保护未核验 · EXIT OPEN
+    </p>
+  );
+}
+
+export function diagnosticHint(scene) {
+  if (!scene.connected) return "链路断开 · 无开仓权";
+  const status = scene.market?.meta?.status;
+  if (status === "stale") return "已过期 · 无开仓权";
+  if (status === "ok") return "可观察 · 无开仓权";
+  return "未知 · 无开仓权";
+}
+
+export function DiagnosticAuthority() {
+  return (
+    <p className="diag-authority" role="note">
+      NO OPEN AUTHORITY · 无开仓权 · 1m 不能生成 overlay · 不能回退 HTF UNKNOWN
+    </p>
+  );
+}
+
+export function DiagnosticRegime({ market }) {
+  const meta = market.meta || {};
+  const known = isObservable(meta);
+  return (
+    <div className="diag-block">
+      <span className="diag-label">1m regime</span>
+      <strong className={known ? "" : "val-unknown"}>
+        {known ? zhLabel(market.regime || "UNKNOWN") : "未知"}
+      </strong>
     </div>
   );
 }
 
-export function KnownValue({ value, meta, format = (v) => v, suffix = '', className = '' }) {
-  const known = meta?.status === 'ok' && value !== null && value !== undefined && Number.isFinite(Number(value));
-  if (!known) return <span className={`unknown-value ${className}`}>未知</span>;
-  return <span className={className}>{format(Number(value))}{suffix}</span>;
-}
-
-export function Panel({ eyebrow, title, meta, children, className = '', action }) {
-  return (
-    <section className={`panel ${className}`}>
-      <header className="panel-header">
-        <div>
-          {eyebrow && <div className="eyebrow">{eyebrow}</div>}
-          <h2>{title}</h2>
-        </div>
-        {action}
-      </header>
-      {meta && <SourceMeta meta={meta} />}
-      <div className="panel-body">{children}</div>
-    </section>
-  );
-}
-
-export function GlobalSafety({ policy, system, connected }) {
-  const accountMeta = system.meta || {};
-  return (
-    <section className="global-safety" aria-labelledby="global-safety-title">
-      <div className="brand-lockup">
-        <div className="brand-symbol" aria-hidden="true"><span /></div>
-        <div>
-          <div className="eyebrow">BTC 资本与安全观察台</div>
-          <h1 id="global-safety-title">AURORA</h1>
-        </div>
-      </div>
-      <div className="global-statuses" aria-label="运行授权状态">
-        <div className="global-status-item">
-          <span>运行环境</span>
-          <StatusBadge value={system.meta?.mode || 'UNKNOWN'} tone="info" />
-        </div>
-        <div className="global-status-item critical">
-          <span>事故锁</span>
-          <StatusBadge value={policy.incidentLock} />
-        </div>
-        <div className="global-status-item critical">
-          <span>急停开关</span>
-          <StatusBadge value={policy.kill} />
-        </div>
-        <div className="global-status-item">
-          <span>执行资格</span>
-          <StatusBadge value={policy.executionQualified ? 'QUALIFIED' : 'NOT QUALIFIED'} tone="danger" />
-        </div>
-        <div className="global-status-item">
-          <span>实盘</span>
-          <StatusBadge value={policy.live} />
-        </div>
-      </div>
-      <div className="transport-state">
-        <span className={`transport-dot ${connected ? 'connected' : ''}`} aria-hidden="true" />
-        <div>
-          <strong>WebSocket {connected ? '已连接' : '已断开'}</strong>
-          <span>仅表示链路 · 不代表运行健康</span>
-        </div>
-        <StatusBadge value={(accountMeta.status || 'UNKNOWN').toUpperCase()} />
-      </div>
-      <div className="policy-source">
-        <span>权威：{policy.authority}</span>
-        <span>来源：{policy.source}</span>
-        <span>基线：{policy.baseline}</span>
-      </div>
-    </section>
-  );
-}
-
-export function PositionTruth({ system }) {
-  const meta = system.meta || {};
-  const observable = meta.status === 'ok';
-  const positions = observable && Array.isArray(system.positions) ? system.positions : [];
-  const state = observable ? (system.positionsState || 'UNKNOWN') : 'UNKNOWN';
-  return (
-    <Panel eyebrow="L2 · 交易所事实" title="仓位真相" meta={meta} className="position-panel">
-      <div className="truth-grid">
-        <div className="truth-item">
-          <span>交易所状态</span>
-          <StatusBadge value={state} tone={state === 'OPEN' ? 'info' : state === 'FLAT' ? 'neutral' : undefined} />
-        </div>
-        <div className="truth-item">
-          <span>账本状态</span>
-          <StatusBadge value="NOT OBSERVED" />
-        </div>
-        <div className="truth-item">
-          <span>仓位归属</span>
-          <StatusBadge value="UNKNOWN" />
-        </div>
-        <div className="truth-item">
-          <span>数量核对</span>
-          <StatusBadge value="UNKNOWN" />
-        </div>
-      </div>
-      {!observable ? (
-        <div className="empty-state warning-state">
-          <strong>仓位观察不可用</strong>
-          <span>查询失败或尚未成功采集，不能解释为空仓。</span>
-        </div>
-      ) : positions.length === 0 ? (
-        <div className="empty-state">
-          <strong>交易所报告无持仓腿</strong>
-          <span>这只证明当前交易所快照为空，不证明账本已对账或退出来源已知。</span>
-        </div>
-      ) : (
-        <div className="position-legs">
-          {positions.map((position, index) => (
-            <article className="position-leg" key={`${position.symbol || 'UNKNOWN'}-${position.positionSide || position.side || 'UNKNOWN'}-${index}`}>
-              <div className="position-leg-head">
-                <div>
-                  <strong>{position.symbol || '未知品种'}</strong>
-                  <span>腿 {String(index + 1).padStart(2, '0')}</span>
-                </div>
-                <StatusBadge value={position.positionSide || position.side || 'UNKNOWN'} tone="info" />
-              </div>
-              <dl className="metric-list">
-                <div><dt>经济方向</dt><dd>{position.side || '未知'}</dd></div>
-                <div><dt>持仓方向</dt><dd>{position.positionSide || '未观测'}</dd></div>
-                <div><dt>数量</dt><dd>{Number.isFinite(Number(position.size)) ? `${position.size} BTC` : '未知'}</dd></div>
-                <div><dt>开仓价</dt><dd>{Number.isFinite(Number(position.entryPrice)) ? `$${Number(position.entryPrice).toLocaleString()}` : '未知'}</dd></div>
-                <div><dt>杠杆</dt><dd>{Number.isFinite(Number(position.leverage)) ? `${position.leverage}x · 已观察` : '未知'}</dd></div>
-                <div><dt>未实现盈亏</dt><dd>{Number.isFinite(Number(position.unrealizedPnl)) ? `${Number(position.unrealizedPnl).toFixed(2)} USDT` : '未知'}</dd></div>
-              </dl>
-            </article>
-          ))}
-        </div>
-      )}
-    </Panel>
-  );
-}
-
-export function ProtectionTruth({ system }) {
-  const protection = system.meta?.protectionStatus || 'NOT_VERIFIED';
-  return (
-    <Panel eyebrow="L2 + L4 · 不得混同" title="保护证据" className="protection-panel">
-      <div className="split-contract">
-        <div className="contract-block">
-          <div className="contract-label">策略意图</div>
-          <div className="contract-title">阈值</div>
-          <dl className="metric-list">
-            <div><dt>止损阈值</dt><dd className="unknown-value">未知</dd></div>
-            <div><dt>止盈阈值</dt><dd className="unknown-value">未知</dd></div>
-            <div><dt>来源</dt><dd>未观测</dd></div>
-          </dl>
-        </div>
-        <div className="contract-divider" aria-hidden="true" />
-        <div className="contract-block">
-          <div className="contract-label">交易所保护</div>
-          <div className="contract-title"><StatusBadge value={protection} /></div>
-          <dl className="metric-list">
-            <div><dt>Algo 状态</dt><dd className="unknown-value">未知</dd></div>
-            <div><dt>受保护数量</dt><dd className="unknown-value">未知</dd></div>
-            <div><dt>触发基准</dt><dd className="unknown-value">未知</dd></div>
-          </dl>
-        </div>
-      </div>
-      <div className="invariant-callout">有效阈值 ≠ 交易所保护已核验</div>
-    </Panel>
-  );
-}
-
-export function RecoveryEvidence({ policy }) {
-  const events = [
-    { time: '当前', title: '事故锁生效中', detail: 'TESTNET 自动交易维持拒绝。', tone: 'danger', transition: '资格复核 → 阻断' },
-    { time: '未决', title: 'EXIT-PROVENANCE-01', detail: '交易所已空仓；退出机制未知。', tone: 'unknown', transition: 'KNOWN_OPEN → KNOWN_FLAT · 来源未知' },
-    { time: '已封存', title: 'G0-4A 离线合同', detail: 'Algo 协议合同仅限离线。', tone: 'info', transition: '旧条件单 → Algo 合同' },
-  ];
-  return (
-    <Panel eyebrow="L3 · 恢复 / 审计" title="恢复与证据" className="recovery-panel" action={<StatusBadge value={policy.incidentLock} />}>
-      <div className="timeline">
-        {events.map((event) => (
-          <div className={`timeline-event timeline-${event.tone}`} key={event.title}>
-            <div className="timeline-rail"><span /></div>
-            <div className="timeline-time">{event.time}</div>
-            <div className="timeline-content">
-              <strong>{event.title}</strong>
-              <p>{event.detail}</p>
-              <code>{event.transition}</code>
-            </div>
-          </div>
-        ))}
-      </div>
-      <div className="source-meta"><span>权威：能力台账快照</span><span>·</span><span>D2 内核投影未接入</span></div>
-    </Panel>
-  );
-}
-
-export function CapitalObjective() {
-  const rows = [
-    ['BTC 净值', 'NOT AVAILABLE'],
-    ['BTC 相对持有', 'NOT AVAILABLE'],
-    ['BTC 本位回撤', 'NOT AVAILABLE'],
-  ];
-  return (
-    <Panel eyebrow="产品北极星" title="BTC 资本目标" className="capital-panel">
-      <div className="capital-mark">₿</div>
-      <div className="capital-rows">
-        {rows.map(([label, value]) => (
-          <div key={label}><span>{label}</span><StatusBadge value={value} /></div>
-        ))}
-      </div>
-      <div className="blocked-reasons">
-        <strong>记账证据不完整</strong>
-        <span>Decimal 账本未迁移</span>
-        <span>BTC 基准序列未建立</span>
-      </div>
-    </Panel>
-  );
-}
-
-export function DataFreshness({ sections, connected }) {
-  return (
-    <Panel eyebrow="可观测性" title="数据新鲜度" className="freshness-panel">
-      <div className="freshness-list">
-        {sections.map(({ name, meta }) => (
-          <div className="freshness-row" key={name}>
-            <div><strong>{name}</strong><span>{zhLabel(meta?.source) || '来源未知'}</span></div>
-            <StatusBadge value={(meta?.status || 'UNKNOWN').toUpperCase()} />
-            <time>{meta?.updatedAt ? new Date(meta.updatedAt).toLocaleString('zh-CN', { hour12: false }) : '尚无成功采集'}</time>
-          </div>
-        ))}
-      </div>
-      <div className="invariant-callout">WS {connected ? '已连接' : '已断开'} ≠ 数据新鲜 ≠ 账本已对账</div>
-    </Panel>
-  );
-}
-
-export function MarketEvidence({ market, score }) {
+export function DiagnosticMicro({ market, risk }) {
   const meta = market.meta || {};
-  const known = meta.status === 'ok';
+  const riskMeta = risk.meta || {};
   return (
-    <Panel eyebrow="L4 · 策略观察" title="市场证据" meta={meta} className="market-evidence-panel">
-      <div className="market-evidence-grid">
-        <div className="large-metric">
-          <span>观察价格</span>
-          <KnownValue value={market.price} meta={meta} format={(v) => `$${v.toLocaleString('en-US', { maximumFractionDigits: 2 })}`} />
-        </div>
-        <div className="evidence-metric"><span>候选状态</span><strong>{known ? zhLabel(market.regime || 'UNKNOWN') : '未知'}</strong></div>
-        <div className="evidence-metric"><span>已确认状态</span><strong className="unknown-value">未观测</strong></div>
-        <div className="evidence-metric"><span>信号置信度</span><strong>{known && score !== null && Number.isFinite(Number(score)) ? `${score}%` : '未知'}</strong></div>
-        <div className="evidence-metric"><span>执行权限</span><strong className="danger-text">无</strong></div>
-      </div>
-      <div className="invariant-callout">信号证据永远不产生交易许可</div>
-    </Panel>
+    <div className="diag-block">
+      <span className="diag-label">micro / exposure</span>
+      <span>
+        价格{" "}
+        <KnownValue
+          value={market.price}
+          meta={meta}
+          format={(v) => `$${v.toLocaleString("en-US", { maximumFractionDigits: 0 })}`}
+        />
+        {" · "}
+        未实现{" "}
+        <KnownValue value={risk.totalPnl} meta={riskMeta} format={(v) => `${v.toFixed(2)} USDT`} />
+      </span>
+    </div>
   );
 }
 
-export function ObservedRisk({ risk }) {
-  const meta = risk.meta || {};
-  const drawdownBand = meta.status !== 'ok'
-    ? 'UNKNOWN'
-    : risk.status === 'SAFE' ? 'DRAWDOWN_LE2'
-      : risk.status === 'WARNING' ? 'DRAWDOWN_2_5'
-        : risk.status === 'DANGER' ? 'DRAWDOWN_GT5' : 'UNKNOWN';
+export function DiagnosticFills({ trades, meta }) {
+  const observable = isObservable(meta);
+  const items = observable && Array.isArray(trades) ? trades : [];
   return (
-    <Panel eyebrow="交易所推导 · 有限" title="观察敞口" meta={meta} className="risk-panel">
-      <div className="truth-grid">
-        <div className="truth-item"><span>推导回撤区间</span><StatusBadge value={drawdownBand} tone={drawdownBand === 'UNKNOWN' ? 'unknown' : 'neutral'} /></div>
-        <div className="truth-item"><span>当前回撤</span><KnownValue value={risk.currentDrawdown} meta={meta} format={(v) => v.toFixed(2)} suffix="%" /></div>
-        <div className="truth-item"><span>未实现盈亏</span><KnownValue value={risk.totalPnl} meta={meta} format={(v) => v.toFixed(2)} suffix=" USDT" /></div>
-        <div className="truth-item"><span>当日已实现盈亏</span><span className="unknown-value">未观测</span></div>
-      </div>
-      <p className="panel-note">当前 feed 的风险数据来自账户快照，不是 kernel 风险状态，也不证明日盈亏或累计收益。</p>
-    </Panel>
-  );
-}
-
-export function TradeObservations({ trades, meta }) {
-  const observable = meta?.status === 'ok';
-  return (
-    <Panel eyebrow="交易所观察" title="近期成交观察" meta={meta} className="trades-panel">
+    <div className="diag-block diag-fills">
+      <span className="diag-label">recent fills</span>
       {!observable ? (
-        <div className="empty-state warning-state"><strong>成交观察不可用</strong><span>未知状态不显示为空列表。</span></div>
-      ) : trades.length === 0 ? (
-        <div className="empty-state"><strong>交易所未返回近期成交</strong><span>这不是账本成交完整性的证明。</span></div>
+        <span className="val-unknown">成交观察不可用</span>
+      ) : items.length === 0 ? (
+        <span className="val-muted">交易所未返回近期成交</span>
       ) : (
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>观察时间</th><th>方向</th><th className="number">数量</th><th className="number">价格</th><th className="number">已实现盈亏</th><th>来源</th></tr></thead>
-            <tbody>
-              {trades.map((trade) => (
-                <tr key={trade.id || `${trade.timestamp}-${trade.side}-${trade.quantity}`}>
-                  <td>{trade.timestamp ? new Date(trade.timestamp).toLocaleString('zh-CN', { hour12: false }) : '未知'}</td>
-                  <td><StatusBadge value={trade.side || 'UNKNOWN'} tone="info" compact /></td>
-                  <td className="number">{Number.isFinite(Number(trade.quantity)) ? `${trade.quantity} BTC` : '未知'}</td>
-                  <td className="number">{Number.isFinite(Number(trade.entryPrice)) ? `$${Number(trade.entryPrice).toLocaleString()}` : '未知'}</td>
-                  <td className="number">{Number.isFinite(Number(trade.pnl)) ? `${Number(trade.pnl).toFixed(2)} USDT` : '未知'}</td>
-                  <td><StatusBadge value="EXCHANGE" tone="neutral" compact /></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+        <ul>
+          {items.slice(0, 5).map((t) => (
+            <li key={t.id || `${t.timestamp}-${t.side}`}>
+              {formatStamp(t.timestamp)} · {zhLabel(t.side)} · {t.quantity} BTC @ ${Number(t.entryPrice).toLocaleString()}
+            </li>
+          ))}
+        </ul>
       )}
-    </Panel>
-  );
-}
-
-export function AccountAssets({ account }) {
-  const meta = account.meta || {};
-  const observable = meta.status === 'ok';
-  const assets = observable && Array.isArray(account.assets) ? account.assets : [];
-  return (
-    <Panel eyebrow="L2 · 交易所资金" title="账户资产观察" meta={meta} className="assets-panel">
-      {!observable ? (
-        <div className="empty-state warning-state">
-          <strong>资产观察不可用</strong>
-          <span>查询失败不显示为零值。</span>
-        </div>
-      ) : assets.length === 0 ? (
-        <div className="empty-state"><strong>账户无可显示资产</strong></div>
-      ) : (
-        <div className="table-wrap">
-          <table>
-            <thead><tr><th>币种</th><th className="number">钱包余额</th><th className="number">可用</th><th className="number">未实现盈亏</th></tr></thead>
-            <tbody>
-              {assets.map((asset) => (
-                <tr key={asset.asset}>
-                  <td><strong>{asset.asset}</strong></td>
-                  <td className="number">{Number(asset.walletBalance).toLocaleString('en-US', { maximumFractionDigits: 8 })}</td>
-                  <td className="number">{Number(asset.availableBalance).toLocaleString('en-US', { maximumFractionDigits: 8 })}</td>
-                  <td className="number">{Number(asset.unrealizedPnl).toFixed(2)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      <p className="panel-note">币安期货测试网钱包观察 · 非链上钱包 · 账户非 AURORA 独占（EXCLUSIVITY=FALSE）。</p>
-    </Panel>
+    </div>
   );
 }

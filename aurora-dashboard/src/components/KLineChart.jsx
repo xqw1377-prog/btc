@@ -1,10 +1,12 @@
 import { useEffect, useRef } from 'react';
+import { formatStamp, isObservable } from './ObservatoryPanels';
 
-export default function KLineChart({ marketData }) {
+export default function KLineChart({ marketData, compact = false }) {
   const containerRef = useRef(null);
   const canvasRef = useRef(null);
   const klines = Array.isArray(marketData?.klines) ? marketData.klines : [];
-  const observable = marketData?.meta?.status === 'ok';
+  const observable = isObservable(marketData?.meta);
+  const stale = marketData?.meta?.status === 'stale';
 
   useEffect(() => {
     if (!observable || klines.length === 0 || !canvasRef.current || !containerRef.current) return undefined;
@@ -14,7 +16,7 @@ export default function KLineChart({ marketData }) {
 
     const draw = () => {
       const width = Math.max(container.clientWidth, 320);
-      const height = Math.max(container.clientHeight, 280);
+      const height = Math.max(container.clientHeight, compact ? 100 : 160);
       const ratio = Math.min(window.devicePixelRatio || 1, 2);
       canvas.width = width * ratio;
       canvas.height = height * ratio;
@@ -82,23 +84,29 @@ export default function KLineChart({ marketData }) {
     const observer = new ResizeObserver(draw);
     observer.observe(container);
     return () => observer.disconnect();
-  }, [klines, observable]);
+  }, [klines, observable, compact]);
 
   const last = klines[klines.length - 1];
+  const lastStamp = observable && last?.time ? formatStamp(new Date(last.time).toISOString()) : '未知';
   return (
-    <div className="kline-observation">
-      <div className="chart-stats">
-        <div><span>已观察K线</span><strong>{observable ? klines.length : '未知'}</strong></div>
-        <div><span>最新bar标识</span><strong>{observable && last?.time ? `BTCUSDT · 1m · ${last.time}` : '未知'}</strong></div>
-        <div><span>收盘K线证据</span><strong className="unknown-value">馈源未提供</strong></div>
-      </div>
-      <div className="canvas-frame" ref={containerRef}>
+    <div className={`kline-observation ${compact ? "is-compact" : ""}`}>
+      {!compact ? (
+        <div className="chart-stats">
+          <div><span>已观察K线</span><strong>{observable ? klines.length : '未知'}</strong></div>
+          <div><span>最新bar标识</span><strong>{observable && last?.time ? `BTCUSDT · 1m · ${lastStamp}` : '未知'}</strong></div>
+          <div><span>开仓权</span><strong className="danger-text">无 · 非日线</strong></div>
+        </div>
+      ) : null}
+      <div className={`canvas-frame ${stale ? 'is-stale' : ''} ${compact ? 'is-compact' : ''}`} ref={containerRef}>
         {observable && klines.length > 0 ? (
-          <canvas ref={canvasRef} aria-label="BTCUSDT 1分钟交易所K线观察图" />
+          <>
+            <canvas ref={canvasRef} aria-label="BTCUSDT 1分钟交易所K线观察图" />
+            {stale ? <div className="chart-stale-mark">STALE · 已过期 · 非开仓权</div> : null}
+          </>
         ) : (
           <div className="chart-unavailable">
-            <strong>行情数据未知</strong>
-            <span>没有可验证的新鲜 K 线观察；不绘制零值图表。</span>
+            <strong>诊断降级 · 行情未知</strong>
+            <span>没有可验证的新鲜 K 线；不绘制零值图表。1m 不能回退 overlay。</span>
           </div>
         )}
       </div>

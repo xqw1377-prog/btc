@@ -172,6 +172,42 @@ class FreshnessAndFailureTests(unittest.TestCase):
         env = json.loads(feed._envelope("system", "account", feed._system_payload()))
         self.assertEqual(env["payload"]["meta"]["protectionStatus"], "NOT_VERIFIED")
 
+    def test_observatory_bundle_built_from_feed(self):
+        client = FakeClient()
+        client.futures_ticker = lambda symbol=None: {
+            "lastPrice": "100000",
+            "priceChange": "100",
+            "priceChangePercent": "0.1",
+        }
+        client.futures_klines = lambda symbol=None, interval=None, limit=None: [
+            [i, "100", "101", "99", "100.5", "10", 0, "1000", 1, "5", "500", "0"]
+            for i in range(100)
+        ]
+        client.futures_mark_price = lambda symbol=None: {
+            "lastFundingRate": "0.0001",
+            "nextFundingTime": 1_700_000_000_000,
+            "time": 1_699_999_000_000,
+        }
+        feed = _feed(client)
+        feed._run_fetch("market", feed.fetch_market_data)
+        feed._run_fetch("account", feed.fetch_account_data)
+        feed._run_fetch("risk", feed.fetch_risk_data)
+        feed.build_observatory()
+        self.assertEqual(feed.observatory.get("schema"), "observatory-v1")
+        self.assertFalse(feed.observatory["decision"]["live"])
+        self.assertEqual(feed.observatory["decision"]["capability"], "READ-ONLY-DECISION")
+        self.assertIn("candidate", feed.observatory["decision"])
+        self.assertIn("left_card", feed.observatory["decision"])
+        self.assertIn("trend_quant", feed.observatory)
+        self.assertIn("exchange_observation", feed.observatory)
+        btc = feed.observatory["trend_quant"]["btc"]
+        self.assertIsNotNone(btc.get("funding_rate"))
+        self.assertIn(btc.get("funding_state"), ("NORMAL", "ELEVATED", "EXTREME"))
+        event = feed.observatory.get("event") or {}
+        self.assertEqual(event.get("official_source_ingestion"), "NOT_CONNECTED")
+        self.assertEqual(event.get("source_health_summary"), "SOURCE_NOT_CONNECTED")
+        self.assertIn("left_card", event)
+
 
 class InboundMessageTests(unittest.TestCase):
     def test_client_messages_never_reach_sdk(self):

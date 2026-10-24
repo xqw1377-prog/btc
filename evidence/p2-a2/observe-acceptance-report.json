@@ -1,0 +1,9 @@
+{
+  "url": "http://127.0.0.1:5173/#observe",
+  "criteria": {
+    "2_funding_level_separation": "EXTREME present — checked",
+    "3_funding_unknown": "PASS — rate shown (not zero) or labeled state"
+  },
+  "failures": [],
+  "pass": true
+}

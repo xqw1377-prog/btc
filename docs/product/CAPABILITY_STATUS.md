@@ -9,7 +9,7 @@
 > 事故现场：[docs/incidents/2026-09-06-testnet-sl-fail/FACTS.md](../incidents/2026-09-06-testnet-sl-fail/FACTS.md)  
 > 处置裁定：[docs/incidents/2026-09-06-testnet-sl-fail/DISPOSITION.md](../incidents/2026-09-06-testnet-sl-fail/DISPOSITION.md)
 
-## 〇、当前正式状态（2026-09-09 E3 裁决后）
+## 〇、当前正式状态（2026-09-10 · P2-A.2 #observe 验收后）
 
 ```text
 G0-4A_COMMIT                  7a10302
@@ -78,8 +78,111 @@ EXECUTION BOUNDARY            FROZEN      6b2cc7c
 EXECUTE_AUTHORIZED            FALSE
 EXECUTION AUTHORIZATION       NOT ISSUED
 REAL WRITE PATH               DENIED
-NEXT STAGE                    HOLD（无 AUTO TESTNET / 无 LIVE / 无未发令工作包）
+NEXT STAGE                    P3-R3.1 RISK ADJUDICATOR（HOLD · READ-ONLY · 不接旧 RiskGate）
+P2-PRE DECISION HARNESS       CLOSED · PASS（T1–T10 · 见 P2_PRE_DECISION_BRAIN_HARNESS.md）
+AURORA PRODUCT NORTH STAR V2  APPROVED
+  P0  NORTH STAR DOC          docs/product/AURORA_NORTH_STAR.md
+  P1  OBSERVATORY V2 SPEC     DESIGN-FROZEN
+  P2  TRADING STRATEGY V1.1  DESIGN-FROZEN（A1–A8 · T1–T8）
+      docs/product/AURORA_TRADING_STRATEGY_CONTRACT_V1.md
+  P2-A DUAL-ASSET TREND       CLOSED · READ-ONLY-TRUTH-COMPLETE
+      HTF TRUTH                 COMPLETE
+      BTC / ETH                 COMPLETE
+      RELATIVE STRENGTH         COMPLETE
+      FUNDING TRUTH             COMPLETE
+      OPEN ELIGIBILITY          COMPLETE
+      REALTIME UI MIRROR        COMPLETE
+      ALPHA EVIDENCE            NO-EVIDENCE（≠ ENGINE COMPLETE / ≠ 赚钱能力）
+      evidence/p2-a2/observe-acceptance-full.png
+  P2-A.4 OI CONTEXT           OPTIONAL · NON-BLOCKING（OBSERVE/ANNOTATE/CONTEXT only）
+  P2-B ETH/BTC VALUE ENGINE   READ-ONLY-DECISION-COMPLETE
+      P2-B.1 VALUE TRUTH        CLOSED · READ-ONLY-TRUTH-COMPLETE
+      P2-B.2 ALLOCATION FSM     CONTRACT-PASS · READ-ONLY（B1–B9）
+      P2-B.3 OBSERVATORY MIRROR PASS（#observe · evidence/p2-b3/）
+      ALPHA EVIDENCE            NO-EVIDENCE
+      REALLOCATION EXECUTION    NOT IMPLEMENTED
+  P2-C EVENT INTELLIGENCE     GO
+      P2-C.0 CONTRACT HARNESS   CONTRACT-PASS（C1–C10 · 见 P2_C0_EVENT_CONTRACT_HARNESS.md）
+      P2-C.1 EVENT TRUTH        READ-ONLY-TRUTH-COMPLETE（C1-1–C1-10 · 见 P2_C1_EVENT_TRUTH_FOUNDATION.md）
+      P2-C.2 ACTION ELIGIBILITY CONTRACT-PASS · READ-ONLY（C2-1–C2-12 · 见 P2_C2_EVENT_ACTION_ELIGIBILITY.md）
+      P2-C.3 OBSERVATORY MIRROR PASS（LEFT 04 + RIGHT · 见 P2_C3_OBSERVATORY_MIRROR.md）
+      P2-C PIPELINE             READ-ONLY-SEMANTICS-COMPLETE（≠ live ingestion · ≠ Alpha）
+      OFFICIAL SOURCE INGESTION NOT CONNECTED / NOT IMPLEMENTED
+  P3-G0 ENTRY GATE AUDIT      PASS（G1–G14 · 见 P3_G0_ENTRY_GATE_AUDIT.md）
+  P2-PRE DECISION HARNESS     CLOSED · T1–T10 FROZEN · T9/T10 guards PASS
+  P3-R1 DECISION BRAIN CORE   CONTRACT-PASS · READ-ONLY（R1–R13 · 见 P3_R1_DECISION_BRAIN_CORE.md）
+  P3-R2 FINAL DECISION MIRROR PASS（R2-1–R2-12 · 见 P3_R2_FINAL_DECISION_MIRROR.md）
+  P3 READ-ONLY DECISION LOOP  COMPLETE（≠ P3 COMPLETE · RiskGate 仍 HOLD）
+  P3-R3.0 RISK CONTRACT       CONTRACT-PASS（R3-1–R3-16 · 见 P3_R3_RISK_CONTRACT_HARNESS.md）
+  RISK SEMANTICS              FROZEN（RISK MONOTONICITY · 只减不增）
+  P3-R3.1 RISK ADJUDICATOR    HOLD
+  P3-R3.2 RISK OBSERVATORY     HOLD
+  P3-R3 RISKGATE ADAPTER      HOLD（旧 risk_gate 非 authority）
+  P3-R4 EXECUTION ADAPTER     FORBIDDEN / HOLD
+      aurora/decision_brain.py = P3-R1 runtime core（NormalizedInput only）
+      aurora/decision_brain_entry_gate.py = G0 GATE + normalizers
+      tests/test_decision_brain_r1.py = R1–R13 ACCEPTANCE AUTHORITY
+      tests/test_decision_brain_entry_gate_g0.py = G1–G14 ACCEPTANCE AUTHORITY
+      tests/test_decision_brain_contract_v1_1.py = T1–T10 ACCEPTANCE AUTHORITY
+      portfolio_brain_v2        LEGACY · NOT P3（禁止升级接入）
+  P3 → RISK / EXECUTION       HOLD
+  P4  BTC NAV / ACCOUNT       HOLD
+  P5  E3 OOS                  CLOSED-OFFLINE（≠ LIVE）
+OBSERVATORY / TRANSPORT（严格 — 观察 ≠ 策略能力）
+  OBSERVATORY-V1 TRANSPORT    CONNECTED（只读 WS · observatory-v1）
+  REALTIME FEED               READ ONLY · EXECUTION DENIED
+  LIVE TRADING                NO-GO
+PRODUCT CAPABILITY（严格 — 策略引擎 ≠ 能显示）
+  TREND QUANT ENGINE          READ-ONLY-TRUTH-COMPLETE（P2-A · 非 Alpha 证据）
+  BTC TREND                   READ-ONLY-TRUTH-COMPLETE
+  ETH TREND                   READ-ONLY-TRUTH-COMPLETE
+  FUNDING TRUTH               READ-ONLY-TRUTH-COMPLETE（只读 · OPEN veto · 不改 L0–L5）
+  OI TRUTH                    HOLD（P2-A.4 · 非 P2-A 完成门 · 待 E3 独立增量证明）
+  ETH/BTC VALUE TRUTH         READ-ONLY-TRUTH-COMPLETE（P2-B.1）
+  ETH/BTC ALLOCATION FSM      CONTRACT-PASS · READ-ONLY（P2-B.2）
+  ETH/BTC OBSERVATORY MIRROR  PASS（P2-B.3 · LEFT 03 + RIGHT 证据区）
+  ETH/BTC ENGINE ALPHA          NO-EVIDENCE · REALLOCATION EXECUTION NOT IMPLEMENTED
+  EVENT INTELLIGENCE          P2-C.0 CONTRACT-PASS · READ-ONLY（无 live feed · 无 LLM 权威）
+  EVENT TRUTH / SOURCE        READ-ONLY-TRUTH-COMPLETE（P2-C.1 · append-only · as-of replay）
+  EVENT IMPACT ASSESSMENT     CONTRACT-PASS · READ-ONLY（P2-C.2 C2-A）
+  EVENT PRICED-IN             CONTRACT-PASS · READ-ONLY（P2-C.2 C2-B · PROVISIONAL_E3_PARAM）
+  EVENT BOOST ELIGIBILITY     ELIGIBILITY ONLY（P2-C.2 C2-C · ACTIVE UNREACHABLE）
+  EVENT OBSERVATORY MIRROR    PASS（P2-C.3 · backend projection · no frontend recompute）
+  OFFICIAL EVENT INGESTION    NOT CONNECTED（live feed 默认 · 不得显示「无事件」）
+  EVENT EXECUTION             NOT IMPLEMENTED
+  EVENT ENGINE ALPHA          NO-EVIDENCE
+  DECISION BRAIN SEMANTICS    CONTRACT-FROZEN（T1–T10 · fixture hash pinned）
+  P3-G0 ENTRY GATE            PASS（G1–G14）
+  P3-R1 DECISION BRAIN CORE   CONTRACT-PASS · READ-ONLY（RUNTIME-IMPLEMENTED）
+  P3-R2 FINAL DECISION MIRROR PASS（LEFT 05 + RIGHT · decisionMirror.js）
+  P3 READ-ONLY DECISION LOOP  COMPLETE
+  P3-R3.0 RISK CONTRACT       CONTRACT-PASS（evaluate_risk · R3-16 monotonicity）
+  RISK SEMANTICS              FROZEN
+  DECISION BRAIN COMPLETE     NO（R3.1 Adjudicator · R3.2 Observatory · R4 Execution pending）
+  DECISION BRAIN LIVE         NOT LIVE · EXECUTION DENIED
+  BTC NAV AUTHORITATIVE       NO（P4 HOLD · Brain fail-closed on account UNKNOWN）
+  EXCHANGE OBSERVATION        PARTIAL
+  BTC NAV                     NOT AUTHORITATIVE / D2 HOLD
+  EXECUTION                   DENIED · KILL ACTIVE
+DASHBOARD OBSERVATORY
+  V1 / COCKPIT V1             SUPERSEDED BY INTERACTION V2
+  D0.2 IA SHELL               FIXTURE MODE（synthetic allowed · 可见 FIXTURE）
+  D1 REALTIME MODE            #observe · synthetic forbidden
+  D1.5 / D1.6 / D2            HOLD
 STRATEGY V2 / BACKTEST        V2 / E3 / E4 CLOSED-OFFLINE
+
+E5 FORWARD EVIDENCE             STARTED（首条 2026-10-20 bar 落账：
+                                冻结规则裁决 HOLD_BTC / overlay 不合格；
+                                append-only 前瞻账 evidence/forward/；
+                                观察期自首条起算）
+P1-GOV-3 LIVE ENDPOINT          CONTRACT IMPLEMENTED（live-endpoint-v1：
+                                构造集/交易集分离；未满授权保持
+                                BLOCKED_BEFORE_CLIENT；armed 且合同版本
+                                匹配才放行构造期 spot ping；交易期永禁 spot）
+KEY ROTATION TOOLING            READY（aurora/ops_key_rotation：只读核验
+                                +手动步骤指引，不代改 .env；等待操作员
+                                在币安控制台生成新 key——仍 NOT-DONE）
+
 PASS-2 / THIRD SESSION        HOLD / DENIED
 E0 ACCOUNTING TRUTH           CLOSED-OFFLINE
   FILLS → PNL → CAPITAL       PASS
@@ -198,7 +301,7 @@ STRATEGY / V2                 CLOSED-OFFLINE / EDGE OFFLINE-OOS-ONLY
 | 项 | 状态 |
 |---|---|
 | aurora/dashboard_feed.py | EXCHANGE_OBSERVATION / NOT_LEDGER_PROJECTION；只读白名单、分段时间戳、失败不伪装、回环 + Origin 白名单 |
-| 浏览器行为验证 | NOT-RUN（vite build 通过 ≠ 浏览器呈现正确；BUILD_CONFIG_ISOLATION = NOT-EVIDENCED） |
+| 浏览器行为验证 | D0.1 三问原型可本地点选状态；正式 D3 仍 HOLD |
 | 保护单核验 | NOT_VERIFIED（本观察面不查条件单；G0-4 未完成前不得宣称已保护） |
 
 ## 四、G0 工作包（以提交与事故核对为准）
