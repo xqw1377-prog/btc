@@ -1,0 +1,117 @@
+{
+  "baseline_annualized_note": "excess 3.38% over ~4.1y \u2248 0.8%/yr\uff08\u51e0\u4f55\u8fd1\u4f3c\uff09\uff0c\u975e 3.4%/yr",
+  "discipline": "REPORT-ONLY\uff1b\u4e0d\u56de\u5199\u51bb\u7ed3\u5e38\u6570\uff1b\u53d8\u4f53\u4ec5\u7528\u4e8e\u8106\u5f31\u6027\u62a5\u544a",
+  "period_note": "2022-08 \u2192 2026-09 \u2248 4.1 \u5e74\uff0cCORE=1.0 BTC \u8fde\u7eed\u65e0\u91cd\u7f6e",
+  "schema": "e3-ablation-v1",
+  "variants": [
+    {
+      "excess_btc": 0.034085,
+      "fees_usdt": 245.28,
+      "funding_usdt": 21.73,
+      "max_btc_drawdown_of_strategy_nav": -0.028015,
+      "max_excess_trough_btc": -0.006625,
+      "n_trades": 58,
+      "strategy_btc_end": 1.034085,
+      "variant": "baseline_frozen"
+    },
+    {
+      "excess_btc": 0.045953,
+      "fees_usdt": 287.39,
+      "funding_usdt": 23.74,
+      "max_btc_drawdown_of_strategy_nav": -0.027691,
+      "max_excess_trough_btc": -0.006625,
+      "n_trades": 65,
+      "strategy_btc_end": 1.045953,
+      "variant": "no_adx_gate"
+    },
+    {
+      "excess_btc": 0.020538,
+      "fees_usdt": 274.57,
+      "funding_usdt": 21.45,
+      "max_btc_drawdown_of_strategy_nav": -0.03166,
+      "max_excess_trough_btc": -0.006625,
+      "n_trades": 66,
+      "strategy_btc_end": 1.020538,
+      "variant": "no_ema_slope"
+    },
+    {
+      "excess_btc": 0.029354,
+      "fees_usdt": 273.57,
+      "funding_usdt": 20.21,
+      "max_btc_drawdown_of_strategy_nav": -0.028182,
+      "max_excess_trough_btc": -0.006474,
+      "n_trades": 66,
+      "strategy_btc_end": 1.029354,
+      "variant": "ema_15_55"
+    },
+    {
+      "excess_btc": 0.03209,
+      "fees_usdt": 252.33,
+      "funding_usdt": 26.65,
+      "max_btc_drawdown_of_strategy_nav": -0.028867,
+      "max_excess_trough_btc": -0.006435,
+      "n_trades": 58,
+      "strategy_btc_end": 1.03209,
+      "variant": "ema_25_65"
+    },
+    {
+      "excess_btc": 0.022807,
+      "fees_usdt": 488.69,
+      "funding_usdt": 21.5,
+      "max_btc_drawdown_of_strategy_nav": -0.029655,
+      "max_excess_trough_btc": -0.006859,
+      "n_trades": 58,
+      "strategy_btc_end": 1.022807,
+      "variant": "cost_2x"
+    },
+    {
+      "excess_btc": 0.034085,
+      "fees_usdt": 245.28,
+      "funding_usdt": 21.73,
+      "max_btc_drawdown_of_strategy_nav": -0.028015,
+      "max_excess_trough_btc": -0.006625,
+      "n_trades": 58,
+      "strategy_btc_end": 1.034085,
+      "variant": "funding_2x_cap"
+    },
+    {
+      "excess_btc": 0.005489,
+      "note": "trade-level approximation (pnl removed at end price); not a full re-simulation",
+      "removed_pnl_usdt": 2253.09,
+      "removed_trades": [
+        {
+          "entry": 103279.614,
+          "exit": 110928.05847197844,
+          "pnl": 774.36,
+          "reason": "take_profit"
+        },
+        {
+          "entry": 116480.31105,
+          "exit": 123887.86903472502,
+          "pnl": 742.99,
+          "reason": "take_profit"
+        },
+        {
+          "entry": 118611.276,
+          "exit": 125933.60879658994,
+          "pnl": 735.74,
+          "reason": "take_profit"
+        }
+      ],
+      "variant": "drop_top_3_trades_approx"
+    },
+    {
+      "excess_btc": 0.137466,
+      "max_btc_drawdown_of_strategy_nav": -0.038278,
+      "note": "same 1.0 BTC core, constant long notional fraction, same fee/slippage/funding model, no timing",
+      "variant": "fixed_overlay_10pct_always_on"
+    },
+    {
+      "excess_btc": 0.549862,
+      "max_btc_drawdown_of_strategy_nav": -0.15311,
+      "note": "same 1.0 BTC core, constant long notional fraction, same fee/slippage/funding model, no timing",
+      "variant": "fixed_overlay_40pct_always_on"
+    }
+  ],
+  "written_at": "2026-10-24T16:45:43.680784+00:00"
+}
