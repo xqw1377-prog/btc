@@ -112,7 +112,7 @@ class ProtectionQuantityTruthTests(unittest.TestCase):
     def test_execution_qty_drift_does_not_pick_min_or_max(self):
         self._tmp, _, self.exchange, self.ledger, self.orch = _boot()
         self.exchange.ack_executed_qty = 0.0
-        self.exchange.seed_external_position(-0.002, 100.0)
+        self.exchange.seed_external_position(-0.002, 100.0, leg="LONG")
         opened = self.orch.open_position(
             "LONG", 0.007, intent_id="DRIFT",
             stop_price=99.0, take_profit_price=101.0)

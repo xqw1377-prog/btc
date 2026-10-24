@@ -324,7 +324,7 @@ class G4AlgoLegNotAutoFill(KernelHarness):
                     orch.recover()
                     self.assertTrue(orch.open_position(
                         "LONG", 0.01, intent_id="flat-algo")["success"])
-                    exchange.seed_external_position(-0.01, 100.0)
+                    exchange.flatten_without_fill()
                     exchange._orders["flat-algo-SL"]["status"] = status
                     for _ in range(3):
                         report = orch.recover()

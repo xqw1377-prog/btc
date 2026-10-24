@@ -196,12 +196,24 @@ class FakeExchange(ExchangePort):
         if self.flatten_on_cancel:
             self.flatten_without_fill()
         elif abs(self.position_delta_on_cancel) > 1e-12:
-            self.seed_external_position(self.position_delta_on_cancel, self.price)
+            # 修复窗口内仓位变化：表达为多头腿的外部增减（减仓场景），
+            # 而不是开一条对侧空头腿（HEDGE 保真，W43-A3）。
+            self.seed_external_position(
+                self.position_delta_on_cancel, self.price, leg="LONG")
         return True
 
-    def seed_external_position(self, signed_qty: float, entry_price: float) -> None:
-        """注入账本与本订单系统之外的持仓（模拟外部/手工建仓）。"""
-        self._external.append((signed_qty, entry_price))
+    def seed_external_position(self, signed_qty: float, entry_price: float,
+                               leg: str = None) -> None:
+        """注入账本之外的持仓。leg 缺省按符号推断（正→LONG、负→SHORT）。
+
+        HEDGE 保真（W43-A3）：leg="LONG" 且负值 = 外部减多头腿（减仓）；
+        负值且 leg 缺省 = 真实空头腿（与多头腿并存 → 双腿 UNKNOWN）。
+        """
+        if leg is None:
+            leg = "LONG" if signed_qty >= 0 else "SHORT"
+        if leg not in ("LONG", "SHORT"):
+            raise ValueError(f"unknown leg {leg!r}")
+        self._external.append((signed_qty, entry_price, leg))
 
     def set_position_query_ambiguous(self, flag: bool = True) -> None:
         """模拟多腿/覆盖不足的仓位查询：返回 None（UNKNOWN），绝不净额成 FLAT。"""
@@ -219,18 +231,37 @@ class FakeExchange(ExchangePort):
             return ExchangePosition(symbol, 0.0, 0.0)
         signed = 0.0
         entry_price = 0.0
-        for qty, px in self._external:
+        long_leg = 0.0
+        short_leg = 0.0
+        for qty, px, leg in self._external:
             signed += qty
             if qty:
                 entry_price = px
+                if leg == "SHORT":
+                    short_leg += -qty
+                else:
+                    long_leg += qty
         for order in self._orders.values():
             req = order["req"]
             if req.symbol != symbol or order["filled_qty"] <= 0:
                 continue
             sign = 1.0 if req.side == "BUY" else -1.0
             signed += sign * order["filled_qty"]
+            # HEDGE 语义：成交归属其 positionSide 腿——SELL(positionSide=
+            # LONG) 是减多头腿，不是开空头腿。ONE-WAY（BOTH）并入多头腿
+            # 净额（单向模式本无双腿）。
+            leg = getattr(req, "position_side", "LONG") or "LONG"
+            if leg == "SHORT":
+                short_leg += sign * order["filled_qty"]
+            else:
+                long_leg += sign * order["filled_qty"]
             if req.order_kind == OrderKind.ENTRY:
                 entry_price = order["avg_price"]
+        # W43-A3（NautilusTrader #5416 吸收）：多空两腿同时非零 = 持仓快照
+        # 不明确。与真实 Binance 适配器一致：返回 None（UNKNOWN），
+        # 绝不净额成单腿、绝不把对侧腿当作本腿覆盖证据。
+        if long_leg > 1e-12 and short_leg > 1e-12:
+            return None
         if abs(signed) < 1e-12:
             return ExchangePosition(symbol, 0.0, 0.0)
         return ExchangePosition(symbol, signed, entry_price)

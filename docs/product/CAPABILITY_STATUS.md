@@ -171,6 +171,21 @@ DASHBOARD OBSERVATORY
   D1.5 / D1.6 / D2            HOLD
 STRATEGY V2 / BACKTEST        V2 / E3 / E4 CLOSED-OFFLINE
 
+EXTERNAL DIGEST 2026-W43         ABSORBED（测试+状态机约束；零交易依赖变更）
+  A1 NT#5375 未知提交重启归属：原 ID 查询/外部归属成交→ORPHAN 熔断
+     /绝不铸造新 ENTRY ID（tests/test_external_digest_w43.py）
+  A2 NT#5377 凭证失效类错误：-1022/-2015/-1125 永不匹配限流/超时
+     分类；持久查询失败跨重启永不假收敛、永不重提交
+  A3 NT#5416 HEDGE 双腿：FakeExchange 保真升级——positionSide 分腿
+     净额，双腿非零→UNKNOWN（与真实适配器一致，原为净额单腿）；
+     对侧腿迟到成交不得错归属；seed_external_position 增加 leg 参数
+  A4 FT#13679 funding 漏记：aurora/funding_income.py 幂等入账
+     （tranId 稳定 ID；重放忽略；未取到=UNKNOWN≠0；无稳定 ID 拒收）；
+     SL 触发路径自动接线登记为 E0/D2 待办，不静默宣称已接
+  Hypothesis 6.170.8：镜像源不可达（最高 6.141.1）；现有性质测试
+     仅标量策略，不适用该修复场景；全树 0 skipped
+
+
 E5 FORWARD EVIDENCE             STARTED（首条 2026-10-20 bar 落账：
                                 冻结规则裁决 HOLD_BTC / overlay 不合格；
                                 append-only 前瞻账 evidence/forward/；

@@ -187,7 +187,7 @@ class ProtectionRecoveryTests(LifecycleHarness):
     def test_M6_position_reduction_rebuilds_protection(self):
         self._boot()
         self.orch.open_position("LONG", 0.007, intent_id="C6red")
-        self.exchange.seed_external_position(-0.002, 100.0)  # 外部/手工减仓
+        self.exchange.seed_external_position(-0.002, 100.0, leg="LONG")  # 外部/手工减仓
         report = self.orch.recover()
         self.assertEqual(
             self.ledger.get_intent("C6red")["state"], IntentState.PROTECTED.value)
