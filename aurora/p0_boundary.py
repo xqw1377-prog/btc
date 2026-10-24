@@ -61,6 +61,10 @@ class PositionMode(str, Enum):
 MAINNET_MARK = "fapi.binance.com"
 TESTNET_MARK = "testnet"
 ALLOWED_LIVE_HOSTS = frozenset({"fapi.binance.com"})
+# P1-GOV-3 live-endpoint-v1：构造期需经现货 ping 主机；只在完整
+# LIVE 授权事实下由 live_endpoint_contract 激活（默认集不变）。
+LIVE_CONSTRUCTION_HOSTS = frozenset(
+    {"api.binance.com", "fapi.binance.com"})
 ALLOWED_TESTNET_HOSTS = frozenset({
     "testnet.binancefuture.com",
     "testnet.binance.vision",

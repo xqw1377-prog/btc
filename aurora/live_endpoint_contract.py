@@ -1,22 +1,21 @@
 """P1-GOV-3：LIVE endpoint 正式合同（从 PLANNED 落地）。
 
 背景事实（G0-4D 探测实测）：
-- SDK Client(testnet=False) 构造期会 ping 现货 api.binance.com；
-- 交易期请求走 fapi.binance.com；
+- SDK 以 testnet=False 构造时会先探测现货 REST 主机；
+- 交易期请求走期货主机（见 p0_boundary 常量）；
 - 现行 ALLOWED_LIVE_HOSTS 只含 fapi → 未满授权的 armed-LIVE 在构造前
   拒绝（BLOCKED_BEFORE_CLIENT）。这是策略正确行为，本合同将其形式化。
 
 合同（冻结）：
 1) 主机集合按阶段定义：
-   LIVE_CONSTRUCTION_HOSTS = {"api.binance.com", "fapi.binance.com"}
-   LIVE_TRADING_HOSTS     = {"fapi.binance.com"}
+   LIVE_CONSTRUCTION_HOSTS / LIVE_TRADING_HOSTS 见 p0_boundary（唯一来源）
 2) 构造集只在【完整 LIVE 授权事实】成立时激活：
    dual-auth 环境齐 + AURORA_ARM_LIVE 武装令牌 + LIVE endpoint 合同
    版本匹配。任一缺失 → 维持默认集（仅 fapi）→ 构造期 spot ping
    被出网守卫拒绝 → BLOCKED_BEFORE_CLIENT。
 3) 未授权状态绝不因"改白名单方便测试"而放宽；授权状态缺 spot 主机
    同样违约（构造必然失败，必须显式暴露而非静默）。
-4) 本模块只做判定与说明，不构造客户端、不出网。
+4) 本模块只做判定与说明，不构造任何交易所客户端、不出网。
 """
 from __future__ import annotations
 
@@ -24,16 +23,15 @@ from typing import Dict, FrozenSet, Optional
 
 from aurora.p0_boundary import (
     ALLOWED_LIVE_HOSTS,
-    RunMode,
+    LIVE_CONSTRUCTION_HOSTS,
     SafetyViolation,
     live_execution_armed,
 )
 
 LIVE_ENDPOINT_CONTRACT_VERSION = "live-endpoint-v1"
 
-LIVE_CONSTRUCTION_HOSTS: FrozenSet[str] = frozenset(
-    {"api.binance.com", "fapi.binance.com"})
-LIVE_TRADING_HOSTS: FrozenSet[str] = frozenset({"fapi.binance.com"})
+# 主机常量唯一来源是 p0_boundary（P0 扫描口径：主机字面量只在边界层）
+LIVE_TRADING_HOSTS: FrozenSet[str] = ALLOWED_LIVE_HOSTS
 
 
 def live_authorization_facts(
