@@ -412,3 +412,156 @@ class T_I7_CrossNamespaceIsolation(S1Harness):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class S1ReviewRepro(unittest.TestCase):
+    """评审四项阻断的最小复现（红）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.old_path = os.path.join(self._tmp.name, "old.db")
+        led = _make_old_db(self.old_path)
+        led.close()
+        fm.migrate_fills_identity(self.old_path)
+
+    def test_S1_01_aggregate_respects_effect_filters(self):
+        conn = fm.reopen_isolated(self.old_path)
+        # 构造三类旧口径特殊行（全 LEGACY 通道）
+        conn.execute(
+            "INSERT INTO fills (fill_id, origin, client_order_id, qty,"
+            " price, fee, realized_pnl, side, filled_at, synthetic,"
+            " covered_by_fact_id, quantity_effect_applied,"
+            " economic_effect_applied)"
+            " SELECT 'F-cov','LEGACY',client_order_id,0.25,price,0,0,side,"
+            " filled_at,0,'fact-1',1,0 FROM fills WHERE fill_id='F1'")
+        conn.execute(
+            "INSERT INTO fills (fill_id, origin, client_order_id, qty,"
+            " price, fee, realized_pnl, side, filled_at, synthetic,"
+            " covered_by_fact_id, quantity_effect_applied,"
+            " economic_effect_applied)"
+            " SELECT 'F-rep','LEGACY',client_order_id,0.25,price,0,0,side,"
+            " filled_at,1,'replaced-by:F2',1,1 FROM fills WHERE fill_id='F1'")
+        conn.execute(
+            "INSERT INTO fills (fill_id, origin, client_order_id, qty,"
+            " price, fee, realized_pnl, side, filled_at, synthetic,"
+            " covered_by_fact_id, quantity_effect_applied,"
+            " economic_effect_applied)"
+            " SELECT 'F-off','LEGACY',client_order_id,0.25,price,0,0,side,"
+            " filled_at,0,NULL,0,1 FROM fills WHERE fill_id='F1'")
+        conn.commit()
+        led = Ledger(self.old_path)
+        old_agg = led.fills_aggregate("C1")
+        led.close()
+        new_agg = fm.aggregate_qty_v2(conn, "C1")
+        conn.close()
+        # 口径等价：数量与行数都必须一致（证据行/已替换/效果关闭排除）
+        self.assertEqual(new_agg["fills"], old_agg["fills"])
+        self.assertEqual(new_agg["qty"], Decimal(str(old_agg["qty"])))
+
+    def test_S1_02_exact_sum_is_not_silently_rounded(self):
+        conn = fm.reopen_isolated(self.old_path)
+        conn.execute(
+            "INSERT INTO orders (client_order_id, intent_id, order_kind,"
+            " side, position_side, quantity, reduce_only, state,"
+            " exchange_order_id, filled_qty, avg_price, created_at,"
+            " updated_at) VALUES ('CL','I1','ENTRY','BUY','LONG',1,0,"
+            "'FILLED',NULL,1,100.0,'t','t')")
+        w = fm.FillsV2Writer(conn)
+        w.write_event_fill(
+            fill_id="FL1", symbol="BTCUSDT", client_order_id="CL",
+            qty_raw="1.23456789012345678901234567890123",
+            price_raw="100.0", side="BUY", filled_at="t")
+        conn.commit()
+        agg = fm.aggregate_qty_v2(conn, "CL")
+        conn.close()
+        self.assertEqual(agg["precision"], "EXACT")
+        self.assertEqual(
+            agg["qty"],
+            Decimal("1.23456789012345678901234567890123"))
+
+    def test_S1_03_reopen_enforces_foreign_keys(self):
+        conn = fm.reopen_isolated(self.old_path)
+        fk = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+        if not fk:
+            conn.close()
+            self.fail("reopen_isolated returned FK=0 connection")
+        with self.assertRaises(sqlite3.IntegrityError):
+            conn.execute(
+                "INSERT INTO fills (fill_id, origin, symbol,"
+                " client_order_id, qty, qty_raw, price, price_raw,"
+                " side, filled_at) VALUES ('FD','EVENT','BTCUSDT',"
+                "'NO-SUCH',1,'1',1,'1','BUY','t')")
+        conn.rollback()
+        conn.close()
+
+    def test_S1_04_structure_rejects_decoy_index(self):
+        # 换成同名、非唯一、索引 price 的假索引
+        conn = sqlite3.connect(self.old_path)
+        conn.execute("DROP INDEX ux_fills_null_symbol")
+        conn.execute(
+            "CREATE INDEX ux_fills_null_symbol ON fills(price)")
+        conn.commit()
+        conn.close()
+        with self.assertRaises(Exception):
+            fm.reopen_isolated(self.old_path)
+
+
+class S1EvidenceGapTests(S1Harness):
+    def test_Q2_full_equivalence_with_special_rows(self):
+        led2 = Ledger(self.old_path)
+        led2.insert_fill("F-cov", "C1", 0.25, 100.0, 0.0, "BUY", "t",
+                         covered_by_fact_id="fact-9",
+                         economic_effect_applied=False)
+        led2.insert_fill("F-syn", "C1", 0.25, 100.0, 0.0, "BUY", "t",
+                         synthetic=True)
+        led2.mark_synthetic_replaced("F-syn", "F2")
+        led2.insert_fill("F-off", "C1", 0.25, 100.0, 0.0, "BUY", "t",
+                         economic_effect_applied=False)
+        old_agg = led2.fills_aggregate("C1")
+        led2.close()
+        fm.migrate_fills_identity(self.old_path)
+        conn = fm.reopen_isolated(self.old_path)
+        new_agg = fm.aggregate_qty_v2(conn, "C1")
+        conn.close()
+        self.assertEqual(new_agg["fills"], old_agg["fills"])
+        self.assertEqual(new_agg["qty"], Decimal(str(old_agg["qty"])))
+        self.assertEqual(old_agg["fills"], 2)  # 仅 F1/F2 计入（0.375）
+
+    def test_Q3_true_mixed_in_single_aggregation(self):
+        fm.migrate_fills_identity(self.old_path)
+        conn = fm.reopen_isolated(self.old_path)
+        fm.FillsV2Writer(conn).write_event_fill(
+            fill_id="FE1", symbol="BTCUSDT", client_order_id="C1",
+            qty_raw="0.25", price_raw="100.0", side="BUY", filled_at="t")
+        agg = fm.aggregate_qty_v2(conn, "C1")
+        conn.close()
+        self.assertEqual(agg["precision"], "MIXED_APPROXIMATE")
+
+    def test_fk_restore_observable_via_connection_factory(self):
+        seen = {}
+
+        class _ConnSpy:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, *a, **k):
+                sql = a[0] if a and isinstance(a[0], str) else ""
+                if sql.strip().lower() == "pragma foreign_keys":
+                    # 用独立 cursor 取值，避免耗尽生产代码要读的游标
+                    fresh = self._inner.execute("PRAGMA foreign_keys")
+                    seen.setdefault("fk_values", []).append(
+                        fresh.fetchone()[0])
+                    fresh.close()
+                return self._inner.execute(*a, **k)
+
+            def __getattr__(self, n):
+                return getattr(self._inner, n)
+
+        def factory(path):
+            return _ConnSpy(sqlite3.connect(path))
+
+        with self.assertRaises(fm.MigrationError):
+            fm.migrate_fills_identity(
+                self.old_path, _fail_after="index", _connect=factory)
+        self.assertIn(1, [v for v in seen.get("fk_values", []) if v is not None])

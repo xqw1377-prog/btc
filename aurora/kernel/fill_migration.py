@@ -77,27 +77,76 @@ def _marker_value(conn) -> Optional[str]:
 
 
 def verify_structure(conn) -> None:
-    """结构验证：版本标记 + 复合 PK（symbol,fill_id）+ 唯一索引 + origin 列。"""
+    """结构深度验证（S1-04）：不止看名字。
+
+    核对：版本标记 / 复合 PK / 必要列与 NOT NULL / FK→orders /
+    索引【唯一性+部分条件+索引列】/ CREATE TABLE 内关键 CHECK。
+    """
     if _marker_value(conn) != SCHEMA_VERSION:
         raise MigrationError("schema marker missing or wrong version")
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(fills)")}
-    if "origin" not in cols or "qty_raw" not in cols:
-        raise MigrationError("fills schema missing S1 columns")
+    info = list(conn.execute("PRAGMA table_info(fills)"))
+    cols = {r[1] for r in info}
+    required = {"fill_id", "symbol", "origin", "client_order_id", "qty",
+                "qty_raw", "price", "price_raw", "fee", "fee_raw",
+                "fee_asset", "realized_pnl", "derivation_ctx",
+                "replaced_by", "side", "filled_at", "synthetic",
+                "replaces_synthetic_fill_id", "covered_by_fact_id",
+                "quantity_effect_applied", "economic_effect_applied"}
+    missing = required - cols
+    if missing:
+        raise MigrationError(f"fills missing columns: {sorted(missing)}")
+    notnull_required = {"fill_id", "origin", "client_order_id", "qty",
+                        "price", "side", "filled_at"}
+    for r in info:
+        if r[1] in notnull_required and not r[3]:
+            raise MigrationError(f"column {r[1]} must be NOT NULL")
     pk = [r[1] for r in sorted(
-        (r for r in conn.execute("PRAGMA table_info(fills)") if r[5] > 0),
-        key=lambda r: r[5])]
+        (r for r in info if r[5] > 0), key=lambda r: r[5])]
     if pk != ["symbol", "fill_id"]:
         raise MigrationError(f"fills PK is {pk}, expected [symbol, fill_id]")
-    idx = {r[1] for r in conn.execute("PRAGMA index_list(fills)")}
-    if "ux_fills_null_symbol" not in idx:
+    fks = list(conn.execute("PRAGMA foreign_key_list(fills)"))
+    if not any(r[2] == "orders" and r[3] == "client_order_id" for r in fks):
+        raise MigrationError("FK client_order_id→orders missing")
+    idx_rows = list(conn.execute("PRAGMA index_list(fills)"))
+    entry = next((r for r in idx_rows if r[1] == "ux_fills_null_symbol"), None)
+    if entry is None:
         raise MigrationError("ux_fills_null_symbol index missing")
+    # index_list: (seq, name, unique, origin, partial)
+    if not entry[2]:
+        raise MigrationError("ux_fills_null_symbol must be UNIQUE")
+    if not entry[4]:
+        raise MigrationError("ux_fills_null_symbol must be PARTIAL")
+    idx_cols = [r[2] for r in conn.execute(
+        "PRAGMA index_info(ux_fills_null_symbol)")]
+    if idx_cols != ["fill_id"]:
+        raise MigrationError(
+            f"index columns {idx_cols}, expected [fill_id]")
+    isql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='index' AND name="
+        "'ux_fills_null_symbol'").fetchone()[0].lower()
+    if "symbol is null" not in isql:
+        raise MigrationError("index partial condition must be symbol IS NULL")
+    tsql = " ".join((conn.execute(
+        "SELECT sql FROM sqlite_master WHERE type='table' AND name='fills'"
+    ).fetchone()[0] or "").lower().split())
+    for token in ("typeof(qty)", "typeof(price)",
+                  "origin in ('legacy','event')",
+                  "qty_raw is not null", "fee_raw is null or"):
+        if token not in tsql:
+            raise MigrationError(f"CREATE TABLE missing check: {token}")
 
 
-def reopen_isolated(path: str) -> sqlite3.Connection:
-    """隔离重开：版本标记 + 结构验证（PK/索引/origin 列）。"""
-    conn = sqlite3.connect(f"file:{path}?mode=rw", uri=True)
+def reopen_isolated(path: str,
+                    _connect=None) -> sqlite3.Connection:
+    """隔离重开：版本标记 + 结构深度验证 + 外键强制启用（S1-03）。"""
+    connect = _connect or (lambda p: sqlite3.connect(
+        f"file:{p}?mode=rw", uri=True))
+    conn = connect(path)
     conn.row_factory = sqlite3.Row
     try:
+        conn.execute("PRAGMA foreign_keys=ON")
+        if conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+            raise MigrationError("foreign_keys enforcement refused to enable")
         verify_structure(conn)
     except Exception:
         conn.close()
@@ -105,8 +154,8 @@ def reopen_isolated(path: str) -> sqlite3.Connection:
     return conn
 
 
-def migrate_fills_identity(path: str, *, _fail_after: Optional[str] = None
-                           ) -> Dict[str, Any]:
+def migrate_fills_identity(path: str, *, _fail_after: Optional[str] = None,
+                           _connect=None) -> Dict[str, Any]:
     """在【显式指定的库】上执行 §1.2 单事务表重建迁移（隔离专用）。
 
     - 全列双向 EXCEPT 等价核验（非抽样）；
@@ -114,9 +163,10 @@ def migrate_fills_identity(path: str, *, _fail_after: Optional[str] = None
     - 提交前 PRAGMA foreign_key_check 非空 → ROLLBACK；
     - foreign_keys 状态在 finally 中恢复并验证；
     - 幂等：标记存在 → no-op（但仍验证结构）。
-    _fail_after 仅为测试注入失败点。
+    _fail_after 仅为测试注入失败点；_connect 为连接工厂（FK 恢复
+    可观测性——评审指出：连接级 pragma 可经工厂代理观测）。
     """
-    conn = sqlite3.connect(path)
+    conn = (_connect or sqlite3.connect)(path)
     try:
         if _marker_value(conn) == SCHEMA_VERSION:
             verify_structure(conn)
@@ -171,13 +221,14 @@ def migrate_fills_identity(path: str, *, _fail_after: Optional[str] = None
             conn.rollback()
             raise MigrationError(f"migration rolled back: {exc}") from exc
         finally:
+            # 无条件恢复并验证（评审 S1-03 教训：不能只在旧状态为 ON 时
+            # 才恢复——迁移连接必须以 FK=ON 收尾，可观测性经 _connect 工厂）
             conn.execute("PRAGMA foreign_keys=ON")
-            if old_fk:
-                restored = conn.execute(
-                    "PRAGMA foreign_keys").fetchone()[0]
-                if not restored:
-                    raise MigrationError(
-                        "foreign_keys pragma not restored after migration")
+            restored = conn.execute(
+                "PRAGMA foreign_keys").fetchone()[0]
+            if not restored:
+                raise MigrationError(
+                    "foreign_keys pragma not restored after migration")
     finally:
         conn.close()
     conn = reopen_isolated(path)  # 迁移后重开即结构验证
@@ -193,25 +244,67 @@ def _rollback(path, conn):
     return MigrationError("migration rolled back")
 
 
+_AGG_WHERE = (" WHERE client_order_id = ? AND quantity_effect_applied = 1"
+              " AND economic_effect_applied = 1"
+              " AND NOT (synthetic = 1 AND covered_by_fact_id IS NOT NULL)")
+
+_PREC_CAP = 10000
+
+
+def _needed_prec(vals):
+    """动态精度（计划 §0）：max(28, 最大有效位数, 指数跨度+1) + 4。"""
+    digits = max(len(v.as_tuple().digits) for v in vals)
+    min_exp = min(v.as_tuple().exponent for v in vals)
+    max_adj = max(v.adjusted() for v in vals)
+    span = max_adj - min_exp + 2
+    return max(28, digits, span) + 4
+
+
+def _exact_sum(vals):
+    """精确求和：Inexact/Rounded 陷阱 + 一次翻倍重试；上限 10000。
+
+    超上限输入直接拒收（不进入运算）；重试不突破上限（计划 §0）。
+    """
+    from decimal import localcontext, Inexact, Rounded
+    need = _needed_prec(vals)
+    if need > _PREC_CAP:
+        raise ValueError(
+            f"precision requirement {need} beyond support cap {_PREC_CAP}")
+    with localcontext() as ctx:
+        ctx.prec = need
+        ctx.traps[Inexact] = True
+        ctx.traps[Rounded] = True
+        try:
+            return sum(vals, Decimal(0))
+        except (Inexact, Rounded):
+            ctx.prec = min(ctx.prec * 2, _PREC_CAP)
+            return sum(vals, Decimal(0))  # 一次重试；仍触发则异常上抛
+
+
 def aggregate_qty_v2(conn, client_order_id: str) -> Dict[str, Any]:
-    """精度分级聚合（§1.4）：EVENT=Decimal 精确；LEGACY 照常计入。"""
+    """精度分级聚合（§1.4）——S1-01/02 修正。
+
+    数量/经济效果过滤与已替换合成行排除规则与旧 fills_aggregate
+    完全一致（S1-01）；求和在陷阱保护的 Decimal 域内进行，EXACT
+    标签不再伴随静默舍入（S1-02）。
+    """
     rows = conn.execute(
-        "SELECT origin, qty_raw, qty FROM fills WHERE client_order_id = ?",
+        "SELECT origin, qty_raw, qty FROM fills" + _AGG_WHERE,
         (client_order_id,)).fetchall()
     if not rows:
         return {"qty": Decimal(0), "fills": 0, "precision": "EMPTY"}
-    total = Decimal(0)
+    vals = []
     has_legacy = has_event = False
     for r in rows:
         if r["origin"] == "EVENT":
             has_event = True
-            total += Decimal(r["qty_raw"])
+            vals.append(Decimal(r["qty_raw"]))
         else:
             has_legacy = True
-            total += Decimal(str(r["qty"]))  # LEGACY_APPROXIMATE 通道
+            vals.append(Decimal(str(r["qty"])))  # LEGACY_APPROXIMATE 通道
     tier = ("MIXED_APPROXIMATE" if has_legacy and has_event
             else "LEGACY_APPROXIMATE" if has_legacy else "EXACT")
-    return {"qty": total, "fills": len(rows), "precision": tier}
+    return {"qty": _exact_sum(vals), "fills": len(rows), "precision": tier}
 
 
 def cross_tier_compare(event_qty_raw: str, legacy_qty_real: float
