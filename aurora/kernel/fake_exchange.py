@@ -251,8 +251,12 @@ class FakeExchange(ExchangePort):
             # LONG) 是减多头腿，不是开空头腿。ONE-WAY（BOTH）并入多头腿
             # 净额（单向模式本无双腿）。
             leg = getattr(req, "position_side", "LONG") or "LONG"
+            # 腿以非负幅度累计：开腿方向的成交增、反向减。
+            # LONG 腿：BUY 增 / SELL 减；SHORT 腿：SELL 增 / BUY 减
+            # （W43 复验缺陷2修复：此前 SHORT 腿用了与外部种子相反的
+            # 符号约定，导致真实订单双腿被净额成假空仓）。
             if leg == "SHORT":
-                short_leg += sign * order["filled_qty"]
+                short_leg += -sign * order["filled_qty"]
             else:
                 long_leg += sign * order["filled_qty"]
             if req.order_kind == OrderKind.ENTRY:

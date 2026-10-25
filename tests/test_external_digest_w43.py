@@ -431,3 +431,43 @@ class EventEntryConflictBypassTests(unittest.TestCase):
                 filled_at="t1"))
             self.assertEqual(same["class"], "DUPLICATE")
             led.close()
+
+
+class FakeDualLegViaRealOrdersTests(unittest.TestCase):
+    """W43 复验缺陷2：真实订单成交构成的双腿（非外部种子）必须
+    返回 UNKNOWN，不得净额成假空仓。红→绿。"""
+
+    def test_buy_long_plus_sell_short_yields_unknown_not_flat(self):
+        import uuid
+        from aurora.kernel.port import OrderRequest
+        ex = FakeExchange()
+        # 通过真实 submit_order 构造双腿：LONG 腿 BUY + SHORT 腿 SELL
+        ex.submit_order(OrderRequest(
+            client_order_id=f"L-{uuid.uuid4().hex[:6]}", symbol="BTCUSDT",
+            order_kind=OrderKind.ENTRY, side="BUY", position_side="LONG",
+            quantity=0.001))
+        ex.submit_order(OrderRequest(
+            client_order_id=f"S-{uuid.uuid4().hex[:6]}", symbol="BTCUSDT",
+            order_kind=OrderKind.ENTRY, side="SELL", position_side="SHORT",
+            quantity=0.001))
+        pos = ex.position("BTCUSDT")
+        self.assertIsNone(
+            pos,
+            f"dual non-zero legs must be UNKNOWN, got {pos}")
+
+    def test_short_leg_reduce_via_buy_keeps_single_leg_known(self):
+        import uuid
+        from aurora.kernel.port import OrderRequest
+        ex = FakeExchange()
+        ex.submit_order(OrderRequest(
+            client_order_id=f"S1-{uuid.uuid4().hex[:6]}", symbol="BTCUSDT",
+            order_kind=OrderKind.ENTRY, side="SELL", position_side="SHORT",
+            quantity=0.002))
+        ex.submit_order(OrderRequest(
+            client_order_id=f"S2-{uuid.uuid4().hex[:6]}", symbol="BTCUSDT",
+            order_kind=OrderKind.CLOSE, side="BUY", position_side="SHORT",
+            quantity=0.001, reduce_only=True))
+        pos = ex.position("BTCUSDT")
+        # 只剩 SHORT 腿净 0.001：单腿 → 已知（负）
+        self.assertIsNotNone(pos)
+        self.assertAlmostEqual(pos.signed_qty, -0.001, places=10)
