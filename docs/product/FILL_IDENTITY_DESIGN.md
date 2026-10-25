@@ -1,13 +1,17 @@
-# FILL IDENTITY & ECONOMIC COMPLETENESS — 设计 v3（仅评审稿，未实现）
+# FILL IDENTITY & ECONOMIC COMPLETENESS — 设计 v4（仅评审稿，未实现）
 
-> 状态：**DESIGN-REVISED / 待评审**（v2 收到 CHANGES-REQUIRED；本版
-> 仅补三份材料，不实现、不迁移真实账本、不接 funding、不动权限。
+> 状态：**DESIGN-REVISED / 待评审**（v3 收到 CHANGES-REQUIRED F1–F6；
+> 本版逐条闭合，不实现、不迁移真实账本、不接 funding、不动权限。
 > R1–R4 既有通过结论不变。）
-> v2→v3 变更摘要：A) 具体 SQLite DDL + 迁移事务与失败回滚（§1.2
-> 重写）；B) 类型化引用映射表，定位历史行≠确认身份（§1.3 重写）；
-> C) 费用有效投影判定表：幂等/冲突/只扣一次/精度边界（§2.3 扩成
-> §3）；D) 测试目录增补 NULL 唯一性/引用串型/投影/迁移回滚/
-> FK+CHECK 两类。
+> v3→v4 摘要：F1 索引只建一次+失败恢复 FK+提交前 foreign_key_check；
+> F2 补真实 CHECK 约束与 origin 列（LEGACY/EVENT 区分入 DDL）；
+> F3 covered_by_fact_id 现行实际写读映射成表（含 replaced-by: 标记）
+> +引用目标存在性/类型校验；F4 费用规则统一为"可入账 INCOMPLETE、
+> 仅 KNOWN 声明强制 raw+asset"，双 UNKNOWN 口径同步修正；F5 只扣
+> 一次证明链（补充稳定 ID 唯一键/投影版本/记账效果幂等键/单事务
+> 边界/delta 重算语义）；F6 精度统一为原始串有限 Decimal 数值相等
+> （去 normalize，历史近似不比不投影）；另：迁移全量等价核验+
+> 重开结构验证；测试目录唯一编号（含补录 T-R1c），取消手算总数。
 
 ## 0. 术语修正
 
@@ -36,104 +40,134 @@ v1 的矛盾已修正：symbol 既然入键，`BTCUSDT/trade=123` 与
 `ETHUSDT/trade=123` 就是两个不同身份，可各自独立存储；"错绑订单"
 才是隔离熔断的触发条件，而非 trade ID 撞号。
 
-### 1.2 存储方案：具体 SQLite DDL 与迁移事务
+### 1.2 存储方案：具体 SQLite DDL 与迁移事务（F1/F2 修正）
 
 现行 `fill_id TEXT PRIMARY KEY` 无法容纳跨 symbol 同 ID。迁移为
 **表重建**（SQLite 无法改主键）。
 
-**新表 DDL（fills_v2，原子改名前的临时名）**：
+**最终表 DDL（索引只在迁移事务内建一次，见 F1）**：
 
 ```sql
-CREATE TABLE fills_v2 (
+CREATE TABLE fills (
     fill_id          TEXT    NOT NULL,
-    symbol           TEXT,              -- NULL=历史身份未解析（仅迁移行；
-                                       --   新事件 NOT NULL 由入口层保证+T-I4）
+    symbol           TEXT,
+    origin           TEXT    NOT NULL DEFAULT 'LEGACY'
+                     CHECK (origin IN ('LEGACY','EVENT')),
     client_order_id  TEXT    NOT NULL
                      REFERENCES orders(client_order_id),
-    qty              REAL    NOT NULL,
-    price            REAL    NOT NULL,
-    fee              REAL,              -- 兼容列；有效性判定见 §3（fee_raw）
-    fee_raw          TEXT,              -- 交易所原始费用串；新事件必填
-    fee_asset        TEXT,              -- NULL=UNKNOWN（历史）；新事件必填
+    qty              REAL    NOT NULL CHECK (qty > 0),
+    price            REAL    NOT NULL CHECK (price > 0),
+    fee              REAL,
+    fee_raw          TEXT,
+    fee_asset        TEXT,
     realized_pnl     REAL    NOT NULL DEFAULT 0,
-    derivation_ctx   TEXT,              -- JSON；历史 NULL ≡ LEGACY_V0
-    side             TEXT    NOT NULL,
+    derivation_ctx   TEXT,
+    replaced_by      TEXT,              -- R2 新写入口（§1.3）；历史为 NULL
+    side             TEXT    NOT NULL CHECK (side IN ('BUY','SELL')),
     filled_at        TEXT    NOT NULL,
-    synthetic        INTEGER NOT NULL DEFAULT 0,
+    synthetic        INTEGER NOT NULL DEFAULT 0 CHECK (synthetic IN (0,1)),
     replaces_synthetic_fill_id TEXT,
     covered_by_fact_id        TEXT,
-    quantity_effect_applied   INTEGER NOT NULL DEFAULT 1,
-    economic_effect_applied   INTEGER NOT NULL DEFAULT 1,
-    PRIMARY KEY (symbol, fill_id)
+    quantity_effect_applied   INTEGER NOT NULL DEFAULT 1
+                              CHECK (quantity_effect_applied IN (0,1)),
+    economic_effect_applied   INTEGER NOT NULL DEFAULT 1
+                              CHECK (economic_effect_applied IN (0,1)),
+    PRIMARY KEY (symbol, fill_id),
+    -- F2：约束把"新事件 vs 历史行"写进 schema，不靠入口注释：
+    CHECK (origin = 'LEGACY' OR symbol IS NOT NULL),          -- 新事件必带 symbol
+    CHECK (fee_raw IS NULL OR (fee_raw != '' AND fee_asset IS NOT NULL
+                               AND fee_asset != ''))           -- 声明 KNOWN 费用
+                                                                -- 必须有合法非空串+资产
 );
--- NULL symbol 的唯一性钉子：SQLite PK 对 NULL 不去重，
--- 用部分唯一索引保证同一 trade_id 至多一行未解析历史行。
-CREATE UNIQUE INDEX ux_fills_null_symbol
-    ON fills_v2 (fill_id) WHERE symbol IS NULL;
+-- 唯一索引：只在迁移事务内创建一次（F1：不再出现在建表 DDL 中）
+-- CREATE UNIQUE INDEX ux_fills_null_symbol
+--     ON fills (fill_id) WHERE symbol IS NULL;
 ```
 
-要点：
-- **不加 `UNIQUE(fill_id)` 单列约束**——那会重新禁止跨 symbol 同 ID
-  （违背 T-I1）；跨 symbol 存储由复合 PK 承载，NULL 历史行的防重
-  由部分唯一索引承载。
-- 历史行 `fee=0.0`（旧默认值）**无法区分真零与未知** → 迁移不回填
-  fee_raw，历史费用一律按 §3 判 UNKNOWN（fail-closed 方向）。
+**CHECK 约束与对应错误场景（T-DB2/T-M4 的注入面）**：
 
-**迁移事务（单事务，失败整体回滚）**：
+| 约束 | 违约场景（测试注入） | 期望 |
+|---|---|---|
+| `qty>0` / `price>0` | 0、负数、NaN/Inf 串 | IntegrityError(CHECK) 上抛，不吞 DUPLICATE |
+| `side IN ('BUY','SELL')` | 'buy'/'LONG'/空 | 同上 |
+| `origin IN (...)` | 未知 origin | 同上 |
+| `origin='EVENT'→symbol NOT NULL` | 新事件缺 symbol | CHECK 拒绝（schema 级，先于入口层） |
+| `fee_raw→非空+fee_asset 非空` | 有 raw 无 asset / 空串 | 同上（F4：fee_raw=NULL 合法=INCOMPLETE） |
+| FK `client_order_id→orders` | 引用不存在订单 | IntegrityError(FK) 上抛且与 CHECK 可区分 |
+| `ux_fills_null_symbol` | 同 trade_id 二行 NULL | IntegrityError(UNIQUE) 走身份比较路径 |
 
-```sql
-PRAGMA foreign_keys=OFF;            -- 表交换期间暂停 FK
-BEGIN IMMEDIATE;
-  CREATE TABLE fills_v2 (...);      -- 上述 DDL
-  INSERT INTO fills_v2 (逐列清单)
-      SELECT 逐列清单 FROM fills;   -- 历史行零改写（symbol/fee_raw/
-                                   --   fee_asset/derivation_ctx 置 NULL）
-  -- 事务内校验：行数一致 + 逐行内容抽样校验和一致，不符→ROLLBACK
-  DROP TABLE fills;                 -- 无表 FK 指向 fills（已核实：
-                                    --   reconciliation_facts 为 JSON 载荷）
-  ALTER TABLE fills_v2 RENAME TO fills;
-  CREATE UNIQUE INDEX ux_fills_null_symbol
-      ON fills (fill_id) WHERE symbol IS NULL;
-  INSERT OR REPLACE INTO schema_meta (key, value)
-      VALUES ('fills_identity_version', '3');   -- 标记与数据同事务
-COMMIT;
-PRAGMA foreign_keys=ON;
-```
-
-- **失败回滚**：任何一步失败 → `ROLLBACK` → 原 fills 表与无标记
-  状态原样保留，可安全重试；标记写在事务内，杜绝"迁移成功但无
-  标记"或"有标记但未迁移"的中间态。
-- **幂等重开**：打开时读 `schema_meta.fills_identity_version`，
-  `'3'` 即跳过（T-M2）。
-- **迁移失败注入测试**（T-M4）：事务中途失败（CHECK 违约注入）→
-  原表逐字节语义不变、无标记、可重试成功。
-- 事故账本本轮不迁移；真实迁移仅在对副本演练（T-M3）通过且
-  评审放行后另行授权。
-
-### 1.3 类型化引用映射表（定位 ≠ 确认身份）
-
-四类引用，载体、形态与消解规则各自定义：
-
-| # | 引用类型 | 载体 | 历史形态 | 新形态 | 消解规则 |
-|---|---|---|---|---|---|
-| R1 | venue 成交引用 | `reconciliation_facts.covered_fill_ids[]` | 裸 trade_id | **必须** `symbol:trade_id` | 裸 ID：唯一 symbol 命中→可定位；唯一 NULL 行→可定位；多命中→UNRESOLVED 告警（不猜） |
-| R2 | 合成替换 | `fills.replaces_synthetic_fill_id` | 裸 trade_id | **必须** `symbol:trade_id` | 同 R1 定位；定位后要求替换行与被替换行 symbol 一致，否则 REPLACEMENT_ANOMALY 隔离 |
-| R3 | 证据覆盖 | `fills.covered_by_fact_id` | fact_id（指向 `reconciliation_facts`，**本就不是 fill 引用**） | 不变 | 直查 facts 表；不参与 fill 消解（类型不同） |
-| R4 | 费用补充 | `fill_fee_supplements.fill_ref`（新表，§3） | 无（新表） | **必须** `symbol:trade_id`，裸 ID 拒收 | 限定引用直查 |
-
-**定位 ≠ 确认身份（冻结规则）**：
+**迁移事务（F1：索引单次创建；失败恢复 FK；提交前 FK 完整性检查；
+核验=全量等价而非抽样）**：
 
 ```text
-裸 ID 定位到 NULL-symbol 历史行 → 得到一个【审计位置】：
-  ✗ 不把该行 symbol 升级为已知
-  ✗ 不据此对后续同 trade_id 事件判 DUPLICATE / 收养 / 重复入账
-  ✓ 仅允许作为审计链接展示
-后续同 trade_id 带 symbol 事件 → 仍走 IDENTITY_UNRESOLVED（T-R2）
-历史身份的正式裁决 = 独立操作员处置流程（本轮不设计，登记待办）
+01  old_fk = PRAGMA foreign_keys          -- 记录进入前状态
+02  PRAGMA foreign_keys=OFF
+03  BEGIN IMMEDIATE
+04      CREATE TABLE fills_new (...上述 DDL...)
+05      INSERT INTO fills_new (旧列全列, origin='LEGACY',
+              symbol=NULL, fee_raw=NULL, fee_asset=NULL,
+              derivation_ctx=NULL, replaced_by=NULL)
+          SELECT 旧列全列 FROM fills
+06      -- F 材料修正：全量等价核验（非抽样）——旧列集上双向 EXCEPT
+07      -- 必须为空；不为空 → 显式 ROLLBACK
+08      CREATE UNIQUE INDEX ux_fills_null_symbol
+            ON fills_new (fill_id) WHERE symbol IS NULL   -- 只建这一次
+09      DROP TABLE fills
+10      ALTER TABLE fills_new RENAME TO fills
+11      INSERT OR REPLACE INTO schema_meta(key,value)
+            VALUES ('fills_identity_version','4')
+12      -- F1：提交前 FK 完整性检查（事务内）
+13      IF EXISTS (PRAGMA foreign_key_check) → ROLLBACK
+14  COMMIT
+15  PRAGMA foreign_keys=ON                 -- 无条件恢复
+16  IF old_fk == 1: 断言 PRAGMA foreign_keys 现为 1（恢复验证）
+17  重开验证：schema_meta=4 且结构断言（PK 列序、索引存在、
+      CHECK 存在）符合版本，否则拒绝打开（SafetyViolation）
 ```
 
-新引用串型校验：写入侧强制 `^[^:]+:.+$`（symbol 非空 + trade_id
-非空）；不合规拒收（T-R1c）。
+- **失败回滚**：任何一步失败 → ROLLBACK → 原表、无索引残留（索引
+  在事务内创建，随回滚消失）、无标记；**foreign_keys=ON 的恢复放
+  在 try/finally 语义层**（伪代码 15–16 行），即使 ROLLBACK 抛错
+  也执行并验证。
+- **幂等重开**：读标记=4 → 跳过迁移；但**仍执行结构验证**（17 行），
+  标记与结构不符 = 拒绝打开。
+- 历史 `fee=0.0` 无法辨真零 → 迁移不回填 fee_raw，历史费用一律按
+  §3 判 UNKNOWN。
+- 事故账本本轮不迁移；真实迁移仅在对副本演练通过且评审放行后
+  另行授权。
+
+### 1.3 类型化引用映射表（F3：以现行代码实际写读为准）
+
+**现行代码取证**（ledger.py / orchestrator.py）——`covered_by_fact_id`
+存在**三种实际值形态**，不能断言它只指向 facts 表：
+
+| 现行写入点 | 值形态 | 含义 |
+|---|---|---|
+| `insert_fill(covered_by_fact_id=fact_id)`（orchestrator COVERED_BY_FACT 路径） | 真实 fact_id | 证据覆盖链接（R3） |
+| `mark_synthetic_replaced()` | `'replaced-by:' + 真实fill_id` | 合成替换标记（**借用了本列**，非 fact 引用） |
+| 其余 | NULL | 无 |
+
+**类型化引用映射表 v4**：
+
+| # | 引用类型 | 载体（现行→目标） | 历史形态与兼容 | 新形态 | 消解与校验 |
+|---|---|---|---|---|---|
+| R1 | venue 成交引用 | `reconciliation_facts.covered_fill_ids[]` | 裸 trade_id | `symbol:trade_id` | 裸 ID 三分支（唯一命中/唯一NULL行/多命中告警）；**新写入校验目标存在**（按限定键查 fills），不存在→拒收，非仅正则 |
+| R2 | 合成替换 | 现行：`replaces_synthetic_fill_id`（裸）+ `covered_by_fact_id='replaced-by:X'`（借用） | 借用标记**只读兼容**：解析器识别 `replaced-by:` 前缀→按 R2 语义处理，不迁移不改写 | 新写入口统一走新列 `replaced_by`（`symbol:trade_id`） | 定位后 symbol 一致性校验；不一致=REPLACEMENT_ANOMALY |
+| R3 | 证据覆盖 | `covered_by_fact_id` | **混合列**：真实 fact_id 与 `replaced-by:` 标记并存 → 消解器先按前缀分流（标记→R2；其余→R3） | 新写入**禁止**再写 `replaced-by:` 形态到本列（入口层强制），R3 仅写真实 fact_id | R3 消解=直查 reconciliation_facts 且 fact 存在；缺失→悬空引用告警 |
+| R4 | 费用补充 | `fill_fee_supplements.fill_ref`（新表 §3） | 无 | `symbol:trade_id`，裸 ID 拒收 | 目标存在性校验同 R1 |
+
+**引用通用校验（超出正则）**：写入前按引用类型查询目标表确认
+存在且类型正确；读取消解同样回查——**格式合规但目标不存在 =
+悬空引用**，新写入拒收、历史悬空告警不猜。
+
+**定位 ≠ 确认身份（v3 冻结规则不变）**：
+
+```text
+裸 ID 定位到 NULL-symbol 历史行 → 审计位置：
+  ✗ 不升级 symbol  ✗ 不判 DUPLICATE/收养/重复入账  ✓ 仅审计链接
+后续同 trade_id 带 symbol 事件 → 仍 IDENTITY_UNRESOLVED（T-R2）
+历史身份正式裁决 = 独立操作员处置流程（登记待办）
+```
 
 ## 2. 三分类（接受 + 三条约束）
 
@@ -175,14 +209,20 @@ DERIVATION_DEVIATION 发生时：
 费用的 UNKNOWN **既非冲突也非完整重复**。字段状态机：
 
 ```text
-比较(a, b)：
-  KNOWN  vs KNOWN    → 规范化 Decimal 相等性（见下）；不等=冲突
-  KNOWN  vs UNKNOWN  → INCOMPLETE（任何方向：未知不得覆盖已知；
-                       也不得据此宣告完整 DUPLICATE）
-  UNKNOWN vs UNKNOWN → 该字段匹配，但整体判定仍受其他字段约束
+比较(a, b)（F4 口径修正）：
+  KNOWN  vs KNOWN    → 有限 Decimal 数值相等（§3.4）；不等=冲突
+  KNOWN  vs UNKNOWN  → INCOMPLETE（任何方向：未知不覆盖已知；
+                       也不据此宣告完整 DUPLICATE）
+  UNKNOWN vs UNKNOWN → INCOMPLETE（该字段【不可证实】——不算"匹配"，
+                       不计入确认相等；整体永不因此字段判 DUPLICATE）
 
 INCOMPLETE 时：原行不动；后到的已知值以【追加补充事实】入账
 （fill_fee_supplements，引用成交，不修改历史行）
+
+费用入账规则（F4 冻结，取代 §3.4 旧句"缺 fee_raw 拒收"）：
+  成交事实允许在费用 INCOMPLETE（fee_raw=NULL）状态下入账；
+  只有【声明 KNOWN】（提供了 fee_raw）才强制要求合法有限 Decimal
+  原始串 + 非空 fee_asset（schema CHECK 已同口径）。
 ```
 
 **比较算子**：撤销 v1 的固定 `1e-9`。采用规范化 Decimal 比较——
@@ -211,57 +251,65 @@ INCOMPLETE 时：原行不动；后到的已知值以【追加补充事实】入
 | UNKNOWN | 多条且规范化一致 | KNOWN(S) | 投影一次 |
 | 任意 | 多条互相冲突 | **FEE_CONFLICT** | 不投影；告警；**不取先到/后到/均值** |
 | KNOWN(V0) | KNOWN(S1) 且 S1≠V0（规范化后） | **FEE_CONFLICT** | 保留 V0 原值；不覆盖；告警；损益 UNRELIABLE |
-| UNKNOWN | UNKNOWN | **INCOMPLETE** | 仍未知——**非 0、非完整重复、非冲突** |
+| UNKNOWN | UNKNOWN | **INCOMPLETE** | 仍未知——非 0、非完整重复、非冲突、亦非"字段匹配"（§2.3 F4） |
 
-### 3.3 只扣一次（deduct-once）机制
+### 3.3 只扣一次（deduct-once）：证明链（F5 重写）
+
+单行主键只证明"一行"，不证明"扣费动作恰一次"。补全四层证明链：
 
 ```text
-fill_fee_projection 表：
-  fill_ref        TEXT PRIMARY KEY     -- symbol:trade_id
-  state           TEXT                 -- PROJECTED / CONFLICTED / PENDING
-  effective_raw   TEXT                 -- Decimal 原文（投影依据）
-  source          TEXT                 -- base 或 supplement 稳定ID
-  projected_at    TEXT
-  derivation_ctx  TEXT                 -- 与 §2.1 同构的投影上下文
+(1) 补充事实幂等：fill_fee_supplements.stable_event_id UNIQUE
+    （venue tranId 优先，无稳定 ID 拒收）；同 ID 不同内容 →
+    FEE_CONFLICT（funding 同纪律）。重放=零行新增。
 
-规则：
-  每条成交至多一行投影记录（主键保证）
-  投影发生后新补充到达 → 不二次扣；触发【显式费用重算事件】
-  （append-only，引用旧投影；与 §2.1 推导纪律同构）
-  CONFLICTED 状态 → 拒绝投影；依赖费用的风险量按 UNKNOWN 处理
-  （阻断新增风险；不设持仓 UNKNOWN；不阻减仓——与 §2.2 同界）
+(2) 投影版本：fill_fee_projection(fill_ref PRIMARY KEY,
+    projection_version INTEGER NOT NULL, effective_raw TEXT,
+    applied_effect_key TEXT UNIQUE, ...)
+
+(3) 记账效果幂等键：会计/风险层应用费用时写
+    effect_key = fill_ref + ':FEE:v' + projection_version
+    于收入/调整事实表并 UNIQUE——同一投影版本的完整金额
+    【物理上只能应用一次】；重放被键拒绝。
+
+(4) 事务边界（单事务三步）：
+    BEGIN IMMEDIATE
+      a. INSERT 补充事实（stable_event_id 唯一）
+      b. 投影更新（PENDING/旧版本 → 新版本，写 applied_effect_key）
+      c. 记账效果写入（effect_key 唯一，金额=本次 delta 或首次全额）
+    COMMIT   —— 任一步失败整体回滚，不存在"补充已入而投影未更"
+              或"投影已更而费用未扣/重复扣"的中间态
 ```
 
-### 3.4 精度边界（原始串 vs 历史 float）
+**重算语义（delta，非全额重扣）**：
 
 ```text
-比较与投影运算：仅 Decimal(normalize(原始串))；
-  "-0.400" ≡ "-0.4"（规范化相等，T-F4）
+重算事件（append-only）记录：old_effective_raw / new_effective_raw /
+  delta_raw = new − old（Decimal 精确差）
+记账效果只应用 delta；绝不再扣完整金额。
+首次投影（PENDING→v1）= 全额；此后每次重算 = 差额。
+projection_version 严格递增；effect_key 携带版本 → 旧版本键
+  永不复活，重放历史版本被唯一键拒绝。
+```
 
-基线 KNOWN 的唯一条件 = fee_raw IS NOT NULL：
+投影状态机与风险边界（§2.2 同界）：CONFLICTED → 拒绝投影，费用
+按 UNKNOWN 阻断新增风险；不设持仓 UNKNOWN；不阻减仓。
+
+### 3.4 精度边界（F6 修正：去 normalize，统一无损语义）
+
+```text
+比较算子：Decimal(raw_a) == Decimal(raw_b)
+  —— Decimal 数值相等与表示无关：Decimal("-0.400")==Decimal("-0.4")
+    为 True，无需 normalize；无舍入、无 epsilon、无损。
+  —— 合法性：Decimal(raw).is_finite() 必须成立（NaN/Infinity 拒收）。
+
+基线 KNOWN 的唯一条件 = fee_raw IS NOT NULL（schema CHECK 同口径）：
   历史行（迁移置 NULL）→ 基线一律 UNKNOWN
-  → 历史浮点 fee 值【永不参与比较或求和】，杜绝
-    float 伪差与"0 默认值冒充真零"两类污染（fail-closed 双向）
+  历史近似值（float 列 fee）：【保留作展示，永不参与比较、求和、
+  投影】——不冒充原始精度（F6：删除 v3"float 串化伪差以冲突暴露"
+  的矛盾条款；既然历史 float 从不进入比较，就不存在伪差冲突路径）
 
-新事件缺 fee_raw/fee_asset → 拒收（与 T-I4/T-F3 同口）
-投影金额以原始串形态存 effective_raw，Decimal 运算，
-不再写回任何 float 列
-```
-
-## 3. 统一校验器（不变 + 元测试口径修正）
-
-```text
-ledger.fill_content_mismatch(stored, incoming) -> MatchReport
-    唯一实现；字段集与比较算子（§2.3）单一来源
-两个入口（apply_fill_event / insert_fill）必须调用它
-```
-
-元测试口径修正（v1 的"orchestrator 不得出现 abs()"作废）：
-
-```text
-元测试 = 断言两入口对同一输入产生同一 MatchReport，
-        并静态断言 orchestrator 的成交重放路径调用
-        ledger.fill_content_mismatch（调用关系，而非禁用算术）
+投影金额以原始串形态存 effective_raw；一切投影/重算运算在
+Decimal 域完成；结果序列化为字符串，不写回 float 列。
 ```
 
 ## 4. 错误处理边界（新增，源自评审测试表）
@@ -272,68 +320,84 @@ ledger.fill_content_mismatch(stored, incoming) -> MatchReport
 - **并发写入**：同身份并发一致重放恰好入账一次（复合主键 +
   事务）；冲突路径必须抛出/熔断，不得静默丢失。
 
-## 5. 测试目录 v2（实现前冻结）
+## 5. 测试目录 v4（唯一编号清单；实现前冻结）
 
-**身份与归属（7）**
+> 计数以本清单为准（机器可数），不再手算汇总。v3 提到未列出的
+> T-R1c 已补录；v4 新增 T-M5/T-DB3/T-FP5/T-FP6/T-R3/T-F4R。
+
+**身份与归属**
 - T-I1 同 trade ID 跨 symbol：两身份独立存储、各自入账成功
 - T-I2 跨 symbol 同 ID + 错绑订单（事件 symbol ≠ 订单 symbol）→
        ATTRIBUTION_ANOMALY：隔离不入账 + 熔断
 - T-I3 同完整身份逐字段变异矩阵（cid/side/qty/price/fee/fee_asset
-       六维）→ 两入口结果逐项一致（同一 MatchReport）
-- T-I4 新事件缺 symbol → 拒收（两入口）
+       六维）→ 两入口 MatchReport 逐项一致
+- T-I4 新事件缺 symbol → 拒收（入口层 + schema CHECK origin='EVENT'
+       双层）
 - T-I5 历史行 symbol=NULL + 同 trade ID 重放 → IDENTITY_UNRESOLVED：
        不判 DUPLICATE、不收养、不重复入账 → 隔离告警
 - T-I6 历史行参与比较不崩溃；NULL 字段本身不构成冲突源
 - T-I7 跨命名空间同 (symbol, trade ID)：结构性互不可见（回归钉）
 
-**推导（4）**
+**推导**
 - T-D1 同 derivation_ctx 重算一致 → DUPLICATE 正常
 - T-D2 同 ctx 不一致 → DERIVATION_DEVIATION：原值保留、损益
        UNRELIABLE、阻断新增风险、不设持仓 UNKNOWN、不阻减仓
-- T-D3 entry 依据变化（迟到成交改均价）→ 显式重算事件追加，
-       历史行与旧值不被覆盖
+- T-D3 entry 依据变化 → 显式重算事件追加，历史行与旧值不覆盖
 - T-D4 不同 derivation_version → 显式重算路径，不判 DEVIATION
 
-**费用与非法输入（4）**
-- T-F1 fee/fee_asset 变异 → 冲突（T-I3 的子项，独立可读）
-- T-F2 fee UNKNOWN：INCOMPLETE 语义——不冲突、不完整重复、原行
-       不动；后到已知值走补充事实追加，历史行零修改
+**费用与非法输入**
+- T-F1 fee/fee_asset 变异 → 冲突（T-I3 子项，独立可读）
+- T-F2 费用 UNKNOWN 入账合法（INCOMPLETE）；声明 KNOWN 才强制
+       raw+asset（F4 口径；schema CHECK 同验）
 - T-F3 qty/price/fee 的 NaN/Infinity/非法串 → 拒收（两入口）
-- T-F4 Decimal 规范化：`"-0.400" vs "-0.4"` 相等；浮点串化伪差
-       以冲突暴露（fail-closed 方向验证）
+- T-F4 原始串 Decimal 数值相等：`-0.400 ≡ -0.4`；`0.40 ≠ 0.4+1e-300`
+- T-F4R（v4 改）历史 float 不参与比较：构造历史近似行 + 新 raw
+       事件 → 走 INCOMPLETE/UNRESOLVED 路径，永不产生"float 伪差
+       冲突"（F6 语义钉）
 
-**数据库与并发（3）**
+**数据库与并发**
 - T-DB1 FK 违约（引用不存在订单）→ 异常上抛，不吞成 DUPLICATE
-       （v1 隐患的钉子）
+- T-DB2 CHECK 与 FK 两类 IntegrityError 分别上抛且可区分
+       （错误码/信息分类器；注入面=§1.2 CHECK 表全行）
 - T-C1 并发同身份一致重放：恰好一条入账（复合主键 + 事务）
 - T-C2 并发冲突路径：抛出/熔断可见，无静默丢失
 
-**迁移完整性（3）**
-- T-M1 表重建迁移：历史行内容逐字段不变（qty/price/pnl/kill 等）
-- T-M2 重复打开幂等（schema 标记）；引用消解按 §1.3
+**迁移**
+- T-M1 表重建迁移：历史行旧列【全列】逐字段不变（双向 EXCEPT 空）
+- T-M2 重复打开幂等：标记=4 跳过 + 结构验证（PK/索引/CHECK），
+       标记与结构不符 → 拒绝打开
 - T-M3 事故账本【副本】演练迁移：kill=1、引用、数量、损益不变
+- T-M4 迁移中途失败（CHECK/FK 注入）→ ROLLBACK：原表原样、
+       无索引残留、无标记、foreign_keys 状态恢复并验证（F1）
+- T-M5（v4）提交前 PRAGMA foreign_key_check 非空 → ROLLBACK；
+       事务内索引随回滚消失（F1 单次创建证明）
 
-**NULL 唯一性与引用串型（3，v3 增）**
+**NULL 唯一性与引用**
 - T-N1 同 trade_id 两行 NULL symbol 被 ux_fills_null_symbol 阻止；
-       NULL+非NULL 共存允许（跨 symbol 存储不受伤）
+       NULL+非NULL 共存允许
 - T-R1a 新写入 R1/R2/R4 引用必须 `symbol:trade_id`（裸 ID 拒收）
 - T-R1b 裸 ID 消解三分支（唯一命中/唯一 NULL 行/多命中告警）
-- T-R2  定位≠身份：裸 ID 定位到 NULL 行后，同 trade_id 带 symbol
-       事件仍 IDENTITY_UNRESOLVED——不收养、不判 DUPLICATE
+- T-R1c 新写入引用目标存在性校验：格式合规但目标不存在 → 拒收
+       （补录；v3 提及未列）
+- T-R2  定位≠身份：裸 ID 定位 NULL 行后，同 trade_id 带 symbol
+       事件仍 IDENTITY_UNRESOLVED
+- T-R3 （v4）covered_by_fact_id 历史混合值：`replaced-by:X` 前缀
+       分流 R2 语义、真实 fact_id 走 R3、新写入禁用标记形态借列；
+       悬空引用（目标不存在）新写拒收/历史告警
 
-**费用投影（4，v3 增）**
-- T-FP1 UNKNOWN+单补充→投影恰好一次；补充重放幂等（稳定 ID）
+**费用投影**
+- T-FP1 UNKNOWN+单补充→投影 v1 全额一次；补充重放（同稳定 ID）
+       零行新增（F5-1）
 - T-FP2 双 UNKNOWN→INCOMPLETE：不投影、不写 0、不判重复
 - T-FP3 KNOWN vs 冲突补充→FEE_CONFLICT：原值保留不覆盖
-- T-FP4 投影后补充到达→显式费用重算事件，绝不二次扣
+- T-FP4 投影后补充到达→delta 重算事件：只应用差额，绝不二次
+       全额（F5 重算语义）
+- T-FP5（v4）记账效果幂等键：同 effect_key 重放被 UNIQUE 拒绝；
+       旧版本键在重算后不可复活（F5-3）
+- T-FP6（v4）三步单事务边界：b 步注入失败 → a 步补充亦回滚
+       （无"已补充未投影"中间态）（F5-4）
 
-**迁移回滚与 DB 错误两类（2+1，v3 增）**
-- T-M4 迁移中途失败（CHECK 违约注入）→ ROLLBACK：原表原样、
-       无版本标记、可重试成功
-- T-DB2 FK 违约与 CHECK 违约**分别**上抛且可区分（错误码/类），
-       两类均不得吞成 DUPLICATE（T-DB1 的细化）
-
-**元与回归（2）**
+**元与回归**
 - T-X1 元测试：两入口调用同一校验器且同输入同 MatchReport
 - T-X2 既有 W43 冲突测试在统一校验器下不改断言全绿
 
@@ -346,6 +410,6 @@ ledger.fill_content_mismatch(stored, incoming) -> MatchReport
 ## 7. 评审请求
 
 ① §1.1 判定规则三分支与 §1.2/1.3 存储引用方案；② §2 三条约束的
-落地语义（尤其 T-D2 的风险边界与 T-F2 的补充事实不回改）；③ §5
-测试目录 v3 = 30 项（v2 23 + v3 增补 7：T-N1/T-R1a/T-R1b/T-R2/
-T-FP1-4 中 4 项/T-M4/T-DB2）是否充分。
+落地语义（尤其 T-D2 的风险边界与 T-F2 的补充事实不回改）；③ §5 测试目录 v4 唯一编号清单（T-I 7/T-D 4/T-F 4+1R/T-DB 2/
+T-C 2/T-M 5/T-N 1/T-R 6/T-FP 6/T-X 2，共 39 项——以清单为准）
+是否充分。
