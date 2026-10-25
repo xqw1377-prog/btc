@@ -175,7 +175,12 @@ INDEPENDENT REVIEW = BLOCKED / REPOSITORY ACCESS（远端 origin 未含
   本分支；载体已改为本地 bundle ZIP：aurora-w43-review.zip，
   sha256 0590e7f4…731353，含全分支历史+复验材料+验证说明，零秘密）
 FILL IDENTITY DESIGN = v6 PASS WITH NONBLOCKING NOTES / CLOSED
-FILL IDENTITY IMPL PLAN = SUBMITTED FOR REVIEW（三段拆分：迁移与
+FILL IDENTITY S1        = IMPLEMENTED / AWAITING REVIEW（f201973
+  红→d709a63 绿；隔离边界全程遵守：显式调用、未接 Ledger.__init__
+  /生产入口、独立构造器、副本口径；14 唯一合同 ID 全绿；新克隆
+  767+1skip（skip=事故账本演练需原件副本，主树 768 全绿）；
+  事故原件 sha 前后一致；S2/S3 继续 HOLD）
+FILL IDENTITY IMPL PLAN = ACCEPTED WITH EXECUTION CONDITIONS（三段拆分：迁移与
   历史兼容 15 测 / 统一身份校验 21 测 / 费用补充与投影 14 测；
   52 项全覆盖零残留；三条实施说明已确定化——raw 仅 EVENT、
   Decimal→float 溢出/下溢=入口拒收、prec 公式+一次翻倍重试+

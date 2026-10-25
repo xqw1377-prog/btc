@@ -1,0 +1,4 @@
+767 passed, 1 skipped, 1 warning in 13.23s
+15 passed, 1 skipped in 0.39s
+说明：克隆环境 1 skipped = T_M3 事故账本副本演练（state/*.db 被
+gitignore，属预期——该测试在主工作树以真实副本运行并计入 16/16）。
