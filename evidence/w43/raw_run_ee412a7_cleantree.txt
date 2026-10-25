@@ -1,0 +1,6 @@
+=========================== short test summary info ============================
+FAILED tests/test_controlled_requal.py::PlanGateTests::test_main_execute_flag_still_denied
+FAILED tests/test_controlled_requal.py::PlanGateTests::test_plan_defaults_are_frozen_limits
+FAILED tests/test_controlled_requal.py::MainAndSourceTests::test_main_execute_flag_still_denied
+FAILED tests/test_controlled_requal.py::MainAndSourceTests::test_main_plan_only_zero
+4 failed, 741 passed, 1 warning in 15.01s

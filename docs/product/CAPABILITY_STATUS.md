@@ -171,6 +171,11 @@ DASHBOARD OBSERVATORY
   D1.5 / D1.6 / D2            HOLD
 STRATEGY V2 / BACKTEST        V2 / E3 / E4 CLOSED-OFFLINE
 
+INDEPENDENT REVIEW = BLOCKED / REPOSITORY ACCESS（远端 origin 未含
+  本分支；载体已改为本地 bundle ZIP：aurora-w43-review.zip，
+  sha256 0590e7f4…731353，含全分支历史+复验材料+验证说明，零秘密）
+CLEAN-TREE TESTS   = FAIL（c318bc8 735+4；ee412a7 741+4——封闭性
+  缺口登记，不以复制 .env/跳过测试消除；主树数字不作独立证据）
 W43 OFFLINE ABSORPTION = SELF-VERIFIED / REVIEW-PENDING（复验收紧已并入：
   成交身份冲突告警同ID不同内容 raise；A1 跨真实进程重启 submit=1 已证；
   funding Decimal/原始串/分资产/窗口完整性 PARTIAL_LATE 语义；-1125
