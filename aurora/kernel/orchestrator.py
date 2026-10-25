@@ -1529,7 +1529,31 @@ class Orchestrator:
                             重算保护；终态意图经证据门控逃逸边进入
                             RECOVERY_REQUIRED 并熔断
         """
-        if self.ledger.fill_exists(fill.fill_id):
+        existing = self.ledger.get_fill(fill.fill_id)
+        if existing is not None:
+            # W43 复验缺陷1修复：事件入口必须做内容一致性校验——
+            # 同 fill_id 不同内容 = 身份冲突，持久化告警（kill）+ 仓位
+            # 事实 UNKNOWN，绝不静默 DUPLICATE；一致重放才幂等。
+            if (
+                existing["client_order_id"] != fill.client_order_id
+                or abs(float(existing["qty"]) - float(fill.qty)) > 1e-12
+                or abs(float(existing["price"]) - float(fill.price)) > 1e-9
+                or existing["side"] != fill.side
+            ):
+                self.ledger.engage_kill(
+                    f"fill identity conflict {fill.fill_id}: stored="
+                    f"(cid={existing['client_order_id']},qty={existing['qty']},"
+                    f"price={existing['price']},side={existing['side']}) "
+                    f"incoming=(cid={fill.client_order_id},qty={fill.qty},"
+                    f"price={fill.price},side={fill.side})")
+                self.ledger.set_position_fact(
+                    self.symbol, PositionFactState.UNKNOWN,
+                    source="fill-event",
+                    note=f"identity conflict {fill.fill_id}")
+                return {"class": "IDENTITY_CONFLICT",
+                        "fill_id": fill.fill_id,
+                        "action": "MANUAL_RECOVERY",
+                        "kill_engaged": True}
             return {"class": "DUPLICATE", "fill_id": fill.fill_id}
 
         order = self.ledger.get_order(fill.client_order_id)

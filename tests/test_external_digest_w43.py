@@ -388,3 +388,46 @@ ledger.close()
                                    places=10)  # 权威归属成功
             self.assertIn(result["intent_state"],
                           ("PROTECTED", "FILLED_UNPROTECTED"))
+
+
+class EventEntryConflictBypassTests(unittest.TestCase):
+    """W43 复验缺陷1：事件入口在内容比较前直接返回 DUPLICATE，
+    绕过 insert_fill 的身份冲突检查。红→绿。"""
+
+    def _seed(self, led):
+        led.create_intent("I-EE", "BTCUSDT", "LONG", 0.01)
+        led.record_order_submitting(
+            client_order_id="EE-C", intent_id="I-EE", order_kind="ENTRY",
+            side="BUY", position_side="LONG", quantity=0.01)
+
+    def test_conflicting_event_content_is_not_silent_duplicate(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            led = Ledger(os.path.join(tmp, "l.db"))
+            self._seed(led)
+            orch = Orchestrator(led, FakeExchange(), instance_id="ee")
+            first = orch.apply_fill_event(Fill(
+                fill_id="EE-1", client_order_id="EE-C",
+                qty=0.01, price=100.0, fee=0.0, side="BUY",
+                filled_at="t1"))
+            self.assertEqual(first["class"], "LATE_NEW_FILL")
+            # 同 fill_id、不同内容（qty/price/cid 变化）——事件入口必须
+            # 识别为身份冲突并持久化告警，而不是 DUPLICATE
+            for bad in (("EE-C", 0.02, 100.0),
+                        ("EE-C", 0.01, 101.0)):
+                out = orch.apply_fill_event(Fill(
+                    fill_id="EE-1", client_order_id=bad[0],
+                    qty=bad[1], price=bad[2], fee=0.0, side="BUY",
+                    filled_at="t1"))
+                self.assertEqual(
+                    out["class"], "IDENTITY_CONFLICT",
+                    f"content {bad} must raise conflict, got {out}")
+                self.assertEqual(led.kill_state()["engaged"], 1)
+                self.assertIn("identity conflict",
+                              led.kill_state()["reason"])
+            # 一致重放仍幂等为 DUPLICATE
+            same = orch.apply_fill_event(Fill(
+                fill_id="EE-1", client_order_id="EE-C",
+                qty=0.01, price=100.0, fee=0.0, side="BUY",
+                filled_at="t1"))
+            self.assertEqual(same["class"], "DUPLICATE")
+            led.close()
