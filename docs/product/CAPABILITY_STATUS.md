@@ -174,10 +174,13 @@ STRATEGY V2 / BACKTEST        V2 / E3 / E4 CLOSED-OFFLINE
 INDEPENDENT REVIEW = BLOCKED / REPOSITORY ACCESS（远端 origin 未含
   本分支；载体已改为本地 bundle ZIP：aurora-w43-review.zip，
   sha256 0590e7f4…731353，含全分支历史+复验材料+验证说明，零秘密）
-FILL IDENTITY DESIGN = SUBMITTED FOR REVIEW（docs/product/FILL_IDENTITY_
-  DESIGN.md：身份作用域四元组 fp/env/symbol/tradeID；经济字段三分类
-  事实/推导/记账；统一校验器消除两套比较；16 项测试清单——
-  仅设计，未实现；不接 funding、不动权限）
+FILL IDENTITY DESIGN = v2 REVISED / AWAITING REVIEW（v1 CHANGES-
+  REQUIRED 已吸收：跨 symbol 规则反转=独立身份、复合主键+表重建
+  迁移方案成文、fingerprint 降格为凭证命名空间代理、推导上下文
+  冻结+显式重算、DEVIATION 不覆盖不依赖、已知/未知比较表+
+  Decimal 规范化（撤 1e-9）、测试目录 23 项含 FK 吞异常/并发/
+  迁移完整性/元测试改调用关系口径——仅设计，未实现；不迁移
+  任何真实账本；不接 funding；不动权限）
 W43 REVIEW FIXES   = R1-R4 LANDED（ace1ad9/3a8ddec/650a429/fd35923）
   独立复验裁定：PASS WITH NONBLOCKING NOTES（752+68 subtests/0 fail）
   更正两处表述：
