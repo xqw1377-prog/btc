@@ -191,10 +191,11 @@ class A3HedgeDualLegSnapshotTests(unittest.TestCase):
 class A4FundingIncomeTests(unittest.TestCase):
     """#13679：资金费幂等入账；未取到 ≠ 0；与平仓路径解耦。"""
 
-    def ROW(self, tran="9001", amount="-0.42", ts=1788600000000):
-        return {"symbol": "BTCUSDT", "incomeType": "FUNDING_FEE",
-                "amount": amount, "time": ts, "tranId": tran,
-                "entryId": None}
+    def ROW(self, tran="9001", amount="-0.42", ts=1788600000000,
+            asset="USDT"):
+        return {"symbol": "BTCUSDT", "asset": asset,
+                "incomeType": "FUNDING_FEE", "amount": amount,
+                "time": ts, "tranId": tran, "entryId": None}
 
     def test_idempotent_by_stable_event_id_replay_ignored(self):
         store = {}
@@ -246,13 +247,15 @@ class A4FundingIncomeTests(unittest.TestCase):
             self.ROW(tran="1", amount="0.1", ts=1),                       # BTCUSDT
             self.ROW(tran="2", amount="0.2", ts=2),
             {"symbol": "ETHUSDT", "incomeType": "FUNDING_FEE",
-             "amount": "0.3", "time": 3, "tranId": "3", "asset": "USDT"},
+             "amount": "0.3", "time": 3, "tranId": "3", "asset": "USDC"},
         ]
         ingest_funding_events(rows, store)
         totals = funding_totals_by_asset(store)
-        self.assertEqual(totals["BTCUSDT"], "0.3")   # 0.1+0.2 Decimal 精确
+        # 按【结算资产】分列：两行 USDT、一行 USDC —— 同资产 Decimal
+        # 精确合计，跨资产不相加
         self.assertEqual(totals["USDT"], "0.3")
-        self.assertEqual(len(totals), 2)              # 分资产，不相加
+        self.assertEqual(totals["USDC"], "0.3")
+        self.assertEqual(len(totals), 2)
         self.assertEqual(store["tran:1"]["amount_raw"], "0.1")  # 原始串保留
 
     def test_window_completeness_semantics(self):
@@ -471,3 +474,47 @@ class FakeDualLegViaRealOrdersTests(unittest.TestCase):
         # 只剩 SHORT 腿净 0.001：单腿 → 已知（负）
         self.assertIsNotNone(pos)
         self.assertAlmostEqual(pos.signed_qty, -0.001, places=10)
+
+
+class FundingInputConstraintsTests(unittest.TestCase):
+    """W43 复验缺陷3：funding 输入约束四项。红→绿。"""
+
+    def test_asset_change_same_id_is_conflict(self):
+        store = {}
+        ingest_funding_events([{"symbol": "BTCUSDT", "asset": "USDT",
+                                "incomeType": "FUNDING_FEE", "amount": "-0.4",
+                                "time": 1, "tranId": "T1"}], store)
+        with self.assertRaises(FundingIdentityConflict):
+            ingest_funding_events([{"symbol": "BTCUSDT", "asset": "USDC",
+                                     "incomeType": "FUNDING_FEE",
+                                     "amount": "-0.4", "time": 1,
+                                     "tranId": "T1"}], store)
+
+    def test_non_finite_amounts_rejected(self):
+        store = {}
+        for bad in ("NaN", "Infinity", "-Infinity"):
+            out = ingest_funding_events(
+                [{"symbol": "BTCUSDT", "asset": "USDT",
+                  "incomeType": "FUNDING_FEE", "amount": bad,
+                  "time": 1, "tranId": "T-" + bad}], store)
+            self.assertEqual(out["rejected"], 1, bad)
+        self.assertEqual(len(store), 0)  # 非有限值不入库不污染合计
+
+    def test_no_stable_id_fallback_combo_rejected(self):
+        # 无 tranId/entryId：type+symbol+time 组合不能冒充稳定身份
+        self.assertIsNone(stable_funding_event_id(
+            {"symbol": "BTCUSDT", "incomeType": "FUNDING_FEE",
+             "amount": "-1", "time": 5}))
+        store = {}
+        out = ingest_funding_events(
+            [{"symbol": "BTCUSDT", "incomeType": "FUNDING_FEE",
+              "amount": "-1", "time": 5}], store)
+        self.assertEqual(out["rejected"], 1)
+
+    def test_missing_asset_rejected_not_guessed(self):
+        store = {}
+        out = ingest_funding_events(
+            [{"symbol": "BTCUSDT", "incomeType": "FUNDING_FEE",
+              "amount": "-1", "time": 1, "tranId": "T9"}], store)
+        self.assertEqual(out["rejected"], 1)  # 缺结算币种 → 拒收不猜
+        self.assertEqual(len(store), 0)

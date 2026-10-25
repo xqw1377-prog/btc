@@ -39,14 +39,14 @@ def stable_funding_event_id(row: Dict[str, Any]) -> Optional[str]:
     ts = row.get("time")
     if entry not in (None, "") and ts not in (None, ""):
         return f"entry:{entry}:{ts}"
-    if ts not in (None, "") and row.get("symbol") and row.get("incomeType"):
-        return f"inc:{row.get('incomeType')}:{row.get('symbol')}:{ts}"
+    # W43 复验缺陷3：type+symbol+time 组合的交易所级唯一性未证明，
+    # 不得冒充稳定事件身份 —— 无 tranId/entryId 一律拒收。
     return None
 
 
 def _row_content_key(row: Dict[str, Any]) -> str:
     return "|".join(str(row.get(k) or "") for k in
-                    ("symbol", "incomeType", "amount", "time"))
+                    ("symbol", "asset", "incomeType", "amount", "time"))
 
 
 def ingest_funding_events(
@@ -71,6 +71,15 @@ def ingest_funding_events(
         try:
             amount_dec = Decimal(str(raw_amount))
         except Exception:
+            rejected += 1
+            continue
+        # W43 复验缺陷3：NaN/Infinity 可被 Decimal 解析——必须显式
+        # 拒绝非有限值，否则污染合计。
+        if not amount_dec.is_finite():
+            rejected += 1
+            continue
+        # 缺结算币种不得猜测（不得回退把 symbol 当资产）——拒收。
+        if row.get("asset") in (None, ""):
             rejected += 1
             continue
         content = _row_content_key(row)
