@@ -174,7 +174,7 @@ STRATEGY V2 / BACKTEST        V2 / E3 / E4 CLOSED-OFFLINE
 INDEPENDENT REVIEW = BLOCKED / REPOSITORY ACCESS（远端 origin 未含
   本分支；载体已改为本地 bundle ZIP：aurora-w43-review.zip，
   sha256 0590e7f4…731353，含全分支历史+复验材料+验证说明，零秘密）
-FILL IDENTITY DESIGN = v4 REVISED / AWAITING REVIEW（F1-F6 闭合：索引单次创建+FK 恢复验证+提交前 foreign_key_check；真实 CHECK 约束+origin 列入 DDL；covered_by_fact_id 现行混合值映射成表（replaced-by: 分流+目标存在性校验）；费用可入账 INCOMPLETE/仅 KNOWN 强制 raw+asset/双 UNKNOWN 不可证实；只扣一次四层证明链（补充稳定 ID 唯一+投影版本+记账幂等键+三步单事务+delta 重算）；精度=原始串有限 Decimal 数值相等（去 normalize，历史 float 不比不投影）；迁移全量等价核验+重开结构验证；测试目录唯一编号 39 项；（v1 CHANGES-
+FILL IDENTITY DESIGN = v5 REVISED / AWAITING REVIEW（三个收敛阻断项闭合且全部先实测：typeof 数值 CHECK/origin 无默认/qty_raw+price_raw 入库+DB-入口分工表（float inf 数据库拦不住实测确认）；冲突≠修正授权四规则+跨资产按资产双蹄同事务；动态精度+Inexact/Rounded 陷阱+指数边界拒收（默认 prec 丢尾数对照实测存证）；测试目录 48 项唯一编号。v4 已闭合项（索引单次/FK 恢复/引用映射/INCOMPLETE/证明链/精度相等）维持不变；（v1 CHANGES-
   REQUIRED 已吸收：跨 symbol 规则反转=独立身份、复合主键+表重建
   迁移方案成文、fingerprint 降格为凭证命名空间代理、推导上下文
   冻结+显式重算、DEVIATION 不覆盖不依赖、已知/未知比较表+

@@ -1,17 +1,17 @@
-# FILL IDENTITY & ECONOMIC COMPLETENESS — 设计 v4（仅评审稿，未实现）
+# FILL IDENTITY & ECONOMIC COMPLETENESS — 设计 v5（仅评审稿，未实现）
 
-> 状态：**DESIGN-REVISED / 待评审**（v3 收到 CHANGES-REQUIRED F1–F6；
-> 本版逐条闭合，不实现、不迁移真实账本、不接 funding、不动权限。
-> R1–R4 既有通过结论不变。）
-> v3→v4 摘要：F1 索引只建一次+失败恢复 FK+提交前 foreign_key_check；
-> F2 补真实 CHECK 约束与 origin 列（LEGACY/EVENT 区分入 DDL）；
-> F3 covered_by_fact_id 现行实际写读映射成表（含 replaced-by: 标记）
-> +引用目标存在性/类型校验；F4 费用规则统一为"可入账 INCOMPLETE、
-> 仅 KNOWN 声明强制 raw+asset"，双 UNKNOWN 口径同步修正；F5 只扣
-> 一次证明链（补充稳定 ID 唯一键/投影版本/记账效果幂等键/单事务
-> 边界/delta 重算语义）；F6 精度统一为原始串有限 Decimal 数值相等
-> （去 normalize，历史近似不比不投影）；另：迁移全量等价核验+
-> 重开结构验证；测试目录唯一编号（含补录 T-R1c），取消手算总数。
+> 状态：**DESIGN-REVISED / 待评审**（v4 收敛为三个阻断项，本版仅
+> 闭合之，不重写已接受章节；不实现、不迁移真实账本、不接 funding、
+> 不动权限。R1–R4 既有通过结论不变。）
+> v4→v5 摘要：F2′ 约束按【内存 SQLite 实测】重写——typeof 数值型
+> CHECK（拒文本垃圾/负/零）、origin 去默认值、qty_raw/price_raw
+> 入库、DB 与入口的能力分工表（float Infinity 数据库拦不住，实测
+> 确认）；F5′ 冲突与差额重算四规则边界 + 跨资产修正=按资产双蹄
+> 同事务（撤销旧+应用新，绝不跨单位相减）；F6′ 精确运算方案选定
+> （动态精度 + Inexact/Rounded 陷阱 + 指数边界显式拒收；默认
+> prec 丢尾数与陷阱方案的差值已实测存证）。
+> 全部新断言先在内存 SQLite/Decimal 实测后写入——v4 的教训
+> （声称未验证的约束效果）不再犯。
 
 ## 0. 术语修正
 
@@ -45,24 +45,27 @@ v1 的矛盾已修正：symbol 既然入键，`BTCUSDT/trade=123` 与
 现行 `fill_id TEXT PRIMARY KEY` 无法容纳跨 symbol 同 ID。迁移为
 **表重建**（SQLite 无法改主键）。
 
-**最终表 DDL（索引只在迁移事务内建一次，见 F1）**：
+**最终表 DDL（v5 修订：origin 无默认；typeof 数值型 CHECK；
+qty_raw/price_raw 新事件必填。约束效果全部经内存 SQLite 实测）**：
 
 ```sql
 CREATE TABLE fills (
     fill_id          TEXT    NOT NULL,
     symbol           TEXT,
-    origin           TEXT    NOT NULL DEFAULT 'LEGACY'
+    origin           TEXT    NOT NULL               -- v5：无 DEFAULT
                      CHECK (origin IN ('LEGACY','EVENT')),
     client_order_id  TEXT    NOT NULL
                      REFERENCES orders(client_order_id),
-    qty              REAL    NOT NULL CHECK (qty > 0),
-    price            REAL    NOT NULL CHECK (price > 0),
+    qty              REAL    NOT NULL,
+    qty_raw          TEXT,                          -- v5：新事件原始串
+    price            REAL    NOT NULL,
+    price_raw        TEXT,                          -- v5：同上
     fee              REAL,
     fee_raw          TEXT,
     fee_asset        TEXT,
     realized_pnl     REAL    NOT NULL DEFAULT 0,
     derivation_ctx   TEXT,
-    replaced_by      TEXT,              -- R2 新写入口（§1.3）；历史为 NULL
+    replaced_by      TEXT,
     side             TEXT    NOT NULL CHECK (side IN ('BUY','SELL')),
     filled_at        TEXT    NOT NULL,
     synthetic        INTEGER NOT NULL DEFAULT 0 CHECK (synthetic IN (0,1)),
@@ -73,16 +76,37 @@ CREATE TABLE fills (
     economic_effect_applied   INTEGER NOT NULL DEFAULT 1
                               CHECK (economic_effect_applied IN (0,1)),
     PRIMARY KEY (symbol, fill_id),
-    -- F2：约束把"新事件 vs 历史行"写进 schema，不靠入口注释：
-    CHECK (origin = 'LEGACY' OR symbol IS NOT NULL),          -- 新事件必带 symbol
+    -- v5 实测有效的数值型拒绝（拒 'garbage'/'Infinity'/'NaN' 文本、
+    -- 负数、零——SQLite 文本排序高于数值的陷阱由 typeof 堵死）：
+    CHECK (typeof(qty)   IN ('real','integer') AND qty   > 0),
+    CHECK (typeof(price) IN ('real','integer') AND price > 0),
+    -- 新事件义务入 schema（显式写入，无默认可绕）：
+    CHECK (origin = 'LEGACY' OR symbol IS NOT NULL),
+    CHECK (origin = 'LEGACY' OR (qty_raw   IS NOT NULL AND qty_raw   != ''
+                                 AND price_raw IS NOT NULL AND price_raw != '')),
     CHECK (fee_raw IS NULL OR (fee_raw != '' AND fee_asset IS NOT NULL
-                               AND fee_asset != ''))           -- 声明 KNOWN 费用
-                                                                -- 必须有合法非空串+资产
+                               AND fee_asset != ''))
 );
--- 唯一索引：只在迁移事务内创建一次（F1：不再出现在建表 DDL 中）
--- CREATE UNIQUE INDEX ux_fills_null_symbol
---     ON fills (fill_id) WHERE symbol IS NULL;
+-- 唯一索引只在迁移事务内创建一次：
+-- CREATE UNIQUE INDEX ux_fills_null_symbol ON fills(fill_id)
+--     WHERE symbol IS NULL;
 ```
+
+**DB 与入口的能力分工（v5 新增，按实测能力写测试）**：
+
+| 输入 | DB 层（实测结果） | 入口层职责 |
+|---|---|---|
+| qty/price = 文本串（'garbage'/'Infinity'/'NaN'） | **拒绝**（typeof CHECK） | — |
+| qty/price ≤ 0 | **拒绝**（数值 CHECK） | — |
+| origin 遗失 | **拒绝**（NOT NULL，无默认） | — |
+| EVENT 缺 symbol / 缺 qty_raw/price_raw | **拒绝**（CHECK） | — |
+| float('inf') / float('nan')（REAL 绑定） | **拦不住**（typeof='real' 且 >0 成立——实测确认） | **必须 is_finite 检查**：Decimal(*_raw).is_finite()，非有限拒收 |
+| 数值串格式合法性（有限 Decimal 可解析） | 不判（TEXT 只查非空） | 入口解析+拒收 |
+| 历史行（REAL 近似值） | 兼容保留 | 永不参与比较/投影（§3.4）；投影只认 *_raw |
+
+REAL 列定位为历史兼容/展示；**数量与价格的投影、比较一律以
+qty_raw/price_raw 的有限 Decimal 为准**（与 fee 同纪律），杜绝
+非法文本经 REAL 通道进入数量投影。
 
 **CHECK 约束与对应错误场景（T-DB2/T-M4 的注入面）**：
 
@@ -284,12 +308,41 @@ INCOMPLETE 时：原行不动；后到的已知值以【追加补充事实】入
 
 ```text
 重算事件（append-only）记录：old_effective_raw / new_effective_raw /
-  delta_raw = new − old（Decimal 精确差）
+  delta（按 §F6′ 精确运算方案计算，见下）
 记账效果只应用 delta；绝不再扣完整金额。
 首次投影（PENDING→v1）= 全额；此后每次重算 = 差额。
 projection_version 严格递增；effect_key 携带版本 → 旧版本键
   永不复活，重放历史版本被唯一键拒绝。
 ```
+
+**冲突与差额重算的边界（v5 冻结四规则——冲突不是费用修正授权）**：
+
+```text
+① 一致补充（与已知有效费用相同）      → 零经济影响（幂等）
+② UNKNOWN 首次查明（首条已知补充）    → 完整金额应用一次（投影 v1）
+③ 已知值冲突（KNOWN vs KNOWN 不一致）  → 仅隔离 + 告警；【不自动应用
+                                       任何差额】；状态 CONFLICTED
+④ 明确依据的修正/解决事件（操作员或
+   交易所更正凭据，带凭据引用）        → 才允许产生新投影版本与 delta
+```
+
+③→④ 的唯一通道是显式修正事件；自动路径（补充到达）永远无权
+把冲突"解决"成差额。
+
+**跨资产修正（v5：不得跨单位相减）**：
+
+```text
+费用资产变化（如 USDT→BNB）时，禁止计算 new−old 数值差。
+修正事件按【资产分蹄】表达，同一事务内完成：
+  蹄A（旧资产）：REVERSE 旧效果（撤销旧全额，方向相反的记账效果）
+  蹄B（新资产）：APPLY   新效果（新资产全额，仅当其证据齐备）
+每蹄各持独立 effect_key（含资产与版本）；任一蹄证据不足 →
+两蹄都不应用（事务原子）。
+同资产修正才允许走 delta；资产不同 ⇒ 必然双蹄。
+```
+
+投影/重算运算统一走 §F6′ 精确运算方案（下方），"Decimal 精确差"
+的表述仅在同资产且两操作数有限时成立。
 
 投影状态机与风险边界（§2.2 同界）：CONFLICTED → 拒绝投影，费用
 按 UNKNOWN 阻断新增风险；不设持仓 UNKNOWN；不阻减仓。
@@ -308,8 +361,28 @@ projection_version 严格递增；effect_key 携带版本 → 旧版本键
   投影】——不冒充原始精度（F6：删除 v3"float 串化伪差以冲突暴露"
   的矛盾条款；既然历史 float 从不进入比较，就不存在伪差冲突路径）
 
-投影金额以原始串形态存 effective_raw；一切投影/重算运算在
-Decimal 域完成；结果序列化为字符串，不写回 float 列。
+投影金额以原始串形态存 effective_raw；结果序列化为字符串，不写回
+float 列。
+
+### 3.5 精确运算方案（v5 选定：动态精度 + 舍入陷阱；实测存证）
+
+`Decimal` 的相等比较无损，但**加减运算受上下文精度影响**——实测：
+默认 prec=28 下 `1.23456789012345678901234567890123 − 1` 会被舍成
+28 位（尾数静默丢失）。本设计选定并冻结：
+
+```text
+运算环境（每次投影/重算/delta 计算）：
+  ctx.prec   = max(操作数有效位数, 指数跨度+1, 28) + 4   # 动态
+  ctx.traps[Inexact] = True    # 任何不精确 → 立即异常，绝不静默舍入
+  ctx.traps[Rounded] = True    # 任何舍入动作（即使结果数字不变）→ 异常
+  输入边界：|Decimal.adjusted()| > 999999 或 is_finite()=False
+            → 入口显式拒收（不依赖上下文 Emax/Emin 溢出行为）
+
+实测对照（已复现并存证于本节）：
+  默认 prec28：0.2345678901234567890123456789      （28 位，丢尾）
+  动态+陷阱  ：0.23456789012345678901234567890123   （32 位，无损）
+异常时处理：扩大 prec 重算一次仍 Inexact → 该运算拒绝入账并告警
+（输入超出可精确表达范围），绝不静默截断。
 ```
 
 ## 4. 错误处理边界（新增，源自评审测试表）
@@ -397,6 +470,25 @@ Decimal 域完成；结果序列化为字符串，不写回 float 列。
 - T-FP6（v4）三步单事务边界：b 步注入失败 → a 步补充亦回滚
        （无"已补充未投影"中间态）（F5-4）
 
+**v5 增补（F2′/F5′/F6′）**
+- T-DB4 typeof 数值型约束实测复现：'garbage'/'Infinity'/'NaN' 文本、
+       负数、零在 DB 层被拒；float(inf) **不**被 DB 拒（分工表钉死）
+- T-DB5 origin 无默认：遗漏 origin 插入被 NOT NULL 拒；EVENT 缺
+       qty_raw/price_raw 被 CHECK 拒
+- T-F3R 入口有限性：float inf/nan 及非有限 Decimal 串在入口层拒收
+       （DB 拦不住的那一半，按分工表测）
+- T-Q1  数量投影只认 qty_raw/price_raw：历史 REAL 行不参与数量投影
+       （REAL 列非法文本不可能经投影通道生效）
+- T-FP7 一致补充 → 零经济影响（幂等，无新版本）
+- T-FP8 已知值冲突 → CONFLICTED：隔离+告警，无任何差额自动应用；
+       仅显式修正事件（带凭据引用）产生新版本
+- T-FP9 跨资产修正 → 按资产双蹄同事务：REVERSE 旧 + APPLY 新，
+       各自 effect_key；一蹄证据不足两蹄都不应用；无跨单位相减
+- T-F6a 长尾无损：30+ 位有效位操作数差值在动态精度+陷阱下保持
+       全部尾数（默认 prec 会丢——对照断言）
+- T-F6b 输入边界：|adjusted|>999999 或非有限 → 入口拒收，无静默
+       截断；陷阱触发且扩精度仍 Inexact → 拒绝入账并告警
+
 **元与回归**
 - T-X1 元测试：两入口调用同一校验器且同输入同 MatchReport
 - T-X2 既有 W43 冲突测试在统一校验器下不改断言全绿
@@ -411,5 +503,5 @@ Decimal 域完成；结果序列化为字符串，不写回 float 列。
 
 ① §1.1 判定规则三分支与 §1.2/1.3 存储引用方案；② §2 三条约束的
 落地语义（尤其 T-D2 的风险边界与 T-F2 的补充事实不回改）；③ §5 测试目录 v4 唯一编号清单（T-I 7/T-D 4/T-F 4+1R/T-DB 2/
-T-C 2/T-M 5/T-N 1/T-R 6/T-FP 6/T-X 2，共 39 项——以清单为准）
+T-C 2/T-M 5/T-N 1/T-R 6/T-FP 9/T-X 2 + v5 增补（T-DB4/T-DB5/T-F3R/T-Q1/T-FP7-9/T-F6a/T-F6b），共 48 项——以清单为准、机器可数）
 是否充分。
