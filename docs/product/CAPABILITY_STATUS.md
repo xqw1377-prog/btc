@@ -174,7 +174,11 @@ STRATEGY V2 / BACKTEST        V2 / E3 / E4 CLOSED-OFFLINE
 INDEPENDENT REVIEW = BLOCKED / REPOSITORY ACCESS（远端 origin 未含
   本分支；载体已改为本地 bundle ZIP：aurora-w43-review.zip，
   sha256 0590e7f4…731353，含全分支历史+复验材料+验证说明，零秘密）
-CLEAN-TREE TESTS   = FAIL（c318bc8 735+4；ee412a7 741+4——封闭性
+W43 REVIEW FIXES   = R1-R4 LANDED（ace1ad9/3a8ddec/650a429/fd35923：
+  事件入口冲突、假件双腿符号、funding 输入约束、套件封闭——
+  红先于绿；待独立复验，不自签 PASS）
+CLEAN-TREE TESTS   = PASS@fd35923（735+4→752+0；此前 FAIL 记录保留
+  于 raw_run_*；封闭性
   缺口登记，不以复制 .env/跳过测试消除；主树数字不作独立证据）
 W43 OFFLINE ABSORPTION = SELF-VERIFIED / REVIEW-PENDING（复验收紧已并入：
   成交身份冲突告警同ID不同内容 raise；A1 跨真实进程重启 submit=1 已证；
