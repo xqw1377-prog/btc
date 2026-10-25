@@ -174,7 +174,7 @@ STRATEGY V2 / BACKTEST        V2 / E3 / E4 CLOSED-OFFLINE
 INDEPENDENT REVIEW = BLOCKED / REPOSITORY ACCESS（远端 origin 未含
   本分支；载体已改为本地 bundle ZIP：aurora-w43-review.zip，
   sha256 0590e7f4…731353，含全分支历史+复验材料+验证说明，零秘密）
-FILL IDENTITY DESIGN = v2 REVISED / AWAITING REVIEW（v1 CHANGES-
+FILL IDENTITY DESIGN = v3 REVISED / AWAITING REVIEW（补齐 DDL+迁移事务回滚/类型化引用映射（定位≠身份）/费用有效投影判定表（幂等·冲突·只扣一次·精度边界）；测试目录 30 项；（v1 CHANGES-
   REQUIRED 已吸收：跨 symbol 规则反转=独立身份、复合主键+表重建
   迁移方案成文、fingerprint 降格为凭证命名空间代理、推导上下文
   冻结+显式重算、DEVIATION 不覆盖不依赖、已知/未知比较表+
