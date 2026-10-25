@@ -11,8 +11,8 @@
 | 说明 | 确定化规则（可执行） |
 |---|---|
 | raw 权威仅适用于 EVENT | LEGACY 行永不产生/补造 raw；其 REAL 即事实（LEGACY_APPROXIMATE）。一切比较/投影取值函数：`origin=='EVENT' → Decimal(*_raw)`；`origin=='LEGACY' → REAL 值 + LEGACY_APPROXIMATE 标注`。不存在第三分支。 |
-| Decimal→float 溢出/下溢显式处理 | REAL 展示值派生规则：`f = float(raw)`；若 `not isfinite(f)`（含溢出为 ±inf）或 `raw>0 而 f==0.0`（下溢归零）→ **拒绝该 EVENT 入账**（判定依据：交易所真实值必然在 float 可表示域内；域外输入按垃圾拒收）。亚正规（subnormal）非零值允许。派生失败是入口校验的一部分，不是事后补救。 |
-| 精度/资源上限/重试/异常确定化 | ① 动态精度：`prec = max(28, max(操作数有效位数, 指数跨度+1) + 4)`，硬上限 **10000**（超限输入直接拒收）；② 重试：运算触发 Inexact/Rounded → prec 翻倍**重试一次**，仍触发 → 拒绝入账+告警（无第三次）；③ 迁移：单事务、无自动重试（失败=ROLLBACK+人工重跑）；校验器无循环重试；④ 异常映射：`FillIdentityConflict`/`FeeConflict`（可捕获、转 kill+告警）≠ `SafetyViolation`（治理拒启）≠ `ValueError`（入口非法输入拒收）。 |
+| Decimal→float 溢出/下溢显式处理 | REAL 展示值派生规则：`f = float(raw)`；若 `not isfinite(f)`（含溢出为 ±inf）或 `raw>0 而 f==0.0`（下溢归零）→ **拒绝该 EVENT 入账**——该边界是【本实现支持范围】的声明（撤销此前"交易所真实值必然在 float 域内"的未经证明断言）；超出支持范围的值一律拒收并要求人工处置，不猜测其真实性。亚正规（subnormal）非零值允许。派生失败是入口校验的一部分，不是事后补救。 |
+| 精度/资源上限/重试/异常确定化 | ① 动态精度：`prec = max(28, max(操作数有效位数, 指数跨度+1) + 4)`，硬上限 **10000**——**同时约束首次计算与翻倍重试**：公式值>10000 → 直接拒收（不进入运算）；重试 prec=min(prec×2, 10000)，触顶后仍 Inexact/Rounded → 拒绝入账+告警（重试不得突破上限，无第三次）；③ 迁移：单事务、无自动重试（失败=ROLLBACK+人工重跑）；校验器无循环重试；④ 异常映射：`FillIdentityConflict`/`FeeConflict`（可捕获、转 kill+告警）≠ `SafetyViolation`（治理拒启）≠ `ValueError`（入口非法输入拒收）。 |
 
 ## 第一段：迁移与历史兼容（MIGRATION & LEGACY）
 
@@ -31,6 +31,8 @@
 **测试 ID**：T-M1、T-M2、T-M3（副本演练）、T-M4、T-M5、T-Q2、
 T-Q3、T-Q4（聚合侧）、T-N1、T-DB4、T-DB5、T-I1（跨 symbol 存储）、
 T-I4（schema 半）、T-I7。
+（口径更正：**唯一合同 ID = 14 项**；分段验收项 15 因 T-I4 拆半
+在 S1/S2 各计一次——两种计数分别报告，不混算。）
 
 **依赖**：无前置段。仅依赖现有 ledger/orchestrator 行为基线
 （迁移不得改变现行单 symbol 账本的聚合结果——T-Q2 即此断言）。
@@ -115,6 +117,16 @@ S2=25  T-I2-6, T-I4e, T-D1-4, T-R1a-c, T-R2, T-R3, T-DB1, T-DB2,
 S3=14  T-F2e, T-F4, T-F4R, T-FP1-9, T-F6a, T-F6b
 拆半归属：T-I4(s=schema/e=入口)、T-Q1(d=派生)、T-F2(e=入口语义)
 ```
+
+## S1 执行边界（开工裁定并入，2026-10）
+
+- 迁移**只由显式测试/演练调用**：不接入 `Ledger.__init__`、不接入
+  生产入口、不接入任何默认启动路径；
+- 对象限于临时库、合成旧库、经批准的事故账本**副本**；原件只读；
+- 现有公开接口/返回类型/写入行为保持不变；新 schema 测试写入使用
+  **独立构造器**（FillsV2Writer），不提前吸收 S2 校验逻辑；
+- 等价性结论只允许表述为**副本/离线恢复等价性**，禁止称"现网已证明"；
+- S1 验收后 S2 另行授权；S2/S3 不连续放行；真实账本默认迁移 DENIED。
 
 ## 全局门槛（三段共同）
 

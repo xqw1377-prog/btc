@@ -1,0 +1,20 @@
+
+aurora/kernel/fill_migration.py:35: FillMigrationStub
+=========================== short test summary info ============================
+FAILED tests/test_fill_migration_s1.py::T_M1_FullColumnEquivalence::test_all_old_fields_unchanged_after_migration
+FAILED tests/test_fill_migration_s1.py::T_M2_IdempotentReopen::test_marker_without_structure_refuses_open
+FAILED tests/test_fill_migration_s1.py::T_M2_IdempotentReopen::test_second_migration_noop_and_structure_verified
+FAILED tests/test_fill_migration_s1.py::T_M3_IncidentCopyDrill::test_incident_replica_migration_preserves_everything
+FAILED tests/test_fill_migration_s1.py::T_M4_FailureRollback::test_foreign_keys_pragma_restored_after_failure
+FAILED tests/test_fill_migration_s1.py::T_M4_FailureRollback::test_mid_migration_failure_rolls_back_everything
+FAILED tests/test_fill_migration_s1.py::T_M5_PreCommitFKCheck::test_dangling_fk_blocks_commit_and_rolls_back
+FAILED tests/test_fill_migration_s1.py::T_Q2_AggregationEquivalence::test_pre_post_migration_aggregates_match
+FAILED tests/test_fill_migration_s1.py::T_Q3_MixedLabeling::test_legacy_rows_labeled_and_values_untouched
+FAILED tests/test_fill_migration_s1.py::T_Q4_CrossTierComparison::test_cross_tier_is_incomplete_not_conflict
+FAILED tests/test_fill_migration_s1.py::T_N1_NullSymbolUniqueness::test_two_null_symbol_rows_same_trade_id_rejected
+FAILED tests/test_fill_migration_s1.py::T_DB4_TypeofChecks::test_db_rejects_text_garbage_neg_zero_but_not_inf
+FAILED tests/test_fill_migration_s1.py::T_DB5_OriginNoDefault::test_missing_origin_rejected_and_event_obligations_enforced
+FAILED tests/test_fill_migration_s1.py::T_I1_CrossSymbolSameTradeID::test_two_identities_stored_independently
+FAILED tests/test_fill_migration_s1.py::T_I4s_SchemaHalf::test_schema_enforces_event_symbol_without_entry_layer
+FAILED tests/test_fill_migration_s1.py::T_I7_CrossNamespaceIsolation::test_same_identity_in_two_namespaces_mutually_invisible
+16 failed in 0.43s
