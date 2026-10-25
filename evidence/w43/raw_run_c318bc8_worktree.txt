@@ -1,0 +1,3 @@
+FAILED tests/test_controlled_requal.py::MainAndSourceTests::test_main_execute_flag_still_denied
+FAILED tests/test_controlled_requal.py::MainAndSourceTests::test_main_plan_only_zero
+4 failed, 735 passed, 1 warning in 13.52s
