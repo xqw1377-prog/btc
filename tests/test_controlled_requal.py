@@ -81,6 +81,7 @@ def _source(**extra):
 
 
 def _incident_db(path):
+    """密封测试用事故账本：kill=ACTIVE（与真实事故状态同构）。"""
     conn = sqlite3.connect(path)
     conn.execute(
         "CREATE TABLE kill_switch (id INTEGER PRIMARY KEY, engaged INTEGER, reason TEXT)")
@@ -112,7 +113,14 @@ class CtrTestBase(unittest.TestCase):
                                         "qualification_permit.json")
         import aurora.ops_controlled_requal as ocr
         self.ocr = ocr
+        # 封闭性（W43 复审）：incident 账本路径也必须密封——干净树
+        # 无 state/kernel_ledger.db 时 kill 状态为 ABSENT，导致
+        # 依赖真实事故账本的断言失败。种子 kill=ACTIVE。
+        incident = os.path.join(self._tmp.name, "incident_ledger.db")
+        _incident_db(incident)
         self._patches = [
+            mock.patch.object(ocr, "incident_ledger_path",
+                              lambda *a, **k: incident),
             mock.patch.object(ocr, "qualification_permit_path",
                               lambda *a, **k: self.permit_file),
             mock.patch.object(ocr, "start_order_path",
@@ -131,6 +139,15 @@ class CtrTestBase(unittest.TestCase):
             session_id="CTR-TEST-001", issued_by="operator", fingerprint=FP)
         self.order = window["order"]
         self.permit = window["permit"]
+
+    def _hermetic_env(self):
+        """封闭性（W43 复审）：显式临时 env，不读仓库根 .env。"""
+        env_file = os.path.join(self._tmp.name, "test.env")
+        with open(env_file, "w") as fh:
+            fh.write(f"TRADING_MODE=TESTNET\nTESTNET=true\n"
+                     f"BINANCE_API_KEY={KEY}\nBINANCE_API_SECRET=s\n"
+                     f"AURORA_ACCOUNT_FINGERPRINT={FP}\n")
+        return env_file
 
     def _orch(self, exchange=None, ledger_name=None):
         if ledger_name is None:
@@ -153,6 +170,15 @@ class CtrTestBase(unittest.TestCase):
 
 
 class PlanGateTests(CtrTestBase):
+    def setUp(self):
+        super().setUp()
+        import aurora.ops_controlled_requal as ocr
+        p = mock.patch.object(ocr, "INCIDENT_FINGERPRINT", FP)
+        p.start()
+        self.addCleanup(p.stop)
+        ocr.write_session_final(
+            "CTR-TEST-001", {"outcome": "COMPLETE"}, fingerprint=FP)
+
     def test_plan_defaults_are_frozen_limits(self):
         report = plan(_source(), qty=MAX_QTY, account_fingerprint=FP)
         self.assertEqual(report["execute"], "DENIED")
@@ -227,7 +253,8 @@ class PlanGateTests(CtrTestBase):
 
     def test_main_execute_flag_still_denied(self):
         with mock.patch("aurora.safety.build_client") as built:
-            self.assertEqual(main(["--i-execute-controlled-requal",
+            self.assertEqual(main(["--env-file", self._hermetic_env(),
+                                   "--i-execute-controlled-requal",
                                    "--qty", "0.001"]), 3)
         built.assert_not_called()
 
@@ -531,11 +558,25 @@ class OfflineSessionTests(CtrTestBase):
 
 
 class MainAndSourceTests(CtrTestBase):
+    def setUp(self):
+        super().setUp()
+        # 封闭性（W43 复审）：
+        # 1) 指纹常量在进程内映射到测试指纹（哑密钥），plan 身份门通过
+        # 2) 预置会话终态——执行分支在构造任何网络客户端之前被
+        #    "session already terminated" 阻断（exit 3），全程零出网
+        import aurora.ops_controlled_requal as ocr
+        p = mock.patch.object(ocr, "INCIDENT_FINGERPRINT", FP)
+        p.start()
+        self.addCleanup(p.stop)
+        ocr.write_session_final(
+            "CTR-TEST-001", {"outcome": "COMPLETE"}, fingerprint=FP)
+
     def test_main_plan_only_zero(self):
-        self.assertEqual(main([]), 0)
+        self.assertEqual(main(["--env-file", self._hermetic_env()]), 0)
 
     def test_main_execute_flag_still_denied(self):
-        self.assertEqual(main(["--i-execute-controlled-requal"]), 3)
+        self.assertEqual(main(["--env-file", self._hermetic_env(),
+                               "--i-execute-controlled-requal"]), 3)
 
     def test_missing_env_blocks(self):
         code = main(["--env-file",

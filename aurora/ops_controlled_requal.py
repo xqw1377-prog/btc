@@ -682,10 +682,11 @@ def plan(
     qty: float = MAX_QTY,
     mark_price: Optional[float] = None,
     intent_id: Optional[str] = None,
-    account_fingerprint: str = INCIDENT_FINGERPRINT,
+    account_fingerprint: Optional[str] = None,
 ) -> Dict[str, Any]:
     """纯本地计划：身份门无条件；规模/路径隔离；不构造交易所客户端。"""
-    fp = assert_identity(source, account_fingerprint)
+    # 调用期解析默认指纹（可测试性：模块常量可被密封测试替换）
+    fp = assert_identity(source, account_fingerprint or INCIDENT_FINGERPRINT)
     intent = intent_id or new_session_intent_id()
     assert_intent_allowed(intent)
     if mark_price is not None:
