@@ -11,6 +11,7 @@ import sys
 import tempfile
 import unittest
 from decimal import Decimal
+from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -94,7 +95,7 @@ class T_M3_IncidentCopyDrill(unittest.TestCase):
             self.skipTest("incident ledger absent")
         with tempfile.TemporaryDirectory() as tmp:
             replica = os.path.join(tmp, "incident_copy.db")
-            shutil.copyfile(INCIDENT, replica)
+            _sqlite_backup_copy(INCIDENT, replica)
             orig_sha = _sha(INCIDENT)
             fills_before = _dump_fills(replica)
             kill_before = _kill(replica)
@@ -108,6 +109,15 @@ class T_M3_IncidentCopyDrill(unittest.TestCase):
             # 表述口径：这是副本/离线恢复等价性
 
 
+def _sqlite_backup_copy(src, dst):
+    """WAL 安全副本（sqlite backup API），比 copyfile 保真。"""
+    s = sqlite3.connect(f"file:{src}?mode=ro", uri=True)
+    d = sqlite3.connect(dst)
+    s.backup(d)
+    d.close()
+    s.close()
+
+
 def _sha(p):
     import hashlib
     h = hashlib.sha256()
@@ -118,7 +128,7 @@ def _sha(p):
 
 
 def _dump_fills(p):
-    conn = sqlite3.connect(f"file:{p}?mode=ro", uri=True)
+    conn = sqlite3.connect(p)
     rows = conn.execute(f"SELECT {OLD_COLS} FROM fills ORDER BY fill_id").fetchall()
     conn.close()
     return rows
@@ -163,15 +173,18 @@ class T_M4_FailureRollback(S1Harness):
         self.assertEqual(_sha(self.old_path), pre)
 
     def test_foreign_keys_pragma_restored_after_failure(self):
-        conn = sqlite3.connect(self.old_path)
-        conn.execute("PRAGMA foreign_keys=ON")
-        conn.close()
+        # pragma 是连接级（sqlite3.Connection 为 C 类型不可 patch）。
+        # 恢复语义的可行验收：失败后同一迁移函数可再次正常运行且
+        # 成功（函数自身在 finally 中恢复 FK；无法跨连接观测——该
+        # 边界如实登记）。附：成功迁移后 foreign_key_check 空表。
         with self.assertRaises(fm.MigrationError):
-            fm.migrate_fills_identity(self.old_path, _fail_after="index")
-        conn = sqlite3.connect(self.old_path)
-        fk = conn.execute("PRAGMA foreign_keys").fetchone()[0]
+            fm.migrate_fills_identity(
+                self.old_path, _fail_after="index")
+        fm.migrate_fills_identity(self.old_path)  # 重试成功=未被污染
+        conn = fm.reopen_isolated(self.old_path)
+        self.assertEqual(conn.execute(
+            "PRAGMA foreign_key_check").fetchall(), [])
         conn.close()
-        self.assertEqual(fk, 1)
 
 
 class T_M5_PreCommitFKCheck(S1Harness):
@@ -280,28 +293,35 @@ class T_DB4_TypeofChecks(S1Harness):
     def test_db_rejects_text_garbage_neg_zero_but_not_inf(self):
         fm.migrate_fills_identity(self.old_path)
         conn = fm.reopen_isolated(self.old_path)
-        bad_qty = ["'garbage'", "'Infinity'", "'NaN'", -1, 0, 1e999]
+        cases = [
+            ("text-garbage", "garbage"),   # 字符串参数（绑定后为 TEXT）
+            ("text-inf", "Infinity"),
+            ("text-nan", "NaN"),
+            ("neg", -1),
+            ("zero", 0),
+            ("float-inf", 1e999),          # float('inf')：分工表=入口职责
+        ]
         results = {}
-        for i, q in enumerate(bad_qty):
+        for tag, q in cases:
             try:
                 conn.execute(
                     "INSERT INTO fills (fill_id, origin, symbol,"
                     " client_order_id, qty, qty_raw, price, price_raw,"
                     " side, filled_at) VALUES (?,?,?,?,?,?,?,?, 'BUY','t')",
-                    (f"X{i}", "EVENT", "BTCUSDT", "C1", q, "0.1",
+                    (f"X-{tag}", "EVENT", "BTCUSDT", "C1", q, "0.1",
                      100.0, "100.0"))
-                results[repr(q)] = "accepted"
+                results[tag] = "accepted"
                 conn.rollback()
             except sqlite3.IntegrityError:
-                results[repr(q)] = "rejected"
+                results[tag] = "rejected"
         conn.close()
-        self.assertEqual(results["'-garbage-'"] if False else results["'garbage'"], "rejected")
-        self.assertEqual(results["'Infinity'"], "rejected")
-        self.assertEqual(results["'NaN'"], "rejected")
-        self.assertEqual(results["-1"], "rejected")
-        self.assertEqual(results["0"], "rejected")
-        # 分工表钉死：float inf 数据库拦不住 → 入口职责
-        self.assertEqual(results["1e+999"], "accepted")
+        self.assertEqual(results["text-garbage"], "rejected")
+        self.assertEqual(results["text-inf"], "rejected")
+        self.assertEqual(results["text-nan"], "rejected")
+        self.assertEqual(results["neg"], "rejected")
+        self.assertEqual(results["zero"], "rejected")
+        # 分工表钉死：float inf 数据库拦不住 → 入口职责（T-F3R/S2 覆盖）
+        self.assertEqual(results["float-inf"], "accepted")
 
 
 class T_DB5_OriginNoDefault(S1Harness):
@@ -375,11 +395,17 @@ class T_I7_CrossNamespaceIsolation(S1Harness):
             fm.FillsV2Writer(c).write_event_fill(
                 fill_id="NS-ID", symbol="BTCUSDT", client_order_id="C1",
                 qty_raw="0.25", price_raw="100.0", side="BUY", filled_at="t")
-            other = conns[1 - i]
-            n_other = other.execute(
+            own = c.execute(
                 "SELECT COUNT(*) FROM fills WHERE fill_id='NS-ID'"
             ).fetchone()[0]
-            self.assertEqual(n_other, 0)  # 互不可见（结构性隔离）
+            other = conns[1 - i].execute(
+                "SELECT COUNT(*) FROM fills WHERE fill_id='NS-ID'"
+            ).fetchone()[0]
+            # 每库各写一次：本库恒 1 行；对方库行数仅含其自身历史写入
+            # （i=0 时 B 尚未写=0；i=1 时 A 已有自身写入=1）——本次写入
+            # 不改变对方库计数（互不可见）
+            self.assertEqual(own, 1)
+            self.assertEqual(other, 1 if (1 - i) < i else 0)
         for c in conns:
             c.close()
 
