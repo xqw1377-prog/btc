@@ -174,9 +174,17 @@ STRATEGY V2 / BACKTEST        V2 / E3 / E4 CLOSED-OFFLINE
 INDEPENDENT REVIEW = BLOCKED / REPOSITORY ACCESS（远端 origin 未含
   本分支；载体已改为本地 bundle ZIP：aurora-w43-review.zip，
   sha256 0590e7f4…731353，含全分支历史+复验材料+验证说明，零秘密）
-W43 REVIEW FIXES   = R1-R4 LANDED（ace1ad9/3a8ddec/650a429/fd35923：
-  事件入口冲突、假件双腿符号、funding 输入约束、套件封闭——
-  红先于绿；待独立复验，不自签 PASS）
+FILL IDENTITY DESIGN = SUBMITTED FOR REVIEW（docs/product/FILL_IDENTITY_
+  DESIGN.md：身份作用域四元组 fp/env/symbol/tradeID；经济字段三分类
+  事实/推导/记账；统一校验器消除两套比较；16 项测试清单——
+  仅设计，未实现；不接 funding、不动权限）
+W43 REVIEW FIXES   = R1-R4 LANDED（ace1ad9/3a8ddec/650a429/fd35923）
+  独立复验裁定：PASS WITH NONBLOCKING NOTES（752+68 subtests/0 fail）
+  更正两处表述：
+  a) R4 封闭性测试的执行分支实际先被 EXECUTE_AUTHORIZED=false 硬门
+     拒绝（exit 3），会话终态仅是次级防线——非"由会话终态阻断"
+  b) 此前"红→绿"为开发方过程记录；独立评审确认的是最终实现与
+     回归通过（过程证据保留于各提交，不作为验收口径）
 CLEAN-TREE TESTS   = PASS@fd35923（735+4→752+0；此前 FAIL 记录保留
   于 raw_run_*；封闭性
   缺口登记，不以复制 .env/跳过测试消除；主树数字不作独立证据）
