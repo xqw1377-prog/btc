@@ -1,8 +1,8 @@
-# FILL IDENTITY & ECONOMIC COMPLETENESS — 设计 v5（仅评审稿，未实现）
+# FILL IDENTITY & ECONOMIC COMPLETENESS — 设计 v6（仅评审稿，未实现）
 
-> 状态：**DESIGN-REVISED / 待评审**（v4 收敛为三个阻断项，本版仅
-> 闭合之，不重写已接受章节；不实现、不迁移真实账本、不接 funding、
-> 不动权限。R1–R4 既有通过结论不变。）
+> 状态：**DESIGN-REVISED / 待评审**（v5 两项阻断闭合；不重写已接受
+> 章节；不实现、不迁移真实账本、不接 funding、不动权限。
+> R1–R4 既有通过结论不变。）
 > v4→v5 摘要：F2′ 约束按【内存 SQLite 实测】重写——typeof 数值型
 > CHECK（拒文本垃圾/负/零）、origin 去默认值、qty_raw/price_raw
 > 入库、DB 与入口的能力分工表（float Infinity 数据库拦不住，实测
@@ -12,6 +12,11 @@
 > prec 丢尾数与陷阱方案的差值已实测存证）。
 > 全部新断言先在内存 SQLite/Decimal 实测后写入——v4 的教训
 > （声称未验证的约束效果）不再犯。
+> v5→v6 摘要：B1 历史数量不得退出恢复聚合——LEGACY_APPROXIMATE
+> 精度等级与混合聚合口径（§1.4 新增）；B2 分工表按逐例复现改写
+> （inf 过/文本拒/nan→NULL 拒），入口对 raw 本体做有限+严格正数
+> 校验，REAL 展示值由已验证 raw 单一派生；非阻断：T-FP4 加
+> "已授权修正事件"前提、§3.4 补关闭围栏。
 
 ## 0. 术语修正
 
@@ -94,19 +99,33 @@ CREATE TABLE fills (
 
 **DB 与入口的能力分工（v5 新增，按实测能力写测试）**：
 
-| 输入 | DB 层（实测结果） | 入口层职责 |
+| 输入（逐例，双方独立复现一致） | DB 层 | 入口层职责 |
 |---|---|---|
 | qty/price = 文本串（'garbage'/'Infinity'/'NaN'） | **拒绝**（typeof CHECK） | — |
-| qty/price ≤ 0 | **拒绝**（数值 CHECK） | — |
+| 数值 REAL ≤ 0（-1 / 0） | **拒绝**（数值 CHECK） | — |
 | origin 遗失 | **拒绝**（NOT NULL，无默认） | — |
 | EVENT 缺 symbol / 缺 qty_raw/price_raw | **拒绝**（CHECK） | — |
-| float('inf') / float('nan')（REAL 绑定） | **拦不住**（typeof='real' 且 >0 成立——实测确认） | **必须 is_finite 检查**：Decimal(*_raw).is_finite()，非有限拒收 |
-| 数值串格式合法性（有限 Decimal 可解析） | 不判（TEXT 只查非空） | 入口解析+拒收 |
-| 历史行（REAL 近似值） | 兼容保留 | 永不参与比较/投影（§3.4）；投影只认 *_raw |
+| `float('inf')` 绑定为 REAL | **通过**（typeof='real' 且 >0 成立） | 入口必须拦：raw 本体校验（见下） |
+| `float('nan')` 绑定 | **拒绝**（驱动将其绑为 NULL → NOT NULL 拒；依赖驱动行为，**不得作为防线**） | 同上——防线在入口 |
+| REAL=1 但 qty_raw='-1' | **通过**（CHECK 只看 REAL 列） | 入口必须拦：raw 与 REAL 的一致性与 raw 正数性（见下） |
+| raw 格式合法性（有限 Decimal 可解析） | 不判（TEXT 只查非空） | 入口解析+拒收 |
+| 历史行（REAL 近似值） | 兼容保留 | LEGACY_APPROXIMATE 等级（§1.4）：参与恢复聚合、不参与新事件精度比较 |
 
-REAL 列定位为历史兼容/展示；**数量与价格的投影、比较一律以
-qty_raw/price_raw 的有限 Decimal 为准**（与 fee 同纪律），杜绝
-非法文本经 REAL 通道进入数量投影。
+**入口 raw 本体校验（v6：不只校验 REAL 或 is_finite）**：
+
+```text
+新事件（origin='EVENT'）对 qty_raw/price_raw 本体执行：
+  ① Decimal(raw) 可解析且 is_finite()
+  ② 严格 > 0（负 raw、零 raw 拒收——DB 的 >0 只作用于 REAL 列）
+  ③ REAL 展示值 = float(已验证 raw) 由入口单一派生写入，
+     【不接受两份独立输入】——杜绝"合法 REAL + 非法 raw"与
+     "两份值不一致"（不一致以 raw 为准并告警，REAL 重派生）
+历史路径单独保留：LEGACY 行不产生 raw，其 REAL 即该行事实
+（LEGACY_APPROXIMATE，见 §1.4）。
+```
+
+数量与价格的投影、比较一律以 qty_raw/price_raw 的有限 Decimal 为
+准（与 fee 同纪律），杜绝非法文本经 REAL 通道进入数量投影。
 
 **CHECK 约束与对应错误场景（T-DB2/T-M4 的注入面）**：
 
@@ -192,6 +211,37 @@ qty_raw/price_raw 的有限 Decimal 为准**（与 fee 同纪律），杜绝
 后续同 trade_id 带 symbol 事件 → 仍 IDENTITY_UNRESOLVED（T-R2）
 历史身份正式裁决 = 独立操作员处置流程（登记待办）
 ```
+
+### 1.4 历史精度等级与恢复聚合（v6 新增：历史数量不得退出恢复）
+
+**问题**：v5 的"投影只认 raw + 迁移不回填 raw"若同时排除历史 REAL
+数量，迁移后已有成交将退出持仓重建——账本数量消失。修正为**精度
+分级**而非剔除：
+
+```text
+精度等级（由 origin 派生，不加新列）：
+  EVENT             → 原始精度：qty_raw/price_raw（有限、严格>0，
+                      入口已验）为权威；REAL 仅由 raw 派生的展示值
+  LEGACY            → LEGACY_APPROXIMATE：REAL 数值即该行事实，
+                      【继续参与一切恢复聚合与既有经济效果】，
+                      但不冒充原始精度——不与新事件 raw 做
+                      "表示级"比较
+
+恢复聚合（fills_aggregate / 持仓重建）：
+  全 EVENT 行      → Decimal(raw) 精确聚合
+  含 LEGACY 行     → 历史数量照常计入（REAL 值），结果标注
+                    MIXED_APPROXIMATE（诚实精度标签）
+  任何情形         → 不得因精度等级变化而重扣、补造 raw、清零或
+                    删除旧数量事实
+
+跨等级比较（EVENT raw vs LEGACY REAL）：
+  不判冲突也不判确认匹配 → COMPARISON_INCOMPLETE
+  → 限制新增风险，等待对账（与 IDENTITY_UNRESOLVED 同处置取向）；
+    减仓/平仓不受限
+```
+
+补测（T-Q 系，见目录）：迁移前后成交数量聚合、持仓重建、既有
+经济效果逐项一致；精度等级标注变化不改变任何历史数量值。
 
 ## 2. 三分类（接受 + 三条约束）
 
@@ -363,6 +413,7 @@ projection_version 严格递增；effect_key 携带版本 → 旧版本键
 
 投影金额以原始串形态存 effective_raw；结果序列化为字符串，不写回
 float 列。
+```
 
 ### 3.5 精确运算方案（v5 选定：动态精度 + 舍入陷阱；实测存证）
 
@@ -463,8 +514,9 @@ float 列。
        零行新增（F5-1）
 - T-FP2 双 UNKNOWN→INCOMPLETE：不投影、不写 0、不判重复
 - T-FP3 KNOWN vs 冲突补充→FEE_CONFLICT：原值保留不覆盖
-- T-FP4 投影后补充到达→delta 重算事件：只应用差额，绝不二次
-       全额（F5 重算语义）
+- T-FP4 【已授权修正事件】到达（非普通补充）→ 才产生 delta 重算：
+       只应用差额，绝不二次全额（F5 四规则③④前提钉死：补充到达
+       本身不触发重算）
 - T-FP5（v4）记账效果幂等键：同 effect_key 重放被 UNIQUE 拒绝；
        旧版本键在重算后不可复活（F5-3）
 - T-FP6（v4）三步单事务边界：b 步注入失败 → a 步补充亦回滚
@@ -477,8 +529,16 @@ float 列。
        qty_raw/price_raw 被 CHECK 拒
 - T-F3R 入口有限性：float inf/nan 及非有限 Decimal 串在入口层拒收
        （DB 拦不住的那一半，按分工表测）
-- T-Q1  数量投影只认 qty_raw/price_raw：历史 REAL 行不参与数量投影
-       （REAL 列非法文本不可能经投影通道生效）
+- T-Q1  新事件投影只认 qty_raw/price_raw；REAL 展示值由已验证
+       raw 单一派生（历史 REAL 行按 §1.4 走 LEGACY 通道）
+- T-Q2 （v6）迁移前后：成交数量聚合、持仓重建、既有经济效果
+       逐项一致——历史数量不退出恢复
+- T-Q3 （v6）含 LEGACY 行的聚合标注 MIXED_APPROXIMATE；精度等级
+       变化不改变任何历史数量值；不重扣/不补造/不清零
+- T-Q4 （v6）跨等级比较（EVENT raw vs LEGACY REAL）→
+       COMPARISON_INCOMPLETE：限新增风险、不阻减仓
+- T-RW1（v6）入口 raw 本体：负 raw / 零 raw / 合法 REAL+非法 raw /
+       两份值不一致 → 拒收或以 raw 为准重派生并告警
 - T-FP7 一致补充 → 零经济影响（幂等，无新版本）
 - T-FP8 已知值冲突 → CONFLICTED：隔离+告警，无任何差额自动应用；
        仅显式修正事件（带凭据引用）产生新版本
@@ -503,5 +563,5 @@ float 列。
 
 ① §1.1 判定规则三分支与 §1.2/1.3 存储引用方案；② §2 三条约束的
 落地语义（尤其 T-D2 的风险边界与 T-F2 的补充事实不回改）；③ §5 测试目录 v4 唯一编号清单（T-I 7/T-D 4/T-F 4+1R/T-DB 2/
-T-C 2/T-M 5/T-N 1/T-R 6/T-FP 9/T-X 2 + v5 增补（T-DB4/T-DB5/T-F3R/T-Q1/T-FP7-9/T-F6a/T-F6b），共 48 项——以清单为准、机器可数）
+T-C 2/T-M 5/T-N 1/T-R 6/T-FP 9/T-X 2 + v5/v6 增补（T-DB4/T-DB5/T-F3R/T-Q1-4/T-RW1/T-FP7-9/T-F6a/T-F6b），共 52 项——以清单为准、机器可数）
 是否充分。
