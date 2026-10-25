@@ -174,7 +174,12 @@ STRATEGY V2 / BACKTEST        V2 / E3 / E4 CLOSED-OFFLINE
 INDEPENDENT REVIEW = BLOCKED / REPOSITORY ACCESS（远端 origin 未含
   本分支；载体已改为本地 bundle ZIP：aurora-w43-review.zip，
   sha256 0590e7f4…731353，含全分支历史+复验材料+验证说明，零秘密）
-FILL IDENTITY DESIGN = v6 REVISED / AWAITING REVIEW（v5 两阻断闭合：历史数量 LEGACY_APPROXIMATE 级【继续参与恢复聚合】、跨等级比较=COMPARISON_INCOMPLETE 限新增风险；分工表逐例改写（inf 过/文本拒/nan→NULL 拒不作为防线），入口对 raw 本体做有限+严格正数校验，REAL 由已验证 raw 单一派生；T-FP4 加已授权修正前提；§3.4 围栏；目录 52 项机器可数。（承接 v5 三个收敛阻断项闭合且全部先实测：typeof 数值 CHECK/origin 无默认/qty_raw+price_raw 入库+DB-入口分工表（float inf 数据库拦不住实测确认）；冲突≠修正授权四规则+跨资产按资产双蹄同事务；动态精度+Inexact/Rounded 陷阱+指数边界拒收（默认 prec 丢尾数对照实测存证）；测试目录 48 项唯一编号。v4 已闭合项（索引单次/FK 恢复/引用映射/INCOMPLETE/证明链/精度相等）维持不变；（v1 CHANGES-
+FILL IDENTITY DESIGN = v6 PASS WITH NONBLOCKING NOTES / CLOSED
+FILL IDENTITY IMPL PLAN = SUBMITTED FOR REVIEW（三段拆分：迁移与
+  历史兼容 15 测 / 统一身份校验 21 测 / 费用补充与投影 14 测；
+  52 项全覆盖零残留；三条实施说明已确定化——raw 仅 EVENT、
+  Decimal→float 溢出/下溢=入口拒收、prec 公式+一次翻倍重试+
+  上限 10000+异常映射；第一段待单独授权，设计通过≠开发获准）（v5 两阻断闭合：历史数量 LEGACY_APPROXIMATE 级【继续参与恢复聚合】、跨等级比较=COMPARISON_INCOMPLETE 限新增风险；分工表逐例改写（inf 过/文本拒/nan→NULL 拒不作为防线），入口对 raw 本体做有限+严格正数校验，REAL 由已验证 raw 单一派生；T-FP4 加已授权修正前提；§3.4 围栏；目录 52 项机器可数。（承接 v5 三个收敛阻断项闭合且全部先实测：typeof 数值 CHECK/origin 无默认/qty_raw+price_raw 入库+DB-入口分工表（float inf 数据库拦不住实测确认）；冲突≠修正授权四规则+跨资产按资产双蹄同事务；动态精度+Inexact/Rounded 陷阱+指数边界拒收（默认 prec 丢尾数对照实测存证）；测试目录 48 项唯一编号。v4 已闭合项（索引单次/FK 恢复/引用映射/INCOMPLETE/证明链/精度相等）维持不变；（v1 CHANGES-
   REQUIRED 已吸收：跨 symbol 规则反转=独立身份、复合主键+表重建
   迁移方案成文、fingerprint 降格为凭证命名空间代理、推导上下文
   冻结+显式重算、DEVIATION 不覆盖不依赖、已知/未知比较表+
