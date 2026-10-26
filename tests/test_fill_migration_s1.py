@@ -565,3 +565,50 @@ class S1EvidenceGapTests(S1Harness):
             fm.migrate_fills_identity(
                 self.old_path, _fail_after="index", _connect=factory)
         self.assertIn(1, [v for v in seen.get("fk_values", []) if v is not None])
+
+
+class S1_04_ReviewerRepros(unittest.TestCase):
+    """评审反例复现（红→绿）：子串匹配必须被探针取代。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = os.path.join(self._tmp.name, "old.db")
+        _make_old_db(self.path).close()
+        fm.migrate_fills_identity(self.path)
+
+    def test_index_or_1_1_spoof_rejected(self):
+        conn = sqlite3.connect(self.path)
+        conn.execute("DROP INDEX ux_fills_null_symbol")
+        conn.execute(
+            "CREATE UNIQUE INDEX ux_fills_null_symbol ON fills(fill_id)"
+            " WHERE symbol IS NULL OR 1=1")
+        conn.commit()
+        conn.close()
+        # 该伪造把唯一性扩到全表 → 重新限制跨 symbol 同 ID
+        with self.assertRaises(Exception):
+            fm.reopen_isolated(self.path)
+
+    def test_side_check_dropped_rejected(self):
+        conn = sqlite3.connect(self.path)
+        sql = conn.execute(
+            "SELECT sql FROM sqlite_master WHERE name='fills'").fetchone()[0]
+        weakened = sql.replace("CHECK (side IN ('BUY','SELL'))", "")
+        conn.execute("ALTER TABLE fills RENAME TO fills_old")
+        conn.execute(weakened)
+        conn.execute("INSERT INTO fills SELECT * FROM fills_old")
+        conn.execute("DROP TABLE fills_old")
+        conn.execute(
+            "CREATE UNIQUE INDEX ux_fills_null_symbol ON fills(fill_id)"
+            " WHERE symbol IS NULL")
+        conn.commit()
+        # 行为验证：弱化后 side='LONG' 可写入（证明子串校验曾放过它）
+        conn.execute(
+            "INSERT INTO fills (fill_id, symbol, origin, client_order_id,"
+            " qty, qty_raw, price, price_raw, side, filled_at)"
+            " VALUES ('SPOOF','BTCUSDT','EVENT','C1',1,'1',1,'1',"
+            "'LONG','t')")
+        conn.rollback()
+        conn.close()
+        with self.assertRaises(Exception):
+            fm.reopen_isolated(self.path)

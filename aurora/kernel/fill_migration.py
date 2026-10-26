@@ -76,29 +76,41 @@ def _marker_value(conn) -> Optional[str]:
         return None
 
 
-def verify_structure(conn) -> None:
-    """结构深度验证（S1-04）：不止看名字。
+_REQUIRED_COLS = {"fill_id", "symbol", "origin", "client_order_id", "qty",
+                  "qty_raw", "price", "price_raw", "fee", "fee_raw",
+                  "fee_asset", "realized_pnl", "derivation_ctx",
+                  "replaced_by", "side", "filled_at", "synthetic",
+                  "replaces_synthetic_fill_id", "covered_by_fact_id",
+                  "quantity_effect_applied", "economic_effect_applied"}
+_NOTNULL_REQUIRED = {"fill_id", "origin", "client_order_id", "qty",
+                     "price", "side", "filled_at"}
 
-    核对：版本标记 / 复合 PK / 必要列与 NOT NULL / FK→orders /
-    索引【唯一性+部分条件+索引列】/ CREATE TABLE 内关键 CHECK。
+_EV_INS = ("INSERT INTO fills (fill_id, symbol, origin, client_order_id,"
+           " qty, qty_raw, price, price_raw, side, filled_at)"
+           " VALUES (?, ?, 'EVENT', ?, ?, ?, ?, ?, ?, 't')")
+_LG_INS = ("INSERT INTO fills (fill_id, symbol, origin, client_order_id,"
+           " qty, price, side, filled_at)"
+           " VALUES (?, NULL, 'LEGACY', ?, ?, ?, 'BUY', 't')")
+
+
+def verify_structure(conn) -> None:
+    """结构验证（S1-04 v2）：元数据核验 + 回滚式约束探针。
+
+    评审反例（OR 1=1 索引伪造、删除 side CHECK）证明 SQL 子串匹配
+    不可靠——约束语义改由【行为探针】证明：探针在 SAVEPOINT 内
+    注入应被拒绝/应被放行的输入，观察真实结果后整体回滚，不留痕。
+    元数据部分只使用精确结构信息（table_info/foreign_key_list），
+    不解析 SQL 文本。
     """
     if _marker_value(conn) != SCHEMA_VERSION:
         raise MigrationError("schema marker missing or wrong version")
     info = list(conn.execute("PRAGMA table_info(fills)"))
     cols = {r[1] for r in info}
-    required = {"fill_id", "symbol", "origin", "client_order_id", "qty",
-                "qty_raw", "price", "price_raw", "fee", "fee_raw",
-                "fee_asset", "realized_pnl", "derivation_ctx",
-                "replaced_by", "side", "filled_at", "synthetic",
-                "replaces_synthetic_fill_id", "covered_by_fact_id",
-                "quantity_effect_applied", "economic_effect_applied"}
-    missing = required - cols
+    missing = _REQUIRED_COLS - cols
     if missing:
         raise MigrationError(f"fills missing columns: {sorted(missing)}")
-    notnull_required = {"fill_id", "origin", "client_order_id", "qty",
-                        "price", "side", "filled_at"}
     for r in info:
-        if r[1] in notnull_required and not r[3]:
+        if r[1] in _NOTNULL_REQUIRED and not r[3]:
             raise MigrationError(f"column {r[1]} must be NOT NULL")
     pk = [r[1] for r in sorted(
         (r for r in info if r[5] > 0), key=lambda r: r[5])]
@@ -107,33 +119,133 @@ def verify_structure(conn) -> None:
     fks = list(conn.execute("PRAGMA foreign_key_list(fills)"))
     if not any(r[2] == "orders" and r[3] == "client_order_id" for r in fks):
         raise MigrationError("FK client_order_id→orders missing")
-    idx_rows = list(conn.execute("PRAGMA index_list(fills)"))
-    entry = next((r for r in idx_rows if r[1] == "ux_fills_null_symbol"), None)
-    if entry is None:
-        raise MigrationError("ux_fills_null_symbol index missing")
-    # index_list: (seq, name, unique, origin, partial)
-    if not entry[2]:
-        raise MigrationError("ux_fills_null_symbol must be UNIQUE")
-    if not entry[4]:
-        raise MigrationError("ux_fills_null_symbol must be PARTIAL")
-    idx_cols = [r[2] for r in conn.execute(
-        "PRAGMA index_info(ux_fills_null_symbol)")]
-    if idx_cols != ["fill_id"]:
-        raise MigrationError(
-            f"index columns {idx_cols}, expected [fill_id]")
-    isql = conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='index' AND name="
-        "'ux_fills_null_symbol'").fetchone()[0].lower()
-    if "symbol is null" not in isql:
-        raise MigrationError("index partial condition must be symbol IS NULL")
-    tsql = " ".join((conn.execute(
-        "SELECT sql FROM sqlite_master WHERE type='table' AND name='fills'"
-    ).fetchone()[0] or "").lower().split())
-    for token in ("typeof(qty)", "typeof(price)",
-                  "origin in ('legacy','event')",
-                  "qty_raw is not null", "fee_raw is null or"):
-        if token not in tsql:
-            raise MigrationError(f"CREATE TABLE missing check: {token}")
+    _probe_constraints(conn)
+
+
+def _probe_constraints(conn) -> None:
+    """回滚式约束探针（S1-04 v2）：证明语义而非子串。
+
+    每个探针注入一个必须被拒绝（或必须放行）的输入；观察数据库
+    的真实裁决。全部在 SAVEPOINT 内，最终回滚——零残留。
+    """
+    import uuid as _uuid
+
+    tag = _uuid.uuid4().hex[:8]
+    prev_iso = conn.isolation_level
+    conn.isolation_level = None  # 手动事务模式，SAVEPOINT 显式控制
+    conn.execute("SAVEPOINT s1_verify")
+    try:
+        row = conn.execute(
+            "SELECT client_order_id FROM orders LIMIT 1").fetchone()
+        if row is not None:
+            cid = row[0]
+        else:
+            conn.execute(
+                "INSERT INTO intents (intent_id, symbol, side, quantity,"
+                " state, reason, created_at, updated_at)"
+                " VALUES ('__probe_i_" + tag + "','BTCUSDT','LONG',1,"
+                " 'REJECTED','structure probe','t','t')")
+            cid = "__probe_o_" + tag
+            conn.execute(
+                "INSERT INTO orders (client_order_id, intent_id,"
+                " order_kind, side, position_side, quantity, reduce_only,"
+                " state, filled_qty, avg_price, created_at, updated_at)"
+                f" VALUES ('{cid}','__probe_i_{tag}','ENTRY','BUY','LONG',"
+                "1,0,'FILLED',1,1,'t','t')")
+
+        def expect_reject(sql, params=(), what=""):
+            try:
+                conn.execute(sql, params)
+            except sqlite3.IntegrityError:
+                return
+            raise MigrationError(
+                f"constraint probe NOT enforced{what}: {sql}")
+
+        def expect_ok(sql, params=(), what=""):
+            try:
+                conn.execute(sql, params)
+            except sqlite3.IntegrityError as exc:
+                raise MigrationError(
+                    f"probe wrongly rejected{what}: {exc}")
+
+        def ev(fid, symbol="BTCUSDT", qty=1, qty_raw="1",
+               price=1, price_raw="1", side="BUY", fee_raw=None,
+               fee_asset=None, cid_override=None):
+            return (_EV_INS, (f"__p_{tag}_{fid}", symbol,
+                              cid_override or cid, qty, qty_raw,
+                              price, price_raw, side), fee_raw, fee_asset)
+
+        # --- 部分唯一索引语义（钉死 OR 1=1 伪造） ---
+        # P1: 两个 NULL-symbol 同 trade ID → 必须拒绝
+        lg_sql = _LG_INS
+        expect_ok(lg_sql, (f"__p_{tag}_A", cid, 1, 1))
+        expect_reject(lg_sql, (f"__p_{tag}_A", cid, 1, 1),
+                      what=" [partial-unique on NULL symbol]")
+        # P2: 同 trade ID 跨 symbol → 必须放行（OR 1=1 伪造会拒绝）
+        s, p, fr, fa = ev("B", symbol="BTCUSDT")
+        expect_ok(s, p)
+        s2, p2, _, _ = ev("B", symbol="ETHUSDT")
+        expect_ok(s2, p2, what=" [cross-symbol same trade ID]")
+        # P3: NULL + symbol 同 trade ID 共存 → 放行
+        expect_ok(lg_sql, (f"__p_{tag}_C", cid, 1, 1))
+        s3, p3, _, _ = ev("C", symbol="BTCUSDT")
+        expect_ok(s3, p3, what=" [NULL+symbol coexist]")
+        # PK: 同 (symbol, trade ID) 重复 → 拒绝
+        s4, p4, _, _ = ev("D")
+        expect_ok(s4, p4)
+        expect_reject(s4, p4, what=" [composite PK]")
+
+        # --- CHECK 语义（钉死删除/弱化 CHECK 的伪造） ---
+        expect_reject(_EV_INS, (f"__p_{tag}_G", "BTCUSDT", cid,
+                                "garbage", "1", 1, "1", "BUY"),
+                      what=" [typeof(qty) text]")
+        expect_reject(_EV_INS, (f"__p_{tag}_N", "BTCUSDT", cid,
+                                -1, "-1", 1, "1", "BUY"),
+                      what=" [qty>0]")
+        expect_reject(_EV_INS, (f"__p_{tag}_Z", "BTCUSDT", cid,
+                                0, "0", 1, "1", "BUY"),
+                      what=" [qty>0 zero]")
+        expect_reject(_EV_INS, (f"__p_{tag}_P", "BTCUSDT", cid,
+                                1, "1", -1, "-1", "BUY"),
+                      what=" [price>0]")
+        expect_reject(_EV_INS, (f"__p_{tag}_S", "BTCUSDT", cid,
+                                1, "1", 1, "1", "LONG"),
+                      what=" [side enum]")
+        expect_reject(
+            "INSERT INTO fills (fill_id, symbol, origin, client_order_id,"
+            " qty, qty_raw, price, price_raw, side, filled_at)"
+            " VALUES (?, 'BTCUSDT', 'BOGUS', ?, 1, '1', 1, '1', 'BUY', 't')",
+            (f"__p_{tag}_O", cid), what=" [origin enum]")
+        expect_reject(
+            "INSERT INTO fills (fill_id, symbol, origin, client_order_id,"
+            " qty, qty_raw, price, price_raw, side, filled_at)"
+            " VALUES (?, NULL, 'EVENT', ?, 1, '1', 1, '1', 'BUY', 't')",
+            (f"__p_{tag}_M", cid), what=" [EVENT requires symbol]")
+        expect_reject(
+            "INSERT INTO fills (fill_id, symbol, origin, client_order_id,"
+            " qty, qty_raw, price, price_raw, side, filled_at)"
+            " VALUES (?, 'BTCUSDT', 'EVENT', ?, 1, NULL, 1, '1', 'BUY', 't')",
+            (f"__p_{tag}_R", cid), what=" [EVENT requires raws]")
+        expect_reject(
+            "INSERT INTO fills (fill_id, symbol, origin, client_order_id,"
+            " qty, qty_raw, price, price_raw, fee_raw, fee_asset,"
+            " side, filled_at)"
+            " VALUES (?, 'BTCUSDT', 'EVENT', ?, 1, '1', 1, '1', '0.1',"
+            " NULL, 'BUY', 't')",
+            (f"__p_{tag}_F", cid), what=" [fee KNOWN requires asset]")
+        # NOT NULL（origin 无默认、必填）
+        expect_reject(
+            "INSERT INTO fills (fill_id, symbol, client_order_id, qty,"
+            " price, side, filled_at)"
+            " VALUES (?, 'BTCUSDT', ?, 1, 1, 'BUY', 't')",
+            (f"__p_{tag}_NN", cid), what=" [origin NOT NULL]")
+        # FK：引用不存在订单 → 拒绝（连接级 FK 已由 reopen 强制）
+        s5, p5, _, _ = ev("K", cid_override="__no_such_order__")
+        expect_reject(s5, p5, what=" [FK to orders]")
+    finally:
+        conn.execute("ROLLBACK TO s1_verify")
+        conn.execute("RELEASE s1_verify")
+        conn.isolation_level = prev_iso
 
 
 def reopen_isolated(path: str,
@@ -168,6 +280,7 @@ def migrate_fills_identity(path: str, *, _fail_after: Optional[str] = None,
     """
     conn = (_connect or sqlite3.connect)(path)
     try:
+        conn.execute("PRAGMA foreign_keys=ON")  # 探针要求 FK 强制
         if _marker_value(conn) == SCHEMA_VERSION:
             verify_structure(conn)
             return {"migrated": False, "reason": "already at version 4"}
