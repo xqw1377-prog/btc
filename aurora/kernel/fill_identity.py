@@ -58,18 +58,24 @@ def parse_finite(raw):
     return d
 
 
-def _normalize_row(row):
-    """统一输入模型（S2-03 修正）。
+VALID_ORIGINS = ("EVENT", "LEGACY")
 
-    - EVENT 行：数值字段只认 *_raw；qty/price 必须为正有限值，
-      非法（≤0/NaN/垃圾）→ ValueError 拒收（不是 UNKNOWN，更不是
-      可确认重复）
-    - LEGACY 行：数值字段以 REAL 为近似事实（tier=APPROXIMATE）
-    - 缺 origin 按 LEGACY 处理（fail-closed 侧）
-    - fee 为可选数值字段：raw 缺失=UNKNOWN（INCOMPLETE 口径），
-      提供则须合法有限（负值允许——费用可为收入/支出）
+
+def _normalize_row(row):
+    """统一输入模型（S2-03 v3）。
+
+    - origin 必须是 EVENT/LEGACY；缺失按 LEGACY（旧格式兼容），
+      其他非空值 → ValueError 拒收（不得成为绕过 raw 校验的入口）
+    - EVENT：数值字段只认 *_raw；qty/price 有限严格为正，非法
+      → ValueError；fee 可选但提供则须合法有限
+    - LEGACY：数值字段以 REAL 为近似事实；fee_raw=NULL 时 fee
+      展示值【不参与比较】（UNKNOWN），不制造费用冲突
     """
-    origin = row.get("origin") or "LEGACY"
+    origin = row.get("origin")
+    if origin is None or origin == "":
+        origin = "LEGACY"
+    if origin not in VALID_ORIGINS:
+        raise ValueError(f"unknown origin {origin!r}: must be EVENT/LEGACY")
     out = {"origin": origin, "tier": None}
     for f in _NONNUMERIC:
         v = row.get(f)
@@ -91,45 +97,58 @@ def _normalize_row(row):
         out["fee"] = fee_d
     else:
         out["tier"] = "APPROXIMATE"
-        for f in ("qty", "price", "fee"):
+        for f in ("qty", "price"):
             v = row.get(f)
-            if v is None:
-                out[f] = None
-            else:
-                d = parse_finite(str(v))
-                out[f] = d
+            out[f] = None if v is None else parse_finite(str(v))
+        # 历史费用不参与比较：fee_raw=NULL → UNKNOWN（合同 §3.4），
+        # 展示列 fee 的 float 近似值绝不制造费用冲突
+        out["fee"] = None if row.get("fee_raw") in (None, "") else \
+            parse_finite(row.get("fee_raw"))
     return out
 
 
 def fill_content_mismatch(stored, incoming):
-    """唯一身份校验器（S2-01/02/03 修正版）。
+    """唯一身份校验器（S2-03 v3：离散事实先于精度等级）。
 
-    输入：含 origin 的行（EVENT 认 *_raw；LEGACY 认 REAL 近似）。
-    MATCH/MISMATCH/INCOMPLETE 三裁决 + ValueError（非法输入拒收）。
-    跨精度等级（EXACT vs APPROXIMATE）→ INCOMPLETE（不可确认匹配）。
+    裁决顺序：
+    1. 离散事实字段（cid/symbol/side/fee_asset）——已知值冲突 =
+       MISMATCH，即使跨精度等级也不吞掉；
+    2. 数值字段（qty/price/fee）——同等级内比较；跨等级 → 这些
+       字段全部不可证实 → INCOMPLETE；
+    3. 任何 UNKNOWN（单侧/双侧）→ INCOMPLETE。
     """
     s = _normalize_row(stored)
     i = _normalize_row(incoming)
     notes = []
-    if s["tier"] != i["tier"]:
+    conflict = []
+    unverifiable = []
+    cross_tier = s["tier"] != i["tier"]
+    if cross_tier:
         notes.append(
-            f"cross precision tier {s['tier']} vs {i['tier']}:"
-            " cannot confirm match")
-        return {"verdict": "INCOMPLETE", "conflict_fields": [],
-                "unverifiable_fields": [], "notes": notes}
-    conflict, unverifiable = [], []
-    for f in FACT_FIELDS:
+            f"cross precision tier {s['tier']} vs {i['tier']}")
+
+    # 1) 离散事实：已知冲突立即暴露（不被精度掩盖）；
+    #    双 UNKNOWN 同样不可证实（S2-02 语义保持）
+    for f in ("client_order_id", "symbol", "side", "fee_asset"):
         s_v, i_v = s[f], i[f]
         if s_v is None or i_v is None:
-            # S2-02：双 UNKNOWN 也算不可证实——绝不计入确认匹配
             unverifiable.append(f)
             continue
-        if f in _NONNUMERIC:
-            if s_v != i_v:
-                conflict.append(f)
-        else:
-            if s_v != i_v:
-                conflict.append(f)
+        if s_v != i_v:
+            conflict.append(f)
+
+    # 2) 数值字段
+    for f in ("qty", "price", "fee"):
+        s_v, i_v = s[f], i[f]
+        if cross_tier:
+            unverifiable.append(f)  # 跨等级：数值不可证实
+            continue
+        if s_v is None or i_v is None:
+            unverifiable.append(f)
+            continue
+        if s_v != i_v:
+            conflict.append(f)
+
     if conflict:
         return {"verdict": "MISMATCH", "conflict_fields": conflict,
                 "unverifiable_fields": [], "notes": notes}

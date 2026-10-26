@@ -24,7 +24,12 @@
 | T-R2 | test_null_legacy_location_is_not_identity（定位≠身份） |
 | T-R3/I4e/I2 | test_attribution_anomaly（ATTRIBUTION_ANOMALY + ORDER_NOT_FOUND） |
 
-## 尚未覆盖（入口层接线时——两入口接入是 S2 第二步或评审指示）
+## S2-03 残留修正（v3 反例）
+| 历史 fee float 不参与比较 | S2_03_ResidualRepros::test_legacy_fee_float_not_in_comparison |
+| 跨等级不掩盖已知 cid 冲突 | test_cross_tier_does_not_mask_known_cid_conflict |
+| 未知 origin 拒收 | test_unknown_origin_rejected |
+
+## 尚未覆盖（入口层接线——**已属 S2 范围，待修正复验后执行**）
 T-I4 入口半 / T-I5 / T-DB1 / T-DB2 / T-C1 / T-C2 / T-X1 / T-X2 / T-D3
 ——这些需要修改 Ledger.insert_fill 与 orchestrator.apply_fill_event
 调用本模块（触及生产入口路径），是否在本开工令范围内待评审指示。

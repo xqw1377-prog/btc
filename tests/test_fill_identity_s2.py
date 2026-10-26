@@ -270,3 +270,33 @@ class S2ReviewRepros(unittest.TestCase):
             '{"v":1}', '{"v":2}', Decimal("9.9"), Decimal("1.5"))
         self.assertFalse(r2["deviation"])
         self.assertEqual(r2["path"], "EXPLICIT_RECOMPUTE")
+
+
+class S2_03_ResidualRepros(unittest.TestCase):
+    """评审三项残留复现（红）。"""
+
+    def test_legacy_fee_float_not_in_comparison(self):
+        # 真实迁移形态：LEGACY 行 fee_raw=NULL，仅展示列 fee 变化
+        a = {"origin": "LEGACY", "client_order_id": "C1",
+             "symbol": None, "side": "BUY", "qty": 0.25,
+             "price": 100.5, "fee": 0.0, "fee_asset": None}
+        b = dict(a, fee=0.5)
+        r = fi.fill_content_mismatch(a, b)
+        self.assertEqual(r["verdict"], "INCOMPLETE")  # fee 不可证实
+        self.assertNotEqual(r["verdict"], "MISMATCH")
+
+    def test_cross_tier_does_not_mask_known_cid_conflict(self):
+        legacy = {"origin": "LEGACY", "client_order_id": "A",
+                  "symbol": None, "side": "BUY", "qty": 0.25,
+                  "price": 100.5, "fee": None, "fee_asset": None}
+        event = _row(origin="EVENT", client_order_id="B")
+        r = fi.fill_content_mismatch(legacy, event)
+        self.assertEqual(r["verdict"], "MISMATCH")
+        self.assertIn("client_order_id", r["conflict_fields"])
+
+    def test_unknown_origin_rejected(self):
+        row = {"origin": "TYPO", "client_order_id": "C1",
+               "symbol": "BTCUSDT", "side": "BUY", "qty": 0.25,
+               "price": 100.5, "fee": None, "fee_asset": None}
+        with self.assertRaises(ValueError):
+            fi.fill_content_mismatch(row, dict(row))
