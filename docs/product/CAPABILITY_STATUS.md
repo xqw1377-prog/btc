@@ -175,6 +175,13 @@ INDEPENDENT REVIEW = BLOCKED / REPOSITORY ACCESS（远端 origin 未含
   本分支；载体已改为本地 bundle ZIP：aurora-w43-review.zip，
   sha256 0590e7f4…731353，含全分支历史+复验材料+验证说明，零秘密）
 FILL IDENTITY DESIGN = v6 PASS WITH NONBLOCKING NOTES / CLOSED
+FILL IDENTITY S2        = CORE VALIDATOR IMPLEMENTED / AWAITING
+  REVIEW（c1188ed 红 19 失败=S2Stub → de2ca4a 绿 19/19 →
+  ead4a87 证据包；校验器/推导分类/归属异常/引用消解三分支+定位
+  ≠身份+新引用目标存在性；主树 800 / 克隆 799+1skip；S1 schema
+  零修改。入口层接线（Ledger.insert_fill/apply_fill_event 改调
+  本模块，映射 T-DB/C/X/I5/D3 九项）显式列为待评审指示——不自行
+  扩范围）
 FILL IDENTITY S1        = PASS（独立复验 f235d0d：S1 专项 28+1skip、
   全套 780+1skip+68 subtests、事务纪律三验收全过、隔离边界复核
   未发现接入默认路径；历经 4 轮 CHANGES-REQUIRED——聚合口径/
