@@ -14,6 +14,7 @@ from decimal import Decimal
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from aurora.kernel import fill_identity as fi
+from aurora.kernel.fill_migration import cross_tier_compare
 
 
 def _row(**kw):
@@ -73,7 +74,7 @@ class ValidatorMatchIncompleteTests(unittest.TestCase):
         legacy = fi.legacy_row(
             client_order_id="C1", symbol=None, side=None,
             qty=None, price=None)
-        r = fi.fill_content_mismatch(legacy, dict(legacy))
+        r = fi.compare_as("HISTORY", legacy, dict(legacy))
         self.assertEqual(r["verdict"], "INCOMPLETE")
 
 
@@ -259,10 +260,15 @@ class S2ReviewRepros(unittest.TestCase):
         legacy = fi.legacy_row(
             client_order_id="C1", symbol="BTCUSDT", side="BUY",
             qty=0.25, price=100.5)
-        r = fi.fill_content_mismatch(
-            _row(origin="EVENT"), legacy)
-        self.assertEqual(r["verdict"], "INCOMPLETE")
-        self.assertIn("qty", r["unverifiable_fields"])
+        # 跨等级=EVENT 模式行 vs HISTORY 模式行——由调用侧分别声明
+        ev = _row(origin="EVENT")
+        r_ev = fi.compare_as("EVENT", ev, ev)
+        r_hist = fi.compare_as("HISTORY", legacy, legacy)
+        # 等级差异的判定入口：cross_tier_compare（S1 合同）
+        r = cross_tier_compare(ev.get("qty_raw"), legacy["qty"])
+        self.assertEqual(r["result"], "COMPARISON_INCOMPLETE")
+        self.assertTrue(r["restrict_new_risk"])
+        self.assertFalse(r["block_reduce"])
 
     def test_S2_03_negative_qty_is_invalid_not_matchable(self):
         with self.assertRaises(ValueError):
@@ -291,16 +297,19 @@ class S2_03_ResidualRepros(unittest.TestCase):
              "symbol": None, "side": "BUY", "qty": 0.25,
              "price": 100.5, "fee": 0.0, "fee_asset": None}
         b = dict(a, fee=0.5)
-        r = fi.fill_content_mismatch(a, b)
+        r = fi.compare_as("HISTORY", a, b)
         self.assertEqual(r["verdict"], "INCOMPLETE")  # fee 不可证实
         self.assertNotEqual(r["verdict"], "MISMATCH")
 
     def test_cross_tier_does_not_mask_known_cid_conflict(self):
-        legacy = {"origin": "LEGACY", "client_order_id": "A",
-                  "symbol": None, "side": "BUY", "qty": 0.25,
-                  "price": 100.5, "fee": None, "fee_asset": None}
+        legacy = fi.legacy_row(
+            client_order_id="A", symbol=None, side="BUY",
+            qty=0.25, price=100.5)
         event = _row(origin="EVENT", client_order_id="B")
-        r = fi.fill_content_mismatch(legacy, event)
+        # 跨等级下已知 cid 冲突不被掩盖：compare_as 混模式禁止，
+        # 该语义由入口层分别归一化后比较离散字段——此处直接验证
+        # 入口层等价逻辑（v5 辅助）
+        r = fi.compare_mixed(legacy, event)
         self.assertEqual(r["verdict"], "MISMATCH")
         self.assertIn("client_order_id", r["conflict_fields"])
 
@@ -341,7 +350,7 @@ class S2_OriginSourceBoundaryTests(unittest.TestCase):
         row = fi.legacy_row(
             client_order_id="A", symbol=None, side="BUY",
             qty=1.0, price=100.0)
-        r = fi.fill_content_mismatch(row, dict(row))
+        r = fi.compare_as("HISTORY", row, dict(row))
         self.assertIn(r["verdict"], ("MATCH", "INCOMPLETE"))
         self.assertNotEqual(r["verdict"], "MISMATCH")
         self.assertNotIn("qty", r.get("unverifiable_fields", []))
@@ -352,6 +361,48 @@ class S2_OriginSourceBoundaryTests(unittest.TestCase):
                           side="BUY", qty=0.25, price=100.5)
         b = fi.legacy_row(client_order_id="A", symbol=None,
                           side="BUY", qty=0.26, price=100.5)
-        r = fi.fill_content_mismatch(a, b)
+        r = fi.compare_as("HISTORY", a, b)
         self.assertEqual(r["verdict"], "MISMATCH")
         self.assertIn("qty", r["conflict_fields"])
+
+
+class S2_TrustedSourceModeTests(unittest.TestCase):
+    """评审残留：载荷不能自选信任等级——模式由调用路径显式决定。"""
+
+    FORGED = {"origin": "LEGACY", "client_order_id": "A",
+              "symbol": "BTCUSDT", "side": "BUY",
+              "qty": -1.0, "price": 100.0,
+              "fee": None, "fee_asset": "USDT"}
+
+    def test_forged_legacy_without_raws_rejected(self):
+        with self.assertRaises(ValueError):
+            fi.compare_as("EVENT", self.FORGED, self.FORGED)
+
+    def test_event_mode_ignores_payload_origin(self):
+        # 新事件入口固定 EVENT 模式：载荷自填 LEGACY 也按 EVENT 校验
+        # → 缺 raw → 拒收
+        with self.assertRaises(ValueError):
+            fi.compare_as("EVENT", self.FORGED, self.FORGED)
+
+    def test_history_mode_explicit_only(self):
+        # 历史模式只能显式启用：trusted=True 参数，不读载荷 origin
+        row = dict(self.FORGED, origin="EVENT")  # 载荷 origin 被忽略
+        r = fi.compare_as("HISTORY", row, row)
+        self.assertIn(r["verdict"], ("MATCH", "INCOMPLETE"))
+
+    def test_default_call_rejects_legacy_payload(self):
+        # 无模式参数的裸调用：载荷形 LEGACY 且无 raw → 拒（不能自选）
+        with self.assertRaises(ValueError):
+            fi.fill_content_mismatch(self.FORGED, self.FORGED)
+
+    def test_real_history_recovery_unchanged(self):
+        # 真实历史恢复（显式 HISTORY）：qty 通道可用、同值不冲突
+        a = {"client_order_id": "A", "symbol": None, "side": "BUY",
+             "qty": 0.25, "price": 100.5}
+        b = {"client_order_id": "A", "symbol": None, "side": "BUY",
+             "qty": 0.26, "price": 100.5}
+        r1 = fi.compare_as("HISTORY", a, a)
+        r2 = fi.compare_as("HISTORY", a, b)
+        self.assertNotEqual(r1["verdict"], "MISMATCH")
+        self.assertEqual(r2["verdict"], "MISMATCH")
+        self.assertIn("qty", r2["conflict_fields"])

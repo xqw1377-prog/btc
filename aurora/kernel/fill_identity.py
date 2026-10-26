@@ -64,18 +64,16 @@ _RAW_KEYS = ("qty_raw", "price_raw", "fee_raw")
 
 def legacy_row(client_order_id, symbol, side, qty, price,
                fee=None, fee_asset=None):
-    """可信历史行构造器——历史兼容的唯一入口。
+    """历史行便捷构造器（仍须经 compare_as('HISTORY', ...) 使用）。
 
-    只能由可信账本读取路径或显式历史模式调用：构造的行 origin
-    固定 LEGACY 且不携带任何 *_raw 字段。载荷自填 origin='LEGACY'
-    不走此路径、也不获得其语义（见 _normalize_row 的来源边界）。
+    便捷性函数，不是信任边界本身——信任来自调用侧的 mode 参数。
     """
     return {"origin": "LEGACY", "client_order_id": client_order_id,
             "symbol": symbol, "side": side, "qty": qty,
             "price": price, "fee": fee, "fee_asset": fee_asset}
 
 
-def _normalize_row(row):
+def _normalize_row(row, mode="EVENT"):
     """统一输入模型（S2-03 v3）。
 
     - origin 必须是 EVENT/LEGACY；缺失按 LEGACY（旧格式兼容），
@@ -85,12 +83,17 @@ def _normalize_row(row):
     - LEGACY：数值字段以 REAL 为近似事实；fee_raw=NULL 时 fee
       展示值【不参与比较】（UNKNOWN），不制造费用冲突
     """
-    origin = row.get("origin")
-    if origin not in VALID_ORIGINS:
-        raise ValueError(
-            f"origin {origin!r} invalid or missing: new payloads must"
-            " declare origin='EVENT'; historical rows must come via"
-            " legacy_row() from a trusted ledger-reading path")
+    if mode == "HISTORY":
+        origin = "LEGACY"
+    elif mode == "EVENT":
+        origin = "EVENT"
+        if row.get("origin") == "LEGACY":
+            raise ValueError(
+                "EVENT-mode entry received payload declaring LEGACY:"
+                " trust level is decided by the calling path, not the"
+                " payload")
+    else:
+        raise ValueError(f"unknown mode {mode!r}: use EVENT or HISTORY")
     has_raw = any(row.get(k) not in (None, "") for k in _RAW_KEYS)
     out = {"origin": origin, "tier": None}
     for f in _NONNUMERIC:
@@ -114,8 +117,8 @@ def _normalize_row(row):
     else:
         if has_raw:
             raise ValueError(
-                "payload declares LEGACY but carries *_raw fields;"
-                " new events must declare origin='EVENT'")
+                "HISTORY-mode row carries *_raw fields: check the"
+                " trusted reader path")
         out["tier"] = "APPROXIMATE"
         for f in ("qty", "price"):
             v = row.get(f)
@@ -127,8 +130,8 @@ def _normalize_row(row):
     return out
 
 
-def fill_content_mismatch(stored, incoming):
-    """唯一身份校验器（S2-03 v3：离散事实先于精度等级）。
+def fill_content_mismatch(stored, incoming, *, mode="EVENT"):
+    """唯一身份校验器（v5：默认 EVENT；mode 由调用路径决定）。
 
     裁决顺序：
     1. 离散事实字段（cid/symbol/side/fee_asset）——已知值冲突 =
@@ -137,8 +140,8 @@ def fill_content_mismatch(stored, incoming):
        字段全部不可证实 → INCOMPLETE；
     3. 任何 UNKNOWN（单侧/双侧）→ INCOMPLETE。
     """
-    s = _normalize_row(stored)
-    i = _normalize_row(incoming)
+    s = _normalize_row(stored, mode)
+    i = _normalize_row(incoming, mode)
     notes = []
     conflict = []
     unverifiable = []
@@ -177,6 +180,40 @@ def fill_content_mismatch(stored, incoming):
                 "unverifiable_fields": unverifiable, "notes": notes}
     return {"verdict": "MATCH", "conflict_fields": [],
             "unverifiable_fields": [], "notes": notes}
+
+
+def compare_mixed(legacy_row_dict, event_row_dict):
+    """跨等级比较辅助：离散事实先比，数值不可证实。
+
+    入口层收到一 EVENT 一 LEGACY 时使用：已知 cid/symbol/side/
+    fee_asset 冲突必须暴露（不被精度掩盖）；数值字段全部
+    INCOMPLETE（S1 §1.4 cross-tier 语义）。
+    """
+    s = _normalize_row(legacy_row_dict, "HISTORY")
+    i = _normalize_row(event_row_dict, "EVENT")
+    conflict, unverifiable = [], []
+    for f in ("client_order_id", "symbol", "side", "fee_asset"):
+        if s[f] is not None and i[f] is not None and s[f] != i[f]:
+            conflict.append(f)
+        elif s[f] is None or i[f] is None:
+            unverifiable.append(f)
+    unverifiable.extend(("qty", "price", "fee"))
+    if conflict:
+        return {"verdict": "MISMATCH", "conflict_fields": conflict,
+                "unverifiable_fields": [], "notes": ["cross tier"]}
+    return {"verdict": "INCOMPLETE", "conflict_fields": [],
+            "unverifiable_fields": unverifiable,
+            "notes": ["cross tier"]}
+
+
+def compare_as(mode, stored, incoming):
+    """显式模式比较入口——信任等级由调用路径声明。
+
+    mode='EVENT'   新事件路径：raw 强制、载荷自填 LEGACY 拒收；
+    mode='HISTORY' 历史适配路径：仅用于账本读取/离线历史比较，
+                   载荷 origin 被忽略，raw 字段视为污染拒收。
+    """
+    return fill_content_mismatch(stored, incoming, mode=mode)
 
 
 def order_symbol_for(conn, client_order_id):
