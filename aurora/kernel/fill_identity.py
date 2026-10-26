@@ -59,6 +59,20 @@ def parse_finite(raw):
 
 
 VALID_ORIGINS = ("EVENT", "LEGACY")
+_RAW_KEYS = ("qty_raw", "price_raw", "fee_raw")
+
+
+def legacy_row(client_order_id, symbol, side, qty, price,
+               fee=None, fee_asset=None):
+    """可信历史行构造器——历史兼容的唯一入口。
+
+    只能由可信账本读取路径或显式历史模式调用：构造的行 origin
+    固定 LEGACY 且不携带任何 *_raw 字段。载荷自填 origin='LEGACY'
+    不走此路径、也不获得其语义（见 _normalize_row 的来源边界）。
+    """
+    return {"origin": "LEGACY", "client_order_id": client_order_id,
+            "symbol": symbol, "side": side, "qty": qty,
+            "price": price, "fee": fee, "fee_asset": fee_asset}
 
 
 def _normalize_row(row):
@@ -72,10 +86,12 @@ def _normalize_row(row):
       展示值【不参与比较】（UNKNOWN），不制造费用冲突
     """
     origin = row.get("origin")
-    if origin is None or origin == "":
-        origin = "LEGACY"
     if origin not in VALID_ORIGINS:
-        raise ValueError(f"unknown origin {origin!r}: must be EVENT/LEGACY")
+        raise ValueError(
+            f"origin {origin!r} invalid or missing: new payloads must"
+            " declare origin='EVENT'; historical rows must come via"
+            " legacy_row() from a trusted ledger-reading path")
+    has_raw = any(row.get(k) not in (None, "") for k in _RAW_KEYS)
     out = {"origin": origin, "tier": None}
     for f in _NONNUMERIC:
         v = row.get(f)
@@ -96,6 +112,10 @@ def _normalize_row(row):
                 f"EVENT fee_raw invalid: {row.get('fee_raw')!r}")
         out["fee"] = fee_d
     else:
+        if has_raw:
+            raise ValueError(
+                "payload declares LEGACY but carries *_raw fields;"
+                " new events must declare origin='EVENT'")
         out["tier"] = "APPROXIMATE"
         for f in ("qty", "price"):
             v = row.get(f)

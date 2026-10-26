@@ -63,10 +63,17 @@ class ValidatorMatchIncompleteTests(unittest.TestCase):
         r = fi.fill_content_mismatch(_row(fee_raw=None), _row(fee_raw=None))
         self.assertEqual(r["verdict"], "INCOMPLETE")  # 不算"字段匹配"
 
-    def test_null_rows_do_not_crash(self):
-        r = fi.fill_content_mismatch(
-            {"symbol": None, "side": None, "qty": None, "price": None,
-             "fee": None, "fee_asset": None}, _row())
+    def test_null_rows_rejected_or_incomplete(self):
+        # 来源边界：无 origin 的载荷 → ValueError（评审复现的封死）；
+        # 可信历史行全 NULL → INCOMPLETE
+        with self.assertRaises(ValueError):
+            fi.fill_content_mismatch(
+                {"symbol": None, "side": None, "qty": None,
+                 "price": None, "fee": None, "fee_asset": None}, _row())
+        legacy = fi.legacy_row(
+            client_order_id="C1", symbol=None, side=None,
+            qty=None, price=None)
+        r = fi.fill_content_mismatch(legacy, dict(legacy))
         self.assertEqual(r["verdict"], "INCOMPLETE")
 
 
@@ -249,10 +256,13 @@ class S2ReviewRepros(unittest.TestCase):
         self.assertEqual(r["verdict"], "MISMATCH")
 
     def test_S2_03_cross_tier_cannot_confirm_match(self):
+        legacy = fi.legacy_row(
+            client_order_id="C1", symbol="BTCUSDT", side="BUY",
+            qty=0.25, price=100.5)
         r = fi.fill_content_mismatch(
-            _row(origin="EVENT", qty_raw="0.25", qty="0.25"),
-            _row(origin="LEGACY", qty="0.25"))
+            _row(origin="EVENT"), legacy)
         self.assertEqual(r["verdict"], "INCOMPLETE")
+        self.assertIn("qty", r["unverifiable_fields"])
 
     def test_S2_03_negative_qty_is_invalid_not_matchable(self):
         with self.assertRaises(ValueError):
@@ -300,3 +310,48 @@ class S2_03_ResidualRepros(unittest.TestCase):
                "price": 100.5, "fee": None, "fee_asset": None}
         with self.assertRaises(ValueError):
             fi.fill_content_mismatch(row, dict(row))
+
+
+class S2_OriginSourceBoundaryTests(unittest.TestCase):
+    """评审残留复现：省略/伪造 origin 不得绕过 EVENT raw 校验。"""
+
+    ROW = {"client_order_id": "A", "symbol": "BTCUSDT", "side": "BUY",
+           "qty": 1.0, "qty_raw": "-1",
+           "price": 100.0, "price_raw": "100",
+           "fee_raw": "0.1", "fee_asset": "USDT"}
+
+    def test_omitted_origin_cannot_bypass_raw_validation(self):
+        with self.assertRaises(ValueError):
+            fi.fill_content_mismatch(dict(self.ROW), dict(self.ROW))
+
+    def test_empty_origin_cannot_bypass(self):
+        row = dict(self.ROW, origin="")
+        with self.assertRaises(ValueError):
+            fi.fill_content_mismatch(row, dict(row))
+
+    def test_self_declared_legacy_on_new_payload_rejected(self):
+        # 载荷自填 LEGACY 降级 → 拒（有 raw 字段说明是新事件形态）
+        row = dict(self.ROW, origin="LEGACY")
+        with self.assertRaises(ValueError):
+            fi.fill_content_mismatch(row, dict(row))
+
+    def test_trusted_legacy_path_still_works(self):
+        # 可信历史模式：legacy_row 构造 → 接受；数值近似同值匹配；
+        # fee 无 fee_raw → 不可证实 → INCOMPLETE（合同 §3.4）
+        row = fi.legacy_row(
+            client_order_id="A", symbol=None, side="BUY",
+            qty=1.0, price=100.0)
+        r = fi.fill_content_mismatch(row, dict(row))
+        self.assertIn(r["verdict"], ("MATCH", "INCOMPLETE"))
+        self.assertNotEqual(r["verdict"], "MISMATCH")
+        self.assertNotIn("qty", r.get("unverifiable_fields", []))
+
+    def test_trusted_legacy_preserves_qty_and_effects(self):
+        # 真实历史行数值通道可用：qty 变化 → MISMATCH（数值仍参与）
+        a = fi.legacy_row(client_order_id="A", symbol=None,
+                          side="BUY", qty=0.25, price=100.5)
+        b = fi.legacy_row(client_order_id="A", symbol=None,
+                          side="BUY", qty=0.26, price=100.5)
+        r = fi.fill_content_mismatch(a, b)
+        self.assertEqual(r["verdict"], "MISMATCH")
+        self.assertIn("qty", r["conflict_fields"])
