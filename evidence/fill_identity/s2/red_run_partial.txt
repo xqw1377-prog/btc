@@ -1,0 +1,30 @@
+_____ RefResolutionTests.test_new_ref_validation_rejects_bare_and_dangling _____
+
+self = <tests.test_fill_identity_s2.RefResolutionTests testMethod=test_new_ref_validation_rejects_bare_and_dangling>
+
+    def test_new_ref_validation_rejects_bare_and_dangling(self):
+        self.assertFalse(fi.validate_new_ref(self.conn, "F1")["ok"])
+        self.assertFalse(
+            fi.validate_new_ref(self.conn, "BTCUSDT:NOPE")["ok"])
+>       self.assertTrue(
+            fi.validate_new_ref(self.conn, "BTCUSDT:F1")["ok"])
+E       AssertionError: False is not true
+
+tests/test_fill_identity_s2.py:188: AssertionError
+________________ RefResolutionTests.test_qualified_ref_resolves ________________
+
+self = <tests.test_fill_identity_s2.RefResolutionTests testMethod=test_qualified_ref_resolves>
+
+    def test_qualified_ref_resolves(self):
+        r = fi.resolve_fill_ref(self.conn, "BTCUSDT:F1")
+>       self.assertEqual(r["resolution"], "RESOLVED")
+E       AssertionError: 'DANGLING' != 'RESOLVED'
+E       - DANGLING
+E       + RESOLVED
+
+tests/test_fill_identity_s2.py:157: AssertionError
+=========================== short test summary info ============================
+FAILED tests/test_fill_identity_s2.py::RefResolutionTests::test_bare_id_unique_symbol_resolves
+FAILED tests/test_fill_identity_s2.py::RefResolutionTests::test_new_ref_validation_rejects_bare_and_dangling
+FAILED tests/test_fill_identity_s2.py::RefResolutionTests::test_qualified_ref_resolves
+3 failed, 16 passed in 0.40s

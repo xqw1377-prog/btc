@@ -1,0 +1,24 @@
+FAILED tests/test_fill_identity_s2.py::ValidatorMatchIncompleteTests::test_double_unknown_is_incomplete_not_match
+FAILED tests/test_fill_identity_s2.py::ValidatorMatchIncompleteTests::test_full_match
+FAILED tests/test_fill_identity_s2.py::ValidatorMatchIncompleteTests::test_known_vs_unknown_incomplete_either_direction
+FAILED tests/test_fill_identity_s2.py::ValidatorMatchIncompleteTests::test_null_rows_do_not_crash
+FAILED tests/test_fill_identity_s2.py::RawPrecisionTests::test_illegal_raws_are_unknown_not_crash
+FAILED tests/test_fill_identity_s2.py::RawPrecisionTests::test_representation_independent_equality
+FAILED tests/test_fill_identity_s2.py::RawPrecisionTests::test_support_range_cap
+FAILED tests/test_fill_identity_s2.py::IdentityKeyTests::test_cross_symbol_same_trade_id_are_distinct_identities
+FAILED tests/test_fill_identity_s2.py::DerivationTests::test_legacy_no_ctx_not_checked
+FAILED tests/test_fill_identity_s2.py::DerivationTests::test_same_ctx_consistent
+FAILED tests/test_fill_identity_s2.py::DerivationTests::test_same_ctx_deviation_not_identity
+FAILED tests/test_fill_identity_s2.py::RefResolutionTests::test_attribution_anomaly
+FAILED tests/test_fill_identity_s2.py::RefResolutionTests::test_bare_id_multi_symbol_ambiguous
+FAILED tests/test_fill_identity_s2.py::RefResolutionTests::test_bare_id_unique_symbol_resolves
+FAILED tests/test_fill_identity_s2.py::RefResolutionTests::test_new_ref_validation_rejects_bare_and_dangling
+FAILED tests/test_fill_identity_s2.py::RefResolutionTests::test_null_legacy_location_is_not_identity
+FAILED tests/test_fill_identity_s2.py::RefResolutionTests::test_qualified_ref_resolves
+19 failed in 0.46s
+   1 S2Stub: check_attribution
+   3 S2Stub: derivation_check
+   8 S2Stub: fill_content_mismatch
+   2 S2Stub: parse_finite
+   4 S2Stub: resolve_fill_ref
+   1 S2Stub: validate_new_ref
