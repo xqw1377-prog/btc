@@ -17,8 +17,11 @@ from aurora.kernel import fill_identity as fi
 
 
 def _row(**kw):
-    base = {"symbol": "BTCUSDT", "side": "BUY", "qty": "0.25",
-            "price": "100.5", "fee": "0.1", "fee_asset": "USDT"}
+    base = {"origin": "EVENT", "client_order_id": "C1",
+            "symbol": "BTCUSDT", "side": "BUY",
+            "qty": "0.25", "qty_raw": "0.25",
+            "price": "100.5", "price_raw": "100.5",
+            "fee": "0.1", "fee_raw": "0.1", "fee_asset": "USDT"}
     base.update(kw)
     return base
 
@@ -28,12 +31,13 @@ class ValidatorMismatchTests(unittest.TestCase):
 
     def test_field_mutation_matrix(self):
         stored = _row()
-        for f, bad in (("side", "SELL"), ("qty", "0.26"),
-                       ("price", "101"), ("fee", "0.2"),
-                       ("fee_asset", "BNB")):
+        for f, bad in (("side", "SELL"), ("qty_raw", "0.26"),
+                       ("price_raw", "101"), ("fee_raw", "0.2"),
+                       ("fee_asset", "BNB"), ("client_order_id", "CX")):
             r = fi.fill_content_mismatch(stored, _row(**{f: bad}))
             self.assertEqual(r["verdict"], "MISMATCH", f)
-            self.assertIn(f, r["conflict_fields"], f)
+            self.assertIn(f.replace("_raw", ""),
+                          r["conflict_fields"], f)
 
     def test_symbol_mutation_is_mismatch(self):
         r = fi.fill_content_mismatch(_row(), _row(symbol="ETHUSDT"))
@@ -49,14 +53,14 @@ class ValidatorMatchIncompleteTests(unittest.TestCase):
         self.assertEqual(r["verdict"], "MATCH")
 
     def test_known_vs_unknown_incomplete_either_direction(self):
-        r1 = fi.fill_content_mismatch(_row(), _row(fee=None))
-        r2 = fi.fill_content_mismatch(_row(fee=None), _row())
+        r1 = fi.fill_content_mismatch(_row(), _row(fee_raw=None))
+        r2 = fi.fill_content_mismatch(_row(fee_raw=None), _row())
         for r in (r1, r2):
             self.assertEqual(r["verdict"], "INCOMPLETE")
             self.assertIn("fee", r["unverifiable_fields"])
 
     def test_double_unknown_is_incomplete_not_match(self):
-        r = fi.fill_content_mismatch(_row(fee=None), _row(fee=None))
+        r = fi.fill_content_mismatch(_row(fee_raw=None), _row(fee_raw=None))
         self.assertEqual(r["verdict"], "INCOMPLETE")  # 不算"字段匹配"
 
     def test_null_rows_do_not_crash(self):
@@ -70,7 +74,7 @@ class RawPrecisionTests(unittest.TestCase):
     """T-F3R/T-F4/T-Q1d：raw 本体校验、Decimal 数值相等、派生。"""
 
     def test_representation_independent_equality(self):
-        r = fi.fill_content_mismatch(_row(fee="-0.400"), _row(fee="-0.4"))
+        r = fi.fill_content_mismatch(_row(fee_raw="-0.400"), _row(fee_raw="-0.4"))
         self.assertEqual(r["verdict"], "MATCH")
 
     def test_illegal_raws_are_unknown_not_crash(self):
@@ -98,18 +102,19 @@ class DerivationTests(unittest.TestCase):
 
     def test_same_ctx_consistent(self):
         r = fi.derivation_check(
-            '{"v":1}', Decimal("1.5"), Decimal("1.5"))
+            '{"v":1}', '{"v":1}', Decimal("1.5"), Decimal("1.5"))
         self.assertFalse(r["deviation"])
 
     def test_same_ctx_deviation_not_identity(self):
         r = fi.derivation_check(
-            '{"v":1}', Decimal("1.6"), Decimal("1.5"))
+            '{"v":1}', '{"v":1}', Decimal("1.6"), Decimal("1.5"))
         self.assertTrue(r["deviation"])
         self.assertTrue(r["checked"])
 
     def test_legacy_no_ctx_not_checked(self):
-        r = fi.derivation_check(None, Decimal("9"), Decimal("1"))
+        r = fi.derivation_check(None, None, Decimal("9"), Decimal("1"))
         self.assertFalse(r["checked"])
+        self.assertEqual(r["path"], "NO_CTX")
 
 
 class RefResolutionTests(unittest.TestCase):
@@ -216,3 +221,52 @@ class RefResolutionTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class S2ReviewRepros(unittest.TestCase):
+    """评审四项阻断 + 非法数量复现（红）。"""
+
+    def test_S2_01_cid_is_identity_fact(self):
+        stored = _row(client_order_id="A")
+        incoming = _row(client_order_id="B")
+        r = fi.fill_content_mismatch(stored, incoming)
+        self.assertEqual(r["verdict"], "MISMATCH")
+        self.assertIn("client_order_id", r["conflict_fields"])
+
+    def test_S2_02_nonnumeric_double_unknown_is_incomplete(self):
+        for f in ("symbol", "side", "fee_asset"):
+            r = fi.fill_content_mismatch(
+                _row(**{f: None}), _row(**{f: None}))
+            self.assertEqual(r["verdict"], "INCOMPLETE", f)
+            self.assertIn(f, r["unverifiable_fields"], f)
+
+    def test_S2_03_event_reads_raw_not_real_and_detects_diff(self):
+        r = fi.fill_content_mismatch(
+            _row(origin="EVENT", qty_raw="1.00000000000000000001",
+                 qty="1.0"),
+            _row(origin="EVENT", qty_raw="1.00000000000000000002",
+                 qty="1.0"))
+        self.assertEqual(r["verdict"], "MISMATCH")
+
+    def test_S2_03_cross_tier_cannot_confirm_match(self):
+        r = fi.fill_content_mismatch(
+            _row(origin="EVENT", qty_raw="0.25", qty="0.25"),
+            _row(origin="LEGACY", qty="0.25"))
+        self.assertEqual(r["verdict"], "INCOMPLETE")
+
+    def test_S2_03_negative_qty_is_invalid_not_matchable(self):
+        with self.assertRaises(ValueError):
+            fi.fill_content_mismatch(
+                _row(origin="EVENT", qty_raw="-1"),
+                _row(origin="EVENT", qty_raw="-1"))
+
+    def test_S2_04_derivation_ctx_comparison(self):
+        # 同 ctx 不一致 → DEVIATION
+        r = fi.derivation_check(
+            '{"v":1}', '{"v":1}', Decimal("1.6"), Decimal("1.5"))
+        self.assertTrue(r["deviation"])
+        # 不同 ctx → 显式重算路径，不判 DEVIATION
+        r2 = fi.derivation_check(
+            '{"v":1}', '{"v":2}', Decimal("9.9"), Decimal("1.5"))
+        self.assertFalse(r2["deviation"])
+        self.assertEqual(r2["path"], "EXPLICIT_RECOMPUTE")
