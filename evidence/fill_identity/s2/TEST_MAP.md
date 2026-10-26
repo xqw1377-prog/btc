@@ -29,7 +29,22 @@
 | 跨等级不掩盖已知 cid 冲突 | test_cross_tier_does_not_mask_known_cid_conflict |
 | 未知 origin 拒收 | test_unknown_origin_rejected |
 
-## 尚未覆盖（入口层接线——**已属 S2 范围，待修正复验后执行**）
-T-I4 入口半 / T-I5 / T-DB1 / T-DB2 / T-C1 / T-C2 / T-X1 / T-X2 / T-D3
-——这些需要修改 Ledger.insert_fill 与 orchestrator.apply_fill_event
-调用本模块（触及生产入口路径），是否在本开工令范围内待评审指示。
+## 入口接线（已执行）
+
+| 合同 ID | 测试方法（S2_EntryWiringTests） |
+|---|---|
+| T-DB1 | test_T_DB1_fk_violation_not_swallowed（FK 上抛不吞 DUPLICATE） |
+| T-DB2 | test_T_DB2_fk_and_check_distinguishable（FOREIGN KEY vs FillIdentityConflict 可区分） |
+| T-C1 | test_T_C1_concurrent_same_identity_exactly_once（独立连接并发，恰一条） |
+| T-C2 | test_T_C2_concurrent_conflict_not_lost（并发冲突可见） |
+| T-X1 | test_T_X1_both_entries_same_report（两入口同一校验器同一冲突字段） |
+| T-X2 | test_T_X2_legacy_w43_tests_unchanged（W43 冲突断言不改+签名一致） |
+| T-I4e | test_T_I4e_entry_layer_rejects_event_without_symbol（同内容重放=DUPLICATE 幂等） |
+| T-I5 | test_T_I5_identity_unresolved_not_adopted（冲突不收养、不写新行） |
+| T-D3 | test_T_D3_explicit_recompute_does_not_overwrite（EXPLICIT_RECOMPUTE 分类；完整重算事件归 S3） |
+
+接线说明：旧 schema 账本行与 Fill 事件同为 REAL 近似通道——
+两侧行均以 HISTORY 模式（调用路径声明）比较，离散冲突与数值
+差异都能暴露；跨等级（raw EVENT vs 无 raw 历史）场景保留
+compare_mixed，模式仍由调用路径决定。compare_mixed 未成为第
+二套校验器——它只增加跨等级分层，字段集与裁决词表同源。

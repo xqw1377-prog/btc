@@ -1531,21 +1531,30 @@ class Orchestrator:
         """
         existing = self.ledger.get_fill(fill.fill_id)
         if existing is not None:
-            # W43 复验缺陷1修复：事件入口必须做内容一致性校验——
-            # 同 fill_id 不同内容 = 身份冲突，持久化告警（kill）+ 仓位
-            # 事实 UNKNOWN，绝不静默 DUPLICATE；一致重放才幂等。
-            if (
-                existing["client_order_id"] != fill.client_order_id
-                or abs(float(existing["qty"]) - float(fill.qty)) > 1e-12
-                or abs(float(existing["price"]) - float(fill.price)) > 1e-9
-                or existing["side"] != fill.side
-            ):
+            # S2 接线：统一校验器。旧 schema 账本行无 raw 列——
+            # 存侧行与事件行同为 REAL 近似通道（HISTORY 模式，调用
+            # 路径声明），离散冲突与数值差异都能暴露；迁移后带 raw
+            # 的 EVENT 行与无 raw 历史行才构成跨等级（compare_mixed
+            # 留给那个场景，模式仍由调用路径决定）。
+            from aurora.kernel.fill_identity import compare_as
+            stored_row = {
+                "client_order_id": existing["client_order_id"],
+                "symbol": None, "side": existing["side"],
+                "qty": existing["qty"], "price": existing["price"],
+                "fee": None, "fee_asset": None,
+            }
+            incoming_row = {
+                "client_order_id": fill.client_order_id,
+                "symbol": None, "side": fill.side,
+                "qty": fill.qty, "price": fill.price,
+                "fee": None, "fee_asset": None,
+            }
+            report = compare_as("HISTORY", stored_row, incoming_row)
+            if report["verdict"] == "MISMATCH":
                 self.ledger.engage_kill(
-                    f"fill identity conflict {fill.fill_id}: stored="
-                    f"(cid={existing['client_order_id']},qty={existing['qty']},"
-                    f"price={existing['price']},side={existing['side']}) "
-                    f"incoming=(cid={fill.client_order_id},qty={fill.qty},"
-                    f"price={fill.price},side={fill.side})")
+                    f"fill identity conflict {fill.fill_id}: fields="
+                    f"{report['conflict_fields']} stored={stored_row}"
+                    f" incoming={incoming_row}")
                 self.ledger.set_position_fact(
                     self.symbol, PositionFactState.UNKNOWN,
                     source="fill-event",
@@ -1553,8 +1562,13 @@ class Orchestrator:
                 return {"class": "IDENTITY_CONFLICT",
                         "fill_id": fill.fill_id,
                         "action": "MANUAL_RECOVERY",
-                        "kill_engaged": True}
-            return {"class": "DUPLICATE", "fill_id": fill.fill_id}
+                        "kill_engaged": True,
+                        "report": report}
+            # INCOMPLETE（无已知冲突、字段不可证实）：重放场景下
+            # 不写入任何新行——幂等 DUPLICATE 是安全裁决；不可证实
+            # 字段记录在 report 供审计。已知冲突（MISMATCH）才熔断。
+            return {"class": "DUPLICATE", "fill_id": fill.fill_id,
+                    "report": report}
 
         order = self.ledger.get_order(fill.client_order_id)
         if order is None:

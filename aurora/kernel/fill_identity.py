@@ -74,14 +74,14 @@ def legacy_row(client_order_id, symbol, side, qty, price,
 
 
 def _normalize_row(row, mode="EVENT"):
-    """统一输入模型（S2-03 v3）。
+    """统一输入模型（v5）：信任等级由 mode 参数决定，载荷不自选。
 
-    - origin 必须是 EVENT/LEGACY；缺失按 LEGACY（旧格式兼容），
-      其他非空值 → ValueError 拒收（不得成为绕过 raw 校验的入口）
-    - EVENT：数值字段只认 *_raw；qty/price 有限严格为正，非法
-      → ValueError；fee 可选但提供则须合法有限
-    - LEGACY：数值字段以 REAL 为近似事实；fee_raw=NULL 时 fee
-      展示值【不参与比较】（UNKNOWN），不制造费用冲突
+    - mode='EVENT'（默认）：数值字段只认 *_raw；qty/price 有限
+      严格为正（非法 → ValueError）；fee 可选但提供则须合法；
+      载荷自填 origin='LEGACY' → 拒收
+    - mode='HISTORY'：数值字段以 REAL 为近似事实；意外携带
+      *_raw → 污染拒收；fee_raw 缺失 → fee=UNKNOWN（历史 float
+      不参与比较）
     """
     if mode == "HISTORY":
         origin = "LEGACY"

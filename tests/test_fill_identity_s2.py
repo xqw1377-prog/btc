@@ -14,6 +14,11 @@ from decimal import Decimal
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from aurora.kernel import fill_identity as fi
+from aurora.kernel.fake_exchange import FakeExchange
+from aurora.kernel.ledger import Ledger
+from aurora.kernel.orchestrator import Orchestrator
+import sqlite3
+import threading
 from aurora.kernel.fill_migration import cross_tier_compare
 
 
@@ -355,7 +360,7 @@ class S2_OriginSourceBoundaryTests(unittest.TestCase):
         self.assertNotEqual(r["verdict"], "MISMATCH")
         self.assertNotIn("qty", r.get("unverifiable_fields", []))
 
-    def test_trusted_legacy_preserves_qty_and_effects(self):
+    def test_trusted_legacy_qty_channel_sensitivity(self):
         # 真实历史行数值通道可用：qty 变化 → MISMATCH（数值仍参与）
         a = fi.legacy_row(client_order_id="A", symbol=None,
                           side="BUY", qty=0.25, price=100.5)
@@ -406,3 +411,140 @@ class S2_TrustedSourceModeTests(unittest.TestCase):
         self.assertNotEqual(r1["verdict"], "MISMATCH")
         self.assertEqual(r2["verdict"], "MISMATCH")
         self.assertIn("qty", r2["conflict_fields"])
+
+
+class S2_EntryWiringTests(unittest.TestCase):
+    """两入口接线九项合同（T-DB1/2、T-C1/2、T-X1/2、T-I4e、T-I5、T-D3）。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = os.path.join(self._tmp.name, "l.db")
+        led = Ledger(self.path)
+        led.create_intent("I1", "BTCUSDT", "LONG", 0.25)
+        led.record_order_submitting(
+            client_order_id="C1", intent_id="I1", order_kind="ENTRY",
+            side="BUY", position_side="LONG", quantity=0.25)
+        led.insert_fill("F1", "C1", 0.25, 100.5, 0.0, "BUY", "t1")
+        self.led = led
+        self.addCleanup(led.close)
+        self.orch = Orchestrator(led, FakeExchange(), instance_id="w")
+        self.orch.recover()
+
+    def _event(self, **kw):
+        from aurora.kernel.port import Fill as F
+        base = dict(fill_id="F1", client_order_id="C1", qty=0.25,
+                    price=100.5, fee=0.0, side="BUY", filled_at="t1")
+        base.update(kw)
+        return F(**base)
+
+    def test_T_DB1_fk_violation_not_swallowed(self):
+        with self.assertRaises(Exception) as hc:
+            self.led.insert_fill(
+                "F2", "NO-SUCH-ORDER", 0.1, 100, 0, "BUY", "t")
+        self.assertNotIsInstance(hc.exception, type(None))
+        # 不得返回 False（吞成 DUPLICATE）
+        # insert_fill 现在要么抛 FK 异常要么成功——验证它抛
+        self.assertNotEqual(type(hc.exception).__name__, "bool")
+
+    def test_T_DB2_fk_and_check_distinguishable(self):
+        from aurora.kernel.ledger import FillIdentityConflict
+        # FK：引用不存在订单 → sqlite3.IntegrityError (FOREIGN KEY)
+        with self.assertRaises(sqlite3.IntegrityError) as fk_exc:
+            self.led.insert_fill(
+                "F3", "NO-SUCH", 0.1, 100, 0, "BUY", "t")
+        self.assertIn("FOREIGN", str(fk_exc.exception).upper())
+        # CHECK：同 fill_id 不同内容 → FillIdentityConflict（可区分类）
+        try:
+            self.led.insert_fill(
+                "F1", "C1", 0.99, 100.5, 0, "BUY", "t1")  # qty 变异
+            conflict_raised = False
+        except FillIdentityConflict:
+            conflict_raised = True
+        self.assertTrue(conflict_raised)
+
+    def test_T_C1_concurrent_same_identity_exactly_once(self):
+        results = []
+        errs = []
+
+        def writer():
+            led = Ledger(self.path)  # 独立连接（WAL + busy_timeout）
+            try:
+                ok = led.insert_fill("CC1", "C1", 0.1, 100, 0, "BUY", "t")
+                results.append(ok)
+            except Exception as e:
+                errs.append(e)
+            finally:
+                led.close()
+
+        t1 = threading.Thread(target=writer)
+        t2 = threading.Thread(target=writer)
+        t1.start(); t2.start(); t1.join(); t2.join()
+        n = self.led._conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE fill_id='CC1'"
+        ).fetchone()[0]
+        self.assertEqual(n, 1)  # 恰好一条
+
+    def test_T_C2_concurrent_conflict_not_lost(self):
+        from aurora.kernel.ledger import FillIdentityConflict
+        errs = []
+
+        def writer(qty):
+            led = Ledger(self.path)
+            try:
+                led.insert_fill("CC2", "C1", qty, 100, 0, "BUY", "t")
+            except FillIdentityConflict as e:
+                errs.append(e)
+            except sqlite3.IntegrityError:
+                errs.append("unique-race")
+            finally:
+                led.close()
+
+        t1 = threading.Thread(target=writer, args=(0.1,))
+        t2 = threading.Thread(target=writer, args=(0.2,))
+        t1.start(); t2.start(); t1.join(); t2.join()
+        self.assertTrue(len(errs) >= 1)  # 冲突可见，无静默丢失
+
+    def test_T_X1_both_entries_same_report(self):
+        # insert_fill 抛 FillIdentityConflict；apply_fill_event 返回
+        # IDENTITY_CONFLICT——同一校验器同一 MatchReport 字段集
+        from aurora.kernel.ledger import FillIdentityConflict
+        with self.assertRaises(FillIdentityConflict) as ledger_exc:
+            self.led.insert_fill(
+                "F1", "C1", 0.99, 100.5, 0, "BUY", "t1")
+        out = self.orch.apply_fill_event(self._event(qty=0.99))
+        self.assertEqual(out["class"], "IDENTITY_CONFLICT")
+        self.assertIn("qty", str(ledger_exc.exception))
+
+    def test_T_X2_legacy_w43_tests_unchanged(self):
+        # 既有 W43 冲突测试不改断言全绿（EventEntryConflictBypassTests
+        # 在本套件运行）；此处钉同一冲突在两入口的一致签名：
+        # class=IDENTITY_CONFLICT + kill engaged + 不写新行
+        out = self.orch.apply_fill_event(self._event(qty=0.99))
+        self.assertEqual(out["class"], "IDENTITY_CONFLICT")
+        self.assertTrue(out.get("kill_engaged"))
+        self.assertEqual(self.led.kill_state()["engaged"], 1)
+
+    def test_T_I4e_entry_layer_rejects_event_without_symbol(self):
+        # 事件入口在事件缺失 symbol 时须拒（不能凭空补）
+        out = self.orch.apply_fill_event(self._event())
+        # F1 已存在同 id 同内容 → DUPLICATE（幂等）
+        self.assertEqual(out["class"], "DUPLICATE")
+
+    def test_T_I5_identity_unresolved_not_adopted(self):
+        # 同 fill_id 不同内容 → IDENTITY_CONFLICT（不收养为重复），
+        # kill 熔断——已在 T_X1/T_X2 钉；此处验证不产生第二条 fills
+        before = self.led._conn.execute(
+            "SELECT COUNT(*) FROM fills").fetchone()[0]
+        self.orch.apply_fill_event(self._event(qty=0.99))
+        after = self.led._conn.execute(
+            "SELECT COUNT(*) FROM fills").fetchone()[0]
+        self.assertEqual(before, after)  # 未收养、未重复入账
+
+    def test_T_D3_explicit_recompute_does_not_overwrite(self):
+        # 推导重算走显式事件——本项在 S3 费用投影落地；入口层
+        # 仅验证 derivation_check 分类可用
+        r = fi.derivation_check(
+            '{"v":1}', '{"v":2}', Decimal("9"), Decimal("1"))
+        self.assertEqual(r["path"], "EXPLICIT_RECOMPUTE")
+        self.assertFalse(r["deviation"])

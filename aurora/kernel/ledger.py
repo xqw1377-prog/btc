@@ -379,21 +379,37 @@ class Ledger:
                      side, filled_at, int(synthetic), replaces_synthetic_fill_id,
                      covered_by_fact_id, int(economic_effect_applied)),
                 )
-        except sqlite3.IntegrityError:
+        except sqlite3.IntegrityError as exc:
+            msg = str(exc).upper()
+            if "FOREIGN" in msg or "CHECK" in msg:
+                raise  # T-DB1/DB2：FK/CHECK 不吞成 DUPLICATE
             existing = self._conn.execute(
                 "SELECT client_order_id, qty, price, side FROM fills"
                 " WHERE fill_id = ?", (fill_id,)).fetchone()
-            if existing is not None and (
-                    existing["client_order_id"] != client_order_id
-                    or abs(float(existing["qty"]) - float(qty)) > 1e-12
-                    or abs(float(existing["price"]) - float(price)) > 1e-9
-                    or existing["side"] != side):
+            if existing is None:
+                raise  # 非重复性 UNIQUE 违约：上抛
+            # 统一校验器（S2 接线）：历史行走 HISTORY 模式比较
+            from aurora.kernel.fill_identity import (
+                compare_as, FillIdentityConflict as _FIX,
+            )
+            stored = {
+                "client_order_id": existing["client_order_id"],
+                "symbol": None, "side": existing["side"],
+                "qty": existing["qty"], "price": existing["price"],
+                "fee": None, "fee_asset": None,
+            }
+            incoming = {
+                "client_order_id": client_order_id, "symbol": None,
+                "side": side, "qty": qty, "price": price,
+                "fee": None, "fee_asset": None,
+            }
+            report = compare_as("HISTORY", stored, incoming)
+            if report["verdict"] == "MISMATCH":
                 raise FillIdentityConflict(
-                    f"fill_id {fill_id!r} re-observed with different content: "
-                    f"stored=(cid={existing['client_order_id']}, "
-                    f"qty={existing['qty']}, price={existing['price']}, "
-                    f"side={existing['side']}) incoming=(cid={client_order_id}, "
-                    f"qty={qty}, price={price}, side={side})")
+                    f"fill_id {fill_id!r} identity conflict on fields"
+                    f" {report['conflict_fields']}: stored={dict(stored)}"
+                    f" incoming={dict(incoming)}")
+            # MATCH/INCOMPLETE → 一致或不可证实的重放：幂等
             return False
         return True
 
