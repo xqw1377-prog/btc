@@ -433,8 +433,12 @@ class S2_EntryWiringTests(unittest.TestCase):
 
     def _event(self, **kw):
         from aurora.kernel.port import Fill as F
+        # D-a 夹具补字段：venue 事件要求 symbol/raw 齐备
         base = dict(fill_id="F1", client_order_id="C1", qty=0.25,
-                    price=100.5, fee=0.0, side="BUY", filled_at="t1")
+                    price=100.5, fee=0.0, side="BUY", filled_at="t1",
+                    symbol="BTCUSDT", qty_raw="0.25",
+                    price_raw="100.5", fee_raw="0.0",
+                    fee_asset="USDT")
         base.update(kw)
         return F(**base)
 
@@ -512,7 +516,8 @@ class S2_EntryWiringTests(unittest.TestCase):
         with self.assertRaises(FillIdentityConflict) as ledger_exc:
             self.led.insert_fill(
                 "F1", "C1", 0.99, 100.5, 0, "BUY", "t1")
-        out = self.orch.apply_fill_event(self._event(qty=0.99))
+        out = self.orch.apply_fill_event(
+            self._event(qty=0.99, qty_raw="0.99"))
         self.assertEqual(out["class"], "IDENTITY_CONFLICT")
         self.assertIn("qty", str(ledger_exc.exception))
 
@@ -520,23 +525,25 @@ class S2_EntryWiringTests(unittest.TestCase):
         # 既有 W43 冲突测试不改断言全绿（EventEntryConflictBypassTests
         # 在本套件运行）；此处钉同一冲突在两入口的一致签名：
         # class=IDENTITY_CONFLICT + kill engaged + 不写新行
-        out = self.orch.apply_fill_event(self._event(qty=0.99))
+        out = self.orch.apply_fill_event(
+            self._event(qty=0.99, qty_raw="0.99"))
         self.assertEqual(out["class"], "IDENTITY_CONFLICT")
         self.assertTrue(out.get("kill_engaged"))
         self.assertEqual(self.led.kill_state()["engaged"], 1)
 
-    def test_T_I4e_entry_layer_rejects_event_without_symbol(self):
-        # 事件入口在事件缺失 symbol 时须拒（不能凭空补）
-        out = self.orch.apply_fill_event(self._event())
-        # F1 已存在同 id 同内容 → DUPLICATE（幂等）
-        self.assertEqual(out["class"], "DUPLICATE")
+    def test_T_I4e_missing_symbol_unresolved(self):
+        # 缺 symbol → UNRESOLVED（不凭空补、不降级、不确认重复）
+        out = self.orch.apply_fill_event(
+            self._event(fill_id="F1", symbol=None))
+        self.assertEqual(out["class"], "IDENTITY_UNRESOLVED")
 
     def test_T_I5_identity_unresolved_not_adopted(self):
         # 同 fill_id 不同内容 → IDENTITY_CONFLICT（不收养为重复），
         # kill 熔断——已在 T_X1/T_X2 钉；此处验证不产生第二条 fills
         before = self.led._conn.execute(
             "SELECT COUNT(*) FROM fills").fetchone()[0]
-        self.orch.apply_fill_event(self._event(qty=0.99))
+        self.orch.apply_fill_event(
+            self._event(qty=0.99, qty_raw="0.99"))
         after = self.led._conn.execute(
             "SELECT COUNT(*) FROM fills").fetchone()[0]
         self.assertEqual(before, after)  # 未收养、未重复入账

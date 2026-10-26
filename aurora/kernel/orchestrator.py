@@ -31,7 +31,7 @@ from .port import (
     OrderRequest,
     SubmitUnknownError,
 )
-from .state_machine import IntentState
+from .state_machine import IntentState, Transition, utc_now
 
 
 def _valid_price(px: Any) -> bool:
@@ -1516,45 +1516,123 @@ class Orchestrator:
     # ---------- 迟到成交（P0-B2.2 证据门控三分类） ----------
 
     def apply_fill_event(self, fill: Fill) -> Dict[str, Any]:
-        """迟到 Fill 事件分类处理（证据门控，P0-B2.2 修正）。
+        """venue 迟到成交事件（W1 修正：固有 EVENT 严格路径）。
 
-        DUPLICATE           fill_id 已存在 → 无经济影响
-        COVERED_BY_FACT     存在明确把该 venue trade ID 列为已覆盖的
-                            reconciliation fact → 仅关联审计，不重复记账。
-                            累计数量"容得下"不再构成证据。
-        SYNTHETIC_REPLACED  与未匹配合成调整确定性替换（同订单同数量）→
-                            撤销合成经济影响、写入真实价格/费用/PnL，
-                            仓位数量不重复变化
-        LATE_NEW_FILL       无任何证据 → 修正订单累计成交/费用/PnL、拉取仓位、
-                            重算保护；终态意图经证据门控逃逸边进入
-                            RECOVERY_REQUIRED 并熔断
+        分类：REJECTED（非法事实，先于写库）/ IDENTITY_CONFLICT /
+        IDENTITY_UNRESOLVED（缺失事实：不造 raw、不确认重复、
+        不收养；阻新增不阻减仓）/ DUPLICATE（完全确认的幂等重放）/
+        COVERED_BY_FACT / SYNTHETIC_REPLACED / LATE_NEW_FILL。
         """
+        from aurora.kernel import fill_identity as _fi
+
+        # ① 非法事实先于一切（含缺 symbol 的提前返回）：
+        #    提供了 raw 就必须是有限、严格正的合法数值。
+        if fill.qty_raw is not None:
+            d = _fi.parse_finite(fill.qty_raw)
+            if d is None or d <= 0:
+                return self._fill_rejected(
+                    fill, f"qty_raw invalid: {fill.qty_raw!r}")
+        if fill.price_raw is not None:
+            d = _fi.parse_finite(fill.price_raw)
+            if d is None or d <= 0:
+                return self._fill_rejected(
+                    fill, f"price_raw invalid: {fill.price_raw!r}")
+        if fill.fee_raw not in (None, ""):
+            d = _fi.parse_finite(fill.fee_raw)
+            if d is None:
+                return self._fill_rejected(
+                    fill, f"fee_raw invalid: {fill.fee_raw!r}")
+            if not fill.fee_asset:
+                return self._fill_rejected(
+                    fill, "fee KNOWN requires fee_asset")
+        # raw 缺失但 REAL 数值本身非法 → 同样拒收（不因缺 raw 放过）
+        import math as _math
+        for name, v in (("qty", fill.qty), ("price", fill.price)):
+            try:
+                fv = float(v)
+            except (TypeError, ValueError):
+                fv = float("nan")
+            if _math.isnan(fv) or fv < 0 or (name == "price" and fv == 0):
+                return self._fill_rejected(
+                    fill, f"{name} REAL value invalid: {v!r}")
+        if float(fill.qty) <= 0 and fill.qty_raw is None:
+            return self._fill_rejected(
+                fill, f"qty non-positive and no raw: {fill.qty!r}")
+        # raw 权威→REAL 派生（D-a 合同）：数值以 raw 为准参与比较
+        if fill.qty_raw is not None:
+            fill = Fill(
+                fill_id=fill.fill_id, client_order_id=fill.client_order_id,
+                qty=float(fill.qty_raw), price=float(fill.price_raw
+                                                     if fill.price_raw
+                                                     is not None
+                                                     else fill.price),
+                fee=fill.fee, side=fill.side, filled_at=fill.filled_at,
+                symbol=fill.symbol, qty_raw=fill.qty_raw,
+                price_raw=fill.price_raw, fee_raw=fill.fee_raw,
+                fee_asset=fill.fee_asset)
+        elif fill.price_raw is not None:
+            fill = Fill(
+                fill_id=fill.fill_id, client_order_id=fill.client_order_id,
+                qty=fill.qty, price=float(fill.price_raw),
+                fee=fill.fee, side=fill.side, filled_at=fill.filled_at,
+                symbol=fill.symbol, qty_raw=fill.qty_raw,
+                price_raw=fill.price_raw, fee_raw=fill.fee_raw,
+                fee_asset=fill.fee_asset)
+
+        # ② 缺失事实（symbol / raw 不齐备）→ UNRESOLVED，不降级
+        missing = [f for f in ("symbol", "qty_raw", "price_raw")
+                   if getattr(fill, f, None) in (None, "")]
+        if missing:
+            # 审计告警（transitions 表）而非全局 kill——W2 语义：
+            # 未解析必须持久可审计、不收养、不重复入账、不熔断。
+            self.ledger._log_transition(Transition(
+                "fill", fill.fill_id, "", "IDENTITY_UNRESOLVED",
+                utc_now(), f"missing facts {missing}; not adopted,"
+                " not confirmed duplicate", fill.fill_id))
+            return {"class": "IDENTITY_UNRESOLVED",
+                    "fill_id": fill.fill_id,
+                    "missing": missing,
+                    "action": "MANUAL_RECOVERY"}
+
+        # ③ 归属校验：事件 symbol vs 订单 symbol
+        attribution = _fi.check_attribution(
+            self.ledger._conn, fill.symbol, fill.client_order_id)
+        if attribution["verdict"] == "ORDER_NOT_FOUND":
+            self.ledger.engage_kill(
+                f"orphan fill event {fill.fill_id}")
+            return {"class": "ORPHAN", "fill_id": fill.fill_id,
+                    "action": "MANUAL_RECOVERY"}
+        if attribution["verdict"] == "ATTRIBUTION_ANOMALY":
+            self.ledger.engage_kill(
+                f"fill attribution anomaly {fill.fill_id}:"
+                f" {attribution}")
+            return {"class": "ATTRIBUTION_ANOMALY",
+                    "fill_id": fill.fill_id,
+                    "detail": attribution,
+                    "action": "MANUAL_RECOVERY"}
+
+        # ④ 身份比较：venue=EVENT 严格；账本行为可信读取（模式在
+        #    调用处声明，不从载荷读取）
         existing = self.ledger.get_fill(fill.fill_id)
         if existing is not None:
-            # S2 接线：统一校验器。旧 schema 账本行无 raw 列——
-            # 存侧行与事件行同为 REAL 近似通道（HISTORY 模式，调用
-            # 路径声明），离散冲突与数值差异都能暴露；迁移后带 raw
-            # 的 EVENT 行与无 raw 历史行才构成跨等级（compare_mixed
-            # 留给那个场景，模式仍由调用路径决定）。
-            from aurora.kernel.fill_identity import compare_as
-            stored_row = {
+            legacy = {
                 "client_order_id": existing["client_order_id"],
                 "symbol": None, "side": existing["side"],
                 "qty": existing["qty"], "price": existing["price"],
-                "fee": None, "fee_asset": None,
+                "fee_raw": None, "fee_asset": None,
             }
-            incoming_row = {
+            event = {
                 "client_order_id": fill.client_order_id,
-                "symbol": None, "side": fill.side,
-                "qty": fill.qty, "price": fill.price,
-                "fee": None, "fee_asset": None,
+                "symbol": fill.symbol, "side": fill.side,
+                "qty": float(fill.qty), "price": float(fill.price),
+                "qty_raw": fill.qty_raw, "price_raw": fill.price_raw,
+                "fee_raw": fill.fee_raw, "fee_asset": fill.fee_asset,
             }
-            report = compare_as("HISTORY", stored_row, incoming_row)
+            report = _fi.compare_mixed(legacy, event)
             if report["verdict"] == "MISMATCH":
                 self.ledger.engage_kill(
                     f"fill identity conflict {fill.fill_id}: fields="
-                    f"{report['conflict_fields']} stored={stored_row}"
-                    f" incoming={incoming_row}")
+                    f"{report['conflict_fields']}")
                 self.ledger.set_position_fact(
                     self.symbol, PositionFactState.UNKNOWN,
                     source="fill-event",
@@ -1562,89 +1640,111 @@ class Orchestrator:
                 return {"class": "IDENTITY_CONFLICT",
                         "fill_id": fill.fill_id,
                         "action": "MANUAL_RECOVERY",
-                        "kill_engaged": True,
+                        "kill_engaged": True, "report": report}
+            if report["verdict"] == "INCOMPLETE":
+                # 审计告警而非全局 kill（同上）
+                self.ledger._log_transition(Transition(
+                    "fill", fill.fill_id, "", "IDENTITY_UNRESOLVED",
+                    utc_now(),
+                    f"unverifiable={report['unverifiable_fields']}"
+                    "; not confirmed duplicate", fill.fill_id))
+                return {"class": "IDENTITY_UNRESOLVED",
+                        "fill_id": fill.fill_id,
+                        "action": "MANUAL_RECOVERY",
                         "report": report}
-            # INCOMPLETE（无已知冲突、字段不可证实）：重放场景下
-            # 不写入任何新行——幂等 DUPLICATE 是安全裁决；不可证实
-            # 字段记录在 report 供审计。已知冲突（MISMATCH）才熔断。
             return {"class": "DUPLICATE", "fill_id": fill.fill_id,
                     "report": report}
 
+        # 无既有行：走证据门控（fact/synthetic/late-new）
+        return self._fill_new_evidence(fill)
+
+    def _fill_rejected(self, fill: Fill, reason: str) -> Dict[str, Any]:
+        """非法事实：拒收（不写库、不熔断——数据错误非运行故障）。"""
+        return {"class": "REJECTED", "fill_id": fill.fill_id,
+                "reason": reason, "wrote": False}
+
+    def _fill_new_evidence(self, fill: Fill) -> Dict[str, Any]:
+        """无既有行的新 venue 事件：证据门控（保留原三分支语义）。"""
         order = self.ledger.get_order(fill.client_order_id)
-        if order is None:
-            # 孤儿成交：本地无订单可归属 —— 无法安全入账，直接熔断
-            self.ledger.engage_kill(f"orphan fill event {fill.fill_id}")
-            return {"class": "ORPHAN", "fill_id": fill.fill_id,
-                    "action": "MANUAL_RECOVERY"}
 
         # 证据一：reconciliation fact 明确覆盖该 venue trade ID
         fact_id = self.ledger.evidence_covers_fill(fill.fill_id)
         if fact_id:
-            realized = self._realized_pnl(order, fill)
-            inserted = self.ledger.insert_fill(
-                fill.fill_id, fill.client_order_id, fill.qty, fill.price,
-                fill.fee, fill.side, fill.filled_at, realized_pnl=realized,
+            realized = 0.0
+            if order is not None and order.get("order_kind") != "ENTRY":
+                realized = self._realized_pnl(order, fill) if order else 0.0
+            self.ledger.insert_fill(
+                fill.fill_id, fill.client_order_id,
+                float(fill.qty), float(fill.price),
+                float(fill.fee or 0), fill.side, fill.filled_at,
+                realized_pnl=realized,
                 covered_by_fact_id=fact_id, economic_effect_applied=False)
-            if not inserted:
-                return {"class": "DUPLICATE", "fill_id": fill.fill_id}
             return {"class": "COVERED_BY_FACT", "fill_id": fill.fill_id,
                     "evidence_fact_id": fact_id,
-                    "order": fill.client_order_id, "realized_pnl": realized}
+                    "order": fill.client_order_id,
+                    "realized_pnl": realized}
 
-        # 证据二：确定性替换未匹配的合成调整
+        # 证据二：确定性替换未匹配合成调整
         synthetic = next(
-            (s for s in self.ledger.open_synthetic_fills(fill.client_order_id)
-             if abs(float(s["qty"]) - fill.qty) <= 1e-9), None)
+            (s for s in self.ledger.open_synthetic_fills(
+                fill.client_order_id)
+             if abs(float(s["qty"]) - float(fill.qty)) <= 1e-9), None)
         if synthetic is not None:
-            realized = self._realized_pnl(order, fill)
+            realized = self._realized_pnl(order, fill) if (
+                order is not None
+                and order.get("order_kind") != "ENTRY") else 0.0
             inserted = self.ledger.insert_fill(
-                fill.fill_id, fill.client_order_id, fill.qty, fill.price,
-                fill.fee, fill.side, fill.filled_at, realized_pnl=realized,
+                fill.fill_id, fill.client_order_id,
+                float(fill.qty), float(fill.price),
+                float(fill.fee or 0), fill.side, fill.filled_at,
+                realized_pnl=realized,
                 replaces_synthetic_fill_id=synthetic["fill_id"])
             if inserted:
                 self.ledger.mark_synthetic_replaced(
                     synthetic["fill_id"], fill.fill_id)
-            return {"class": "SYNTHETIC_REPLACED", "fill_id": fill.fill_id,
+                self.ledger.sync_order_projection_from_fills(
+                    fill.client_order_id)
+            return {"class": "SYNTHETIC_REPLACED",
+                    "fill_id": fill.fill_id,
                     "replaces": synthetic["fill_id"],
                     "realized_pnl": realized,
                     "order_qty_unchanged": True}
 
-        # ---- LATE_NEW_FILL：无证据的新交易所事实 ----
-        economic = sum(
-            f["qty"] for f in self.ledger.fills_for_order(fill.client_order_id))
-        realized = self._realized_pnl(order, fill)
-        self.ledger.insert_fill(
-            fill.fill_id, fill.client_order_id, fill.qty, fill.price,
-            fill.fee, fill.side, fill.filled_at, realized_pnl=realized)
+        # 证据三（无证据）：LATE_NEW_FILL——修正累计 + 终态逃逸检查
+        realized = self._realized_pnl(order, fill) if (
+            order is not None and order.get("order_kind") != "ENTRY"
+        ) else 0.0
+        inserted = self.ledger.insert_fill(
+            fill.fill_id, fill.client_order_id,
+            float(fill.qty), float(fill.price),
+            float(fill.fee or 0), fill.side, fill.filled_at,
+            realized_pnl=realized)
+        if not inserted and self.ledger.fill_exists(fill.fill_id):
+            return {"class": "DUPLICATE", "fill_id": fill.fill_id}
 
-        new_filled = round(economic + fill.qty, 10)
-        state = "FILLED" if new_filled >= float(order["quantity"]) - 1e-9 \
-            else "PARTIALLY_FILLED"
-        self.ledger.update_order(
-            fill.client_order_id, state=state, filled_qty=new_filled)
-
+        self.ledger.sync_order_projection_from_fills(fill.client_order_id)
         self._refresh_position_fact()
         pos = self._safe_position()
-
-        intent = self.ledger.get_intent(order["intent_id"])
+        intent = self.ledger.get_intent(order["intent_id"]) if order else None
         intent_state = IntentState(intent["state"]) if intent else None
         if intent_state in (
-            IntentState.RECONCILED, IntentState.REJECTED, IntentState.CLOSED,
-        ):
+                IntentState.RECONCILED, IntentState.REJECTED,
+                IntentState.CLOSED):
             self.ledger.transition_intent(
                 order["intent_id"], IntentState.RECOVERY_REQUIRED,
                 f"EXCHANGE_FACT_CORRECTION late venue fact invalidates "
-                f"terminal state (fill {fill.fill_id} qty {fill.qty})",
+                f"terminal state (fill {fill.fill_id})",
                 correlation_id=order["intent_id"],
                 exchange_fact=(f"late-fill:{fill.fill_id}", fill.fill_id))
-            self.ledger.engage_kill(f"late fill after terminal state {fill.fill_id}")
+            self.ledger.engage_kill(
+                f"late fill after terminal state {fill.fill_id}")
         elif intent_state == IntentState.PROTECTED:
             self.sync_protection(order["intent_id"])
-
         return {"class": "LATE_NEW_FILL", "fill_id": fill.fill_id,
-                "order": fill.client_order_id, "new_filled_qty": new_filled,
+                "order": fill.client_order_id,
                 "realized_pnl": realized,
-                "position_after": abs(pos.signed_qty) if pos else None}
+                "position_after":
+                    abs(pos.signed_qty) if pos else None}
 
     def record_synthetic_fill(
         self, fill: Fill, reason: str = "reconciliation gap",

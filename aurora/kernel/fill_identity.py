@@ -183,11 +183,14 @@ def fill_content_mismatch(stored, incoming, *, mode="EVENT"):
 
 
 def compare_mixed(legacy_row_dict, event_row_dict):
-    """跨等级比较辅助：离散事实先比，数值不可证实。
+    """跨等级比较辅助：离散事实先比；数值按可得通道。
 
-    入口层收到一 EVENT 一 LEGACY 时使用：已知 cid/symbol/side/
-    fee_asset 冲突必须暴露（不被精度掩盖）；数值字段全部
-    INCOMPLETE（S1 §1.4 cross-tier 语义）。
+    - 离散（cid/symbol/side/fee_asset）：已知冲突暴露，双 UNKNOWN
+      不可证实；
+    - qty/price：legacy REAL vs event REAL 可比（同 float 通道；
+      event 侧 raw→REAL 派生一致性已由入口验证）——差异=冲突；
+    - fee：仅双侧 fee_raw 齐备才可比；legacy 无 fee_raw →
+      不可证实（历史费用不伪装已知）。
     """
     s = _normalize_row(legacy_row_dict, "HISTORY")
     i = _normalize_row(event_row_dict, "EVENT")
@@ -197,13 +200,37 @@ def compare_mixed(legacy_row_dict, event_row_dict):
             conflict.append(f)
         elif s[f] is None or i[f] is None:
             unverifiable.append(f)
-    unverifiable.extend(("qty", "price", "fee"))
+    # qty/price：REAL 通道（legacy.qty/price vs event.qty/price float）
+    for f in ("qty", "price"):
+        s_v = legacy_row_dict.get(f)
+        i_v = event_row_dict.get(f)
+        if s_v is None or i_v is None:
+            unverifiable.append(f)
+            continue
+        try:
+            if float(s_v) != float(i_v):
+                conflict.append(f)
+        except (TypeError, ValueError):
+            unverifiable.append(f)
+    # fee：仅双侧 fee_raw 齐备且可解析才可比；否则不可证实
+    s_fr = legacy_row_dict.get("fee_raw")
+    i_fr = event_row_dict.get("fee_raw")
+    s_d = parse_finite(s_fr) if s_fr is not None else None
+    i_d = parse_finite(i_fr) if i_fr is not None else None
+    if s_d is not None and i_d is not None:
+        if s_d != i_d:
+            conflict.append("fee")
+    else:
+        unverifiable.append("fee")
     if conflict:
         return {"verdict": "MISMATCH", "conflict_fields": conflict,
                 "unverifiable_fields": [], "notes": ["cross tier"]}
-    return {"verdict": "INCOMPLETE", "conflict_fields": [],
-            "unverifiable_fields": unverifiable,
-            "notes": ["cross tier"]}
+    if unverifiable:
+        return {"verdict": "INCOMPLETE", "conflict_fields": [],
+                "unverifiable_fields": unverifiable,
+                "notes": ["cross tier"]}
+    return {"verdict": "MATCH", "conflict_fields": [],
+            "unverifiable_fields": [], "notes": ["cross tier"]}
 
 
 def compare_as(mode, stored, incoming):

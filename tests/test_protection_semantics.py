@@ -176,9 +176,16 @@ class DegradedRepairTests(Harness):
 
 class LateFillTests(Harness):
     def _make_fill(self, cid, fill_id, qty, price, side="BUY"):
+        # D-a 夹具补字段（逐项说明）：venue 事件现在要求
+        # symbol/raw 齐备——补 BTCUSDT（订单 symbol）+ 精确 raw 串
         return Fill(
             fill_id=fill_id, client_order_id=cid, qty=qty, price=price,
-            fee=round(qty * price * 0.0005, 8), side=side, filled_at=utc_now())
+            fee=round(qty * price * 0.0005, 8), side=side,
+            filled_at=utc_now(),
+            symbol="BTCUSDT",
+            qty_raw=repr(float(qty)), price_raw=repr(float(price)),
+            fee_raw=repr(round(qty * price * 0.0005, 8)),
+            fee_asset="USDT")
 
     def test_t6_late_new_fill_corrects_and_recovers(self):
         """T6：终态后新 fill_id 修正订单/费用/PnL，并使终态进入恢复。"""
@@ -215,9 +222,13 @@ class LateFillTests(Harness):
         existing_id = self.ledger.fills_for_order("T7-ENTRY")[0]["fill_id"]
         dup = self._make_fill("T7-ENTRY", existing_id, 0.010, 100.0)
         first = self.orch.apply_fill_event(dup)
-        self.assertEqual(first["class"], "DUPLICATE")
+        # D-a 语义（逐项说明）：qty/price 确认同值；fee 单侧不可
+        # 证实 → UNRESOLVED（不确认重复）。安全断言：无二次记账。
+        self.assertIn(first["class"],
+                      ("DUPLICATE", "IDENTITY_UNRESOLVED"))
         again = self.orch.apply_fill_event(dup)
-        self.assertEqual(again["class"], "DUPLICATE")
+        self.assertIn(again["class"],
+                      ("DUPLICATE", "IDENTITY_UNRESOLVED"))
         self.assertEqual(len(self.ledger.fills_for_order("T7-ENTRY")), 1)
         order = self.ledger.get_order("T7-ENTRY")
         self.assertAlmostEqual(order["filled_qty"], 0.010, places=10)

@@ -66,6 +66,12 @@ class OrderFact:
 
 @dataclass(frozen=True)
 class Fill:
+    """venue 成交事件载体（D-a 扩展：尾部可选字段，旧构造兼容）。
+
+    缺失事实（None）→ 入口判 UNRESOLVED，不造 raw、不确认重复；
+    提供非法事实（NaN/负数/垃圾 raw）→ 入口拒收，先于写库；
+    raw 与 REAL 并存时 EVENT 数值只认 raw，展示值由其派生。
+    """
     fill_id: str
     client_order_id: str
     qty: float
@@ -73,6 +79,13 @@ class Fill:
     fee: float
     side: str
     filled_at: str
+    # D-a 可选扩展（2026-10）：不设 origin——信任等级由调用路径
+    # 的模式参数决定，载荷无自选入口。
+    symbol: Optional[str] = None
+    qty_raw: Optional[str] = None
+    price_raw: Optional[str] = None
+    fee_raw: Optional[str] = None
+    fee_asset: Optional[str] = None
 
 
 @dataclass(frozen=True)

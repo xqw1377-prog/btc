@@ -381,8 +381,10 @@ class Ledger:
                 )
         except sqlite3.IntegrityError as exc:
             msg = str(exc).upper()
-            if "FOREIGN" in msg or "CHECK" in msg:
-                raise  # T-DB1/DB2：FK/CHECK 不吞成 DUPLICATE
+            if "FOREIGN" in msg or "CHECK" in msg or "NOT NULL" in msg:
+                raise  # T-DB1/DB2/W3：FK/CHECK/NOT NULL 不吞成 DUPLICATE
+            if "UNIQUE" not in msg:
+                raise  # 非 UNIQUE（含其他约束类）一律上抛
             existing = self._conn.execute(
                 "SELECT client_order_id, qty, price, side FROM fills"
                 " WHERE fill_id = ?", (fill_id,)).fetchone()

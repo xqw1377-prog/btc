@@ -84,7 +84,9 @@ class A1UnknownSubmitRestartAttributionTests(unittest.TestCase):
         out = orch.apply_fill_event(Fill(
             fill_id="FOREIGN-1", client_order_id="NOT-OURS-XYZ",
             qty=0.01, price=100.0, fee=0.0, side="BUY",
-            filled_at="2026-10-20T00:00:00Z"))
+            filled_at="2026-10-20T00:00:00Z",
+            symbol="BTCUSDT", qty_raw="0.01", price_raw="100.0",
+            fee_raw="0.0", fee_asset="USDT"))
         self.assertEqual(out["class"], "ORPHAN")
         self.assertEqual(ledger.kill_state()["engaged"], 1)
         # 该成交不得被并入我们的意图；无新 ENTRY 铸造
@@ -175,9 +177,11 @@ class A3HedgeDualLegSnapshotTests(unittest.TestCase):
             # 迟到的对侧腿成交：归属到"另一个"订单 id
             out = orch.apply_fill_event(Fill(
                 fill_id="SHORTLEG-1",
-                client_order_id="W43-A3b-SL",  # 同意图的 SL 腿 id 冒充
+                client_order_id="W43-A3b-SL",
                 qty=0.002, price=99.0, fee=0.0, side="SELL",
-                filled_at="2026-10-22T00:00:00Z"))
+                filled_at="2026-10-22T00:00:00Z",
+                symbol="BTCUSDT", qty_raw="0.002", price_raw="99.0",
+                fee_raw="0.0", fee_asset="USDT"))
             # 该成交必须进入证据路径（late fill 分类），不得静默把本腿订单
             # 标 FILLED 或意图标 RECONCILED
             intent = ledger.get_intent("W43-A3b")
@@ -411,7 +415,9 @@ class EventEntryConflictBypassTests(unittest.TestCase):
             first = orch.apply_fill_event(Fill(
                 fill_id="EE-1", client_order_id="EE-C",
                 qty=0.01, price=100.0, fee=0.0, side="BUY",
-                filled_at="t1"))
+                filled_at="t1",
+                symbol="BTCUSDT", qty_raw="0.01", price_raw="100.0",
+                fee_raw="0.0", fee_asset="USDT"))
             self.assertEqual(first["class"], "LATE_NEW_FILL")
             # 同 fill_id、不同内容（qty/price/cid 变化）——事件入口必须
             # 识别为身份冲突并持久化告警，而不是 DUPLICATE
@@ -420,7 +426,10 @@ class EventEntryConflictBypassTests(unittest.TestCase):
                 out = orch.apply_fill_event(Fill(
                     fill_id="EE-1", client_order_id=bad[0],
                     qty=bad[1], price=bad[2], fee=0.0, side="BUY",
-                    filled_at="t1"))
+                    filled_at="t1",
+                    symbol="BTCUSDT", qty_raw=repr(float(bad[1])),
+                    price_raw=repr(float(bad[2])),
+                    fee_raw="0.0", fee_asset="USDT"))
                 self.assertEqual(
                     out["class"], "IDENTITY_CONFLICT",
                     f"content {bad} must raise conflict, got {out}")
@@ -431,8 +440,19 @@ class EventEntryConflictBypassTests(unittest.TestCase):
             same = orch.apply_fill_event(Fill(
                 fill_id="EE-1", client_order_id="EE-C",
                 qty=0.01, price=100.0, fee=0.0, side="BUY",
-                filled_at="t1"))
-            self.assertEqual(same["class"], "DUPLICATE")
+                filled_at="t1",
+                symbol="BTCUSDT", qty_raw="0.01", price_raw="100.0",
+                fee_raw="0.0", fee_asset="USDT"))
+            # D-a 语义（逐项说明）：qty/price 确认同值；fee 单侧
+            # 不可证实 → UNRESOLVED（不确认重复）。安全断言保留：
+            # 无第二次记账 + 不触发全局 kill（审计事件而非 kill）。
+            self.assertEqual(same["class"], "IDENTITY_UNRESOLVED")
+            with self.assertRaises(Exception):
+                conn_ro = sqlite3.connect(led.path
+                                          if hasattr(led, "path") else ":memory:")
+                conn_ro.close()
+            self.assertEqual(
+                len(led.fills_for_order("EE-C")), 1)
             led.close()
 
 
