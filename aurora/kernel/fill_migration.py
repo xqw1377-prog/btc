@@ -123,16 +123,28 @@ def verify_structure(conn) -> None:
 
 
 def _probe_constraints(conn) -> None:
-    """回滚式约束探针（S1-04 v2）：证明语义而非子串。
+    """回滚式约束探针（S1-04 v3）：证明语义而非子串；零副作用。
 
-    每个探针注入一个必须被拒绝（或必须放行）的输入；观察数据库
-    的真实裁决。全部在 SAVEPOINT 内，最终回滚——零残留。
+    事务纪律（评审阻断修复：isolation_level 切换会隐式提交调用方
+    未提交事务——已删除）：
+    - 不修改任何连接配置（含 isolation_level）；
+    - 前置：FK 强制必须已启用（要求，不代设）；外层存在未提交事务
+      → 在任何写入前【拒绝验证】；
+    - 探针在 SAVEPOINT 内执行；SAVEPOINT 作为最外层开启的事务由
+      收尾 ROLLBACK 整体回滚——成功与异常路径均不提交、不残留、
+      不改变调用方事务状态与连接配置。
     """
     import uuid as _uuid
 
+    if conn.execute("PRAGMA foreign_keys").fetchone()[0] != 1:
+        raise MigrationError(
+            "verify requires foreign_keys=ON on the connection")
+    if getattr(conn, "in_transaction", False):
+        raise MigrationError(
+            "verify refused: caller has an uncommitted transaction; "
+            "commit or rollback before structural verification")
+
     tag = _uuid.uuid4().hex[:8]
-    prev_iso = conn.isolation_level
-    conn.isolation_level = None  # 手动事务模式，SAVEPOINT 显式控制
     conn.execute("SAVEPOINT s1_verify")
     try:
         row = conn.execute(
@@ -168,34 +180,23 @@ def _probe_constraints(conn) -> None:
                 raise MigrationError(
                     f"probe wrongly rejected{what}: {exc}")
 
-        def ev(fid, symbol="BTCUSDT", qty=1, qty_raw="1",
-               price=1, price_raw="1", side="BUY", fee_raw=None,
-               fee_asset=None, cid_override=None):
-            return (_EV_INS, (f"__p_{tag}_{fid}", symbol,
-                              cid_override or cid, qty, qty_raw,
-                              price, price_raw, side), fee_raw, fee_asset)
-
         # --- 部分唯一索引语义（钉死 OR 1=1 伪造） ---
-        # P1: 两个 NULL-symbol 同 trade ID → 必须拒绝
         lg_sql = _LG_INS
         expect_ok(lg_sql, (f"__p_{tag}_A", cid, 1, 1))
         expect_reject(lg_sql, (f"__p_{tag}_A", cid, 1, 1),
                       what=" [partial-unique on NULL symbol]")
-        # P2: 同 trade ID 跨 symbol → 必须放行（OR 1=1 伪造会拒绝）
-        s, p, fr, fa = ev("B", symbol="BTCUSDT")
+        s, p = _ev_params(tag, "B", symbol="BTCUSDT", cid=cid)
         expect_ok(s, p)
-        s2, p2, _, _ = ev("B", symbol="ETHUSDT")
+        s2, p2 = _ev_params(tag, "B", symbol="ETHUSDT", cid=cid)
         expect_ok(s2, p2, what=" [cross-symbol same trade ID]")
-        # P3: NULL + symbol 同 trade ID 共存 → 放行
         expect_ok(lg_sql, (f"__p_{tag}_C", cid, 1, 1))
-        s3, p3, _, _ = ev("C", symbol="BTCUSDT")
+        s3, p3 = _ev_params(tag, "C", symbol="BTCUSDT", cid=cid)
         expect_ok(s3, p3, what=" [NULL+symbol coexist]")
-        # PK: 同 (symbol, trade ID) 重复 → 拒绝
-        s4, p4, _, _ = ev("D")
+        s4, p4 = _ev_params(tag, "D", cid=cid)
         expect_ok(s4, p4)
         expect_reject(s4, p4, what=" [composite PK]")
 
-        # --- CHECK 语义（钉死删除/弱化 CHECK 的伪造） ---
+        # --- CHECK / NOT NULL / FK 语义 ---
         expect_reject(_EV_INS, (f"__p_{tag}_G", "BTCUSDT", cid,
                                 "garbage", "1", 1, "1", "BUY"),
                       what=" [typeof(qty) text]")
@@ -233,19 +234,27 @@ def _probe_constraints(conn) -> None:
             " VALUES (?, 'BTCUSDT', 'EVENT', ?, 1, '1', 1, '1', '0.1',"
             " NULL, 'BUY', 't')",
             (f"__p_{tag}_F", cid), what=" [fee KNOWN requires asset]")
-        # NOT NULL（origin 无默认、必填）
         expect_reject(
             "INSERT INTO fills (fill_id, symbol, client_order_id, qty,"
             " price, side, filled_at)"
             " VALUES (?, 'BTCUSDT', ?, 1, 1, 'BUY', 't')",
             (f"__p_{tag}_NN", cid), what=" [origin NOT NULL]")
-        # FK：引用不存在订单 → 拒绝（连接级 FK 已由 reopen 强制）
-        s5, p5, _, _ = ev("K", cid_override="__no_such_order__")
+        s5, p5 = _ev_params(tag, "K", cid_override="__no_such_order__",
+                             cid=cid)
         expect_reject(s5, p5, what=" [FK to orders]")
     finally:
+        # SAVEPOINT 作为最外层事务的开启者：ROLLBACK 整体回滚并关闭
+        # 事务——成功与异常路径都不提交、零残留、不触碰调用方状态。
         conn.execute("ROLLBACK TO s1_verify")
-        conn.execute("RELEASE s1_verify")
-        conn.isolation_level = prev_iso
+        conn.execute("ROLLBACK")
+
+
+def _ev_params(tag, fid, symbol="BTCUSDT", qty=1, qty_raw="1",
+               price=1, price_raw="1", side="BUY", cid=None,
+               cid_override=None):
+    return (_EV_INS, (f"__p_{tag}_{fid}", symbol,
+                      cid_override or cid, qty, qty_raw,
+                      price, price_raw, side))
 
 
 def reopen_isolated(path: str,

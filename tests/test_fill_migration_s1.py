@@ -612,3 +612,84 @@ class S1_04_ReviewerRepros(unittest.TestCase):
         conn.close()
         with self.assertRaises(Exception):
             fm.reopen_isolated(self.path)
+
+
+class VerifyTransactionDisciplineTests(unittest.TestCase):
+    """评审阻断复现 + 三条验收：验证不得提交/回滚/改变调用方事务。"""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        self.path = os.path.join(self._tmp.name, "old.db")
+        _make_old_db(self.path).close()
+        fm.migrate_fills_identity(self.path)
+
+    def test_A1_uncommitted_caller_data_survives_verify_and_rolls_back(self):
+        conn = fm.reopen_isolated(self.path)
+        conn.execute(
+            "UPDATE orders SET avg_price=123.0 WHERE client_order_id='C1'")
+        self.assertTrue(conn.in_transaction)
+        # 外层未提交事务存在 → 验证在任何写入前拒绝
+        with self.assertRaises(fm.MigrationError):
+            fm.verify_structure(conn)
+        conn.rollback()  # 调用方回滚仍然有效
+        val = conn.execute(
+            "SELECT avg_price FROM orders WHERE client_order_id='C1'"
+        ).fetchone()[0]
+        conn.close()
+        self.assertNotEqual(val, 123.0)  # 未被隐式提交
+
+    def test_A2_verify_failure_keeps_caller_transaction_state(self):
+        conn = fm.reopen_isolated(self.path)
+        conn.execute(
+            "UPDATE orders SET avg_price=999.0 WHERE client_order_id='C1'")
+        # 先弱化结构（在打开第二个连接之前，避免写锁竞争），
+        # 再构造外层未提交事务 → 拒绝必须发生在任何探针写入前
+        conn.rollback()
+        w = sqlite3.connect(self.path)
+        w.execute("DROP INDEX ux_fills_null_symbol")
+        w.commit(); w.close()
+        conn.execute(
+            "UPDATE orders SET avg_price=999.0 WHERE client_order_id='C1'")
+        with self.assertRaises(fm.MigrationError):
+            fm.verify_structure(conn)
+        self.assertTrue(conn.in_transaction)  # 事务状态未被改变
+        conn.rollback()
+        val = conn.execute(
+            "SELECT avg_price FROM orders WHERE client_order_id='C1'"
+        ).fetchone()[0]
+        conn.close()
+        self.assertNotEqual(val, 999.0)
+
+    def test_A3_no_outer_txn_verify_is_zero_residue(self):
+        conn = fm.reopen_isolated(self.path)
+        before = conn.execute(
+            "SELECT COUNT(*), COALESCE(MAX(rowid),0) FROM fills").fetchone()
+        fm.verify_structure(conn)
+        self.assertFalse(conn.in_transaction)  # 未留下打开的事务
+        after = conn.execute(
+            "SELECT COUNT(*), COALESCE(MAX(rowid),0) FROM fills").fetchone()
+        probes = conn.execute(
+            "SELECT COUNT(*) FROM fills WHERE fill_id LIKE '__p_%'"
+            " OR fill_id LIKE '__probe%'").fetchone()[0]
+        conn.close()
+        self.assertEqual(tuple(before), tuple(after))
+        self.assertEqual(probes, 0)
+
+    def test_reviewer_repro_implicit_commit_is_gone(self):
+        # 评审原复现流程：未提交修改 + verify + rollback → 数据必须还原
+        conn = fm.reopen_isolated(self.path)
+        conn.execute(
+            "UPDATE orders SET avg_price=123.0 WHERE client_order_id='C1'")
+        try:
+            fm.verify_structure(conn)
+        except fm.MigrationError:
+            pass  # 拒绝路径
+        conn.rollback()
+        fresh = sqlite3.connect(self.path)
+        val = fresh.execute(
+            "SELECT avg_price FROM orders WHERE client_order_id='C1'"
+        ).fetchone()[0]
+        fresh.close()
+        conn.close()
+        self.assertNotEqual(val, 123.0)
