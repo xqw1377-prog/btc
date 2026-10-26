@@ -175,6 +175,12 @@ INDEPENDENT REVIEW = BLOCKED / REPOSITORY ACCESS（远端 origin 未含
   本分支；载体已改为本地 bundle ZIP：aurora-w43-review.zip，
   sha256 0590e7f4…731353，含全分支历史+复验材料+验证说明，零秘密）
 FILL IDENTITY DESIGN = v6 PASS WITH NONBLOCKING NOTES / CLOSED
+FILL IDENTITY S2 WIRE  = CHANGES-REQUIRED → 修正清单待评审
+  （W1 新事件被降 HISTORY/丢 symbol+费用事实/float 补造 raw——
+  Fill 接口缺 symbol/raw/fee_asset 是依赖缺口需裁定 D-a/D-b；
+  W2 INCOMPLETE 被判 DUPLICATE 违反 T-I5；W3 非 UNIQUE 异常仍被
+  吞；W4 九项测试未证明合同+T-D2/D3 擅移 S3——已收回。
+  清单：FILL_IDENTITY_WIRING_FIX.md）
 FILL IDENTITY S2        = CORE VALIDATOR IMPLEMENTED / AWAITING
   REVIEW（c1188ed 红 19 失败=S2Stub → de2ca4a 绿 19/19 →
   ead4a87 证据包；校验器/推导分类/归属异常/引用消解三分支+定位
