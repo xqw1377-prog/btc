@@ -23,3 +23,9 @@ stash 内容自误操作前后未变（误操作前哈希未单独留存，此�
 首次固化记录；此后每轮证据包更新本文件哈希对照）。
 红测试证据自 FIX5 起一律使用 detached git worktree，不再使用
 stash/pop/reset。
+
+== 追加时点 2026-10-27T15:06:33Z @ f176b31 ==
+stash@{0} commit: b3e301fe99fb760a9a216924eaf6b8ff276dd543
+stash@{0} tree:   894908008a6ffaedac48ee6578aab745656b4798
+stash@{1} commit: 3fad75ab43c44759d8917b802e50c29bedae6141
+stash@{1} tree:   894908008a6ffaedac48ee6578aab745656b4798

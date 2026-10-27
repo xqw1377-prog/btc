@@ -1,0 +1,8 @@
+ERROR: test_concurrent_different_amounts_conflicts (tests.test_fill_wire_fix6.R3_2_ConcurrentReplayConvergence)
+ERROR: test_concurrent_identical_replay_converges (tests.test_fill_wire_fix6.R3_2_ConcurrentReplayConvergence)
+ERROR: test_pre_existing_duplicates_block_upgrade_atomically (tests.test_fill_wire_fix6.R3_3_AtomicUpgradeBoundary)
+ERROR: test_upgrade_log_version_marker (tests.test_fill_wire_fix6.R3_3_AtomicUpgradeBoundary)
+FAIL: test_same_identity_different_amounts_conflicts (tests.test_fill_wire_fix6.R3_1_SameIdentityDifferentAmounts)
+FAIL: test_clean_legacy_table_upgrades_atomically (tests.test_fill_wire_fix6.R3_3_AtomicUpgradeBoundary)
+Ran 8 tests in 0.046s
+FAILED (failures=2, errors=4)
