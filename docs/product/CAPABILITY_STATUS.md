@@ -175,27 +175,38 @@ INDEPENDENT REVIEW = BLOCKED / REPOSITORY ACCESS（远端 origin 未含
   本分支；载体已改为本地 bundle ZIP：aurora-w43-review.zip，
   sha256 0590e7f4…731353，含全分支历史+复验材料+验证说明，零秘密）
 FILL IDENTITY DESIGN = v6 PASS WITH NONBLOCKING NOTES / CLOSED
-FILL IDENTITY S2 WIRE  = CHANGES-REQUIRED → 修正清单待评审
-  （W1 新事件被降 HISTORY/丢 symbol+费用事实/float 补造 raw——
-  Fill 接口缺 symbol/raw/fee_asset 是依赖缺口需裁定 D-a/D-b；
-  W2 INCOMPLETE 被判 DUPLICATE 违反 T-I5；W3 非 UNIQUE 异常仍被
-  吞；W4 九项测试未证明合同+T-D2/D3 擅移 S3——已收回。
-  清单：FILL_IDENTITY_WIRING_FIX.md）
-FILL IDENTITY S2        = CORE VALIDATOR IMPLEMENTED / AWAITING
-  REVIEW（c1188ed 红 19 失败=S2Stub → de2ca4a 绿 19/19 →
-  ead4a87 证据包；校验器/推导分类/归属异常/引用消解三分支+定位
-  ≠身份+新引用目标存在性；主树 800 / 克隆 799+1skip；S1 schema
-  零修改。入口层接线（Ledger.insert_fill/apply_fill_event 改调
-  本模块，映射 T-DB/C/X/I5/D3 九项）显式列为待评审指示——不自行
-  扩范围）
-FILL IDENTITY S1        = PASS（独立复验 f235d0d：S1 专项 28+1skip、
-  全套 780+1skip+68 subtests、事务纪律三验收全过、隔离边界复核
-  未发现接入默认路径；历经 4 轮 CHANGES-REQUIRED——聚合口径/
-  精确求和/FK 恢复/结构探针/隐式提交——逐轮闭合并复验。
-  证据限制：事故副本演练=DEVELOPER-VERIFIED/NOT INDEPENDENTLY
-  VERIFIED，不据此授权真实账本迁移）
+FILL IDENTITY S2 WIRE = CLOSED / OFFLINE PASS（独立复验 85b25da、
+  证据 29498c3 仅追加证据；全套独立复跑 912 passed / 1 skipped
+  （S1 incident ledger absent）、工作树 CLEAN、git diff 检查 PASS。
+  历经七轮 CHANGES-REQUIRED 逐轮闭合并复验：
+  42a859f W1-W4（新事件降 HISTORY/丢 venue 事实/INCOMPLETE 判
+  DUPLICATE/非 UNIQUE 吞）→ a681c33 五项（raw 权威/UNRESOLVED
+  阻新增/compare_mixed 冻结语义恢复/触发器 UNIQUE 上抛/T-D2D3）→
+  ca031f1 四项（读异常 fail-closed/venue 持久化/DEVIATION 自动
+  接线/重算记录）→ 9289ae0 四项（复合身份一次性 INSERT、
+  EVENT×EVENT raw 冲突、PnL 冻结推导上下文、解析引用审计链）→
+  ed1fbf0 四项（NULL-shadow 显式查询/覆盖证据按订单归属/重算
+  稳定身份+幂等/机器引用拒绝附加文字降级）→ f176b31 R3 三项
+  （同身份异容 RecomputeIdentityConflict/并发唯一索引兜底收敛/
+  升级原子边界+历史重复阻断）→ 85b25da R3-3 收尾（调用方事务
+  前置条件拒绝+快速路径同约束；守卫暴露并修复 _log_transition
+  事务泄漏）。证据链 evidence/fill_identity/s2/fix4-fix7，红→绿
+  →克隆逐轮留存，detached worktree 制作）
+FILL IDENTITY S2        = CLOSED / OFFLINE PASS（与 S2 WIRE 同裁定
+  关闭；核心校验器+S2-WIRE 接线合并验收。实现链：c1188ed 红 →
+  de2ca4a 绿 → ead4a87 证据 → 七轮 wiring 修正至 85b25da）
+FILL IDENTITY S1        = CLOSED / OFFLINE PASS（独立复验 f235d0d：
+  S1 专项 28+1skip、全套 780+1skip+68 subtests、事务纪律三验收
+  全过、隔离边界复核未发现接入默认路径；历经 4 轮
+  CHANGES-REQUIRED——聚合口径/精确求和/FK 恢复/结构探针/隐式
+  提交——逐轮闭合并复验。
+  证据限制：事故副本演练=DEVELOPER-VERIFIED / 未独立验证，
+  不据此授权真实账本迁移）
   实现链：f201973 红 → d709a63 绿 → a003dd7 fix1 → 7591c3f
   fix2（探针）→ f235d0d fix3（事务纪律）
+FILL IDENTITY S3        = HOLD（费用补充与投影；仍需单独开工令，
+  不因 S2 关闭连续放行；真实账本迁移 NOT AUTHORIZED、funding
+  接线 HOLD、部署/交易权限 UNCHANGED、LIVE=NO-GO）
 FILL IDENTITY IMPL PLAN = ACCEPTED WITH EXECUTION CONDITIONS（三段拆分：迁移与
   历史兼容 15 测 / 统一身份校验 21 测 / 费用补充与投影 14 测；
   52 项全覆盖零残留；三条实施说明已确定化——raw 仅 EVENT、
