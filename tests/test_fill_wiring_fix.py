@@ -96,13 +96,11 @@ class W1_VenueStrictTests(WFixBase):
                         qty_raw="-1"))
         self.assertEqual(out["class"], "REJECTED")
 
-    def test_raw_authoritative_over_real(self):
-        # raw 与 REAL 并存：EVENT 侧只认 raw——qty_raw=0.25001 与
-        # legacy REAL 0.25 跨等级不可确认 → UNRESOLVED（非 DUPLICATE）
+    def test_raw_authoritative_cross_tier_unresolved(self):
+        # 冻结语义（评审 3 恢复）：跨等级数值不可证实 → UNRESOLVED
         out = self.orch.apply_fill_event(
             self._venue(fill_id="F1", qty=0.25, qty_raw="0.25001"))
-        self.assertEqual(out["class"], "IDENTITY_CONFLICT")
-        self.assertIn("qty", out["report"]["conflict_fields"])
+        self.assertEqual(out["class"], "IDENTITY_UNRESOLVED")
 
 
 class W2_UnresolvedSemanticsTests(WFixBase):
@@ -212,14 +210,18 @@ class W4_TrueContractTests(WFixBase):
                 if field == "client_order_id":
                     self.assertEqual(out["class"], "ORPHAN", field)
                     continue
-                if field in ("fee_raw", "fee_asset"):
+                if field in ("qty_raw", "price_raw", "fee_raw",
+                             "fee_asset"):
+                    # 跨等级数值（qty/price/fee）→ UNRESOLVED
                     # 旧 schema 无 fee_raw/fee_asset 存储：费用维度
                     # 单侧不可证实 → UNRESOLVED（历史不伪装已知）
                     self.assertEqual(out["class"], "IDENTITY_UNRESOLVED",
                                     field)
                     continue
-                self.assertEqual(out["class"], "IDENTITY_CONFLICT",
-                                 field)
+                if field not in ("qty_raw", "price_raw", "fee_raw",
+                                 "fee_asset"):
+                    self.assertEqual(out["class"], "IDENTITY_CONFLICT",
+                                     field)
                 got = out.get("report", {}).get("conflict_fields", [])
                 self.assertIn(field.replace("_raw", ""), got, field)
                 # 入口 2：insert_fill（身份冲突异常同字段）

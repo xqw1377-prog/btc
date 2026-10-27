@@ -346,6 +346,17 @@ class Orchestrator:
         if kill["engaged"]:
             return self._refuse(f"kill switch engaged: {kill['reason']}")
 
+        # Fix 2：未解析 fill 标志 → 阻断新增风险（不阻减仓——
+        # close_position 不查此标志）
+        unresolved = self.ledger.unresolved_fill_ids()
+        if unresolved:
+            return self._refuse(
+                f"unresolved fills present ({len(unresolved)}):"
+                f" {unresolved[:3]}; new opens blocked until resolved")
+        if self.ledger.pnl_unreliable(self.symbol):
+            return self._refuse(
+                "pnl unreliable for symbol; new opens blocked")
+
         # B3：强制腿保护价必须在开仓前存在。没有明确保护合同，不允许开仓；
         # 绝不自动制造"看起来有数字"的哨兵保护价（99/101 已废除）。
         if not _valid_price(stop_price):
@@ -1558,26 +1569,51 @@ class Orchestrator:
         if float(fill.qty) <= 0 and fill.qty_raw is None:
             return self._fill_rejected(
                 fill, f"qty non-positive and no raw: {fill.qty!r}")
-        # raw 权威→REAL 派生（D-a 合同）：数值以 raw 为准参与比较
-        if fill.qty_raw is not None:
-            fill = Fill(
-                fill_id=fill.fill_id, client_order_id=fill.client_order_id,
-                qty=float(fill.qty_raw), price=float(fill.price_raw
-                                                     if fill.price_raw
-                                                     is not None
-                                                     else fill.price),
-                fee=fill.fee, side=fill.side, filled_at=fill.filled_at,
-                symbol=fill.symbol, qty_raw=fill.qty_raw,
-                price_raw=fill.price_raw, fee_raw=fill.fee_raw,
-                fee_asset=fill.fee_asset)
-        elif fill.price_raw is not None:
-            fill = Fill(
-                fill_id=fill.fill_id, client_order_id=fill.client_order_id,
-                qty=fill.qty, price=float(fill.price_raw),
-                fee=fill.fee, side=fill.side, filled_at=fill.filled_at,
-                symbol=fill.symbol, qty_raw=fill.qty_raw,
-                price_raw=fill.price_raw, fee_raw=fill.fee_raw,
-                fee_asset=fill.fee_asset)
+        # side 枚举（Fix 1）：非法 side 不入账
+        if fill.side not in ("BUY", "SELL"):
+            return self._fill_rejected(
+                fill, f"side invalid: {fill.side!r}")
+        # 费用从 raw 派生（Fix 1）：fee_raw 提供时 fee 必须一致派生
+        if fill.fee_raw is not None and fill.fee_raw != "":
+            from decimal import Decimal as _D
+            try:
+                fee_d = _D(fill.fee_raw)
+            except Exception:
+                return self._fill_rejected(
+                    fill, f"fee_raw unparseable: {fill.fee_raw!r}")
+            if not fee_d.is_finite():
+                return self._fill_rejected(
+                    fill, f"fee_raw non-finite: {fill.fee_raw!r}")
+            if fill.fee_raw is not None and abs(
+                    float(fill.fee or 0) - float(fee_d)) > 1e-12:
+                # fee 展示值与 raw 不一致：以 raw 为准（派生），不拒
+                pass  # 派生在下方 raw→REAL 块统一处理
+        # raw 权威→REAL 派生（Fix 1 强化）：有限性 + 溢出/下溢检查
+        # + fee 派生；任何派生失败 → 拒收（不写库）
+        import math as _m
+        try:
+            _qty_f = float(fill.qty_raw) if fill.qty_raw else float(fill.qty)
+            _price_f = (float(fill.price_raw) if fill.price_raw
+                        else float(fill.price))
+            _fee_f = (float(fill.fee_raw)
+                      if fill.fee_raw not in (None, "") else float(fill.fee or 0))
+        except (ValueError, OverflowError):
+            return self._fill_rejected(fill, "raw→float conversion failed")
+        for _n, _v in (("qty", _qty_f), ("price", _price_f),
+                       ("fee", _fee_f)):
+            if not _m.isfinite(_v):
+                return self._fill_rejected(
+                    fill, f"{_n} derived value non-finite: {_v}")
+        if _qty_f <= 0 or _price_f <= 0:
+            return self._fill_rejected(
+                fill, f"derived qty/price non-positive: {_qty_f}/{_price_f}")
+        fill = Fill(
+            fill_id=fill.fill_id, client_order_id=fill.client_order_id,
+            qty=_qty_f, price=_price_f, fee=_fee_f,
+            side=fill.side, filled_at=fill.filled_at,
+            symbol=fill.symbol, qty_raw=fill.qty_raw,
+            price_raw=fill.price_raw, fee_raw=fill.fee_raw,
+            fee_asset=fill.fee_asset)
 
         # ② 缺失事实（symbol / raw 不齐备）→ UNRESOLVED，不降级
         missing = [f for f in ("symbol", "qty_raw", "price_raw")
@@ -1589,6 +1625,9 @@ class Orchestrator:
                 "fill", fill.fill_id, "", "IDENTITY_UNRESOLVED",
                 utc_now(), f"missing facts {missing}; not adopted,"
                 " not confirmed duplicate", fill.fill_id))
+            self.ledger.mark_fill_unresolved(
+                fill.fill_id,
+                f"missing facts {missing}")
             return {"class": "IDENTITY_UNRESOLVED",
                     "fill_id": fill.fill_id,
                     "missing": missing,
@@ -1648,6 +1687,9 @@ class Orchestrator:
                     utc_now(),
                     f"unverifiable={report['unverifiable_fields']}"
                     "; not confirmed duplicate", fill.fill_id))
+                self.ledger.mark_fill_unresolved(
+                    fill.fill_id,
+                    f"unverifiable={report['unverifiable_fields']}")
                 return {"class": "IDENTITY_UNRESOLVED",
                         "fill_id": fill.fill_id,
                         "action": "MANUAL_RECOVERY",

@@ -421,21 +421,25 @@ class EventEntryConflictBypassTests(unittest.TestCase):
             self.assertEqual(first["class"], "LATE_NEW_FILL")
             # 同 fill_id、不同内容（qty/price/cid 变化）——事件入口必须
             # 识别为身份冲突并持久化告警，而不是 DUPLICATE
-            for bad in (("EE-C", 0.02, 100.0),
-                        ("EE-C", 0.01, 101.0)):
-                out = orch.apply_fill_event(Fill(
-                    fill_id="EE-1", client_order_id=bad[0],
-                    qty=bad[1], price=bad[2], fee=0.0, side="BUY",
-                    filled_at="t1",
-                    symbol="BTCUSDT", qty_raw=repr(float(bad[1])),
-                    price_raw=repr(float(bad[2])),
-                    fee_raw="0.0", fee_asset="USDT"))
-                self.assertEqual(
-                    out["class"], "IDENTITY_CONFLICT",
-                    f"content {bad} must raise conflict, got {out}")
-                self.assertEqual(led.kill_state()["engaged"], 1)
-                self.assertIn("identity conflict",
-                              led.kill_state()["reason"])
+            # 冻结语义（评审 3）：qty/price 跨等级→UNRESOLVED；
+            # 离散 side 冲突→CONFLICT+kill
+            out = orch.apply_fill_event(Fill(
+                fill_id="EE-1", client_order_id="EE-C",
+                qty=0.02, price=100.0, fee=0.0, side="BUY",
+                filled_at="t1",
+                symbol="BTCUSDT", qty_raw="0.02", price_raw="100.0",
+                fee_raw="0.0", fee_asset="USDT"))
+            self.assertEqual(out["class"], "IDENTITY_UNRESOLVED")
+            out2 = orch.apply_fill_event(Fill(
+                fill_id="EE-1", client_order_id="EE-C",
+                qty=0.01, price=100.0, fee=0.0, side="SELL",
+                filled_at="t1",
+                symbol="BTCUSDT", qty_raw="0.01", price_raw="100.0",
+                fee_raw="0.0", fee_asset="USDT"))
+            self.assertEqual(out2["class"], "IDENTITY_CONFLICT")
+            self.assertEqual(led.kill_state()["engaged"], 1)
+            self.assertIn("identity conflict",
+                          led.kill_state()["reason"])
             # 一致重放仍幂等为 DUPLICATE
             same = orch.apply_fill_event(Fill(
                 fill_id="EE-1", client_order_id="EE-C",

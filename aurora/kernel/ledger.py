@@ -380,16 +380,30 @@ class Ledger:
                      covered_by_fact_id, int(economic_effect_applied)),
                 )
         except sqlite3.IntegrityError as exc:
-            msg = str(exc).upper()
-            if "FOREIGN" in msg or "CHECK" in msg or "NOT NULL" in msg:
+            msg = str(exc)
+            msg_u = msg.upper()
+            if "FOREIGN" in msg_u or "CHECK" in msg_u or "NOT NULL" in msg_u:
                 raise  # T-DB1/DB2/W3：FK/CHECK/NOT NULL 不吞成 DUPLICATE
-            if "UNIQUE" not in msg:
-                raise  # 非 UNIQUE（含其他约束类）一律上抛
+            if "UNIQUE" not in msg_u:
+                raise  # 非 UNIQUE 一律上抛
+            # Fix 4：解析 UNIQUE 目标——SQLite 消息格式
+            # "UNIQUE constraint failed: <table>.<col>[, <table>.<col>...]"
+            # 仅当目标恰好是 fills 表的成交身份键（fill_id 或
+            # symbol+fill_id 复合）才进入重复比较；其他表/列的
+            # UNIQUE（含触发器引起的）一律上抛。
+            target = msg.split(":", 1)[-1].strip() if ":" in msg else ""
+            target_cols = {c.strip().lower() for c in target.split(",")}
+            fills_targets = {
+                frozenset({"fills.fill_id"}),
+                frozenset({"fills.symbol", "fills.fill_id"}),
+            }
+            if frozenset(target_cols) not in fills_targets:
+                raise  # 非目标 UNIQUE（评审触发器复现路径）
             existing = self._conn.execute(
                 "SELECT client_order_id, qty, price, side FROM fills"
                 " WHERE fill_id = ?", (fill_id,)).fetchone()
             if existing is None:
-                raise  # 非重复性 UNIQUE 违约：上抛
+                raise  # 无法以完整身份定位——上抛
             # 统一校验器（S2 接线）：历史行走 HISTORY 模式比较
             from aurora.kernel.fill_identity import (
                 compare_as, FillIdentityConflict as _FIX,
@@ -647,6 +661,93 @@ class Ledger:
         elif agg["qty"] > 1e-12 and state == "SUBMITTING":
             self.update_order(client_order_id, state="PARTIALLY_FILLED")
         return {"filled_qty": merged, "aggregate": agg["qty"], "fills": agg["fills"]}
+
+    # ---------- 推导重算与 DEVIATION（Fix 5：T-D2/D3） ----------
+
+    def append_fill_recomputation(self, fill_id: str, old_value: float,
+                                  new_value: float, reason: str) -> int:
+        """显式重算事件（append-only）：追加记录，不改历史 fill 行。"""
+        with self._conn:
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS fill_recomputations ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " fill_id TEXT NOT NULL,"
+                " old_value REAL NOT NULL,"
+                " new_value REAL NOT NULL,"
+                " reason TEXT NOT NULL,"
+                " recomputed_at TEXT NOT NULL)")
+            cur = self._conn.execute(
+                "INSERT INTO fill_recomputations"
+                " (fill_id, old_value, new_value, reason, recomputed_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (fill_id, old_value, new_value, reason, utc_now()))
+            return cur.lastrowid
+
+    def fill_recomputations(self, fill_id: str) -> list:
+        try:
+            rows = self._conn.execute(
+                "SELECT * FROM fill_recomputations WHERE fill_id = ?"
+                " ORDER BY id", (fill_id,)).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.OperationalError:
+            return []
+
+    def mark_pnl_unreliable(self, symbol: str, reason: str) -> None:
+        """损益不可依赖标志：阻新增风险（open 已查 unresolved +
+        此标志）；不阻减仓。"""
+        with self._conn:
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS pnl_reliability ("
+                " symbol TEXT PRIMARY KEY,"
+                " unreliable INTEGER NOT NULL DEFAULT 1,"
+                " reason TEXT NOT NULL,"
+                " marked_at TEXT NOT NULL)")
+            self._conn.execute(
+                "INSERT OR REPLACE INTO pnl_reliability"
+                " (symbol, unreliable, reason, marked_at)"
+                " VALUES (?, 1, ?, ?)", (symbol, reason, utc_now()))
+
+    def clear_pnl_unreliable(self, symbol: str) -> None:
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM pnl_reliability WHERE symbol = ?", (symbol,))
+
+    def pnl_unreliable(self, symbol: str) -> bool:
+        try:
+            row = self._conn.execute(
+                "SELECT unreliable FROM pnl_reliability WHERE symbol = ?",
+                (symbol,)).fetchone()
+            return bool(row and row[0])
+        except sqlite3.OperationalError:
+            return False
+
+    # ---------- Unresolved fill 标志（Fix 2：阻新增不阻减仓） ----------
+
+    def mark_fill_unresolved(self, fill_id: str, reason: str) -> None:
+        """持久化未解析标志：跨重启保留；阻新增风险、不阻减仓。"""
+        with self._conn:
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS unresolved_fills ("
+                " fill_id TEXT PRIMARY KEY, reason TEXT NOT NULL,"
+                " marked_at TEXT NOT NULL)")
+            self._conn.execute(
+                "INSERT OR REPLACE INTO unresolved_fills"
+                " (fill_id, reason, marked_at) VALUES (?, ?, ?)",
+                (fill_id, reason, utc_now()))
+
+    def clear_fill_unresolved(self, fill_id: str) -> None:
+        with self._conn:
+            self._conn.execute(
+                "DELETE FROM unresolved_fills WHERE fill_id = ?",
+                (fill_id,))
+
+    def unresolved_fill_ids(self) -> list:
+        try:
+            rows = self._conn.execute(
+                "SELECT fill_id FROM unresolved_fills").fetchall()
+            return [r[0] for r in rows]
+        except sqlite3.OperationalError:
+            return []
 
     # ---------- Kill Switch ----------
 

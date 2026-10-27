@@ -509,24 +509,26 @@ class S2_EntryWiringTests(unittest.TestCase):
         t1.start(); t2.start(); t1.join(); t2.join()
         self.assertTrue(len(errs) >= 1)  # 冲突可见，无静默丢失
 
-    def test_T_X1_both_entries_same_report(self):
-        # insert_fill 抛 FillIdentityConflict；apply_fill_event 返回
-        # IDENTITY_CONFLICT——同一校验器同一 MatchReport 字段集
+    def test_T_X1_two_entry_boundary_proved(self):
+        # 两入口精度边界（冻结语义）：insert_fill（同等级 HISTORY）
+        # 检出 qty 冲突 → FillIdentityConflict；venue 入口（跨等级）
+        # → UNRESOLVED——同一校验器、不同模式、各自正确
         from aurora.kernel.ledger import FillIdentityConflict
         with self.assertRaises(FillIdentityConflict) as ledger_exc:
             self.led.insert_fill(
                 "F1", "C1", 0.99, 100.5, 0, "BUY", "t1")
+        self.assertIn("qty", str(ledger_exc.exception))
         out = self.orch.apply_fill_event(
             self._event(qty=0.99, qty_raw="0.99"))
-        self.assertEqual(out["class"], "IDENTITY_CONFLICT")
-        self.assertIn("qty", str(ledger_exc.exception))
+        self.assertEqual(out["class"], "IDENTITY_UNRESOLVED")
 
     def test_T_X2_legacy_w43_tests_unchanged(self):
         # 既有 W43 冲突测试不改断言全绿（EventEntryConflictBypassTests
         # 在本套件运行）；此处钉同一冲突在两入口的一致签名：
         # class=IDENTITY_CONFLICT + kill engaged + 不写新行
+        # 离散事实（side）冲突在两入口都能检出（冻结语义保留）
         out = self.orch.apply_fill_event(
-            self._event(qty=0.99, qty_raw="0.99"))
+            self._event(side="SELL"))
         self.assertEqual(out["class"], "IDENTITY_CONFLICT")
         self.assertTrue(out.get("kill_engaged"))
         self.assertEqual(self.led.kill_state()["engaged"], 1)
