@@ -151,6 +151,13 @@ class FillIdentityConflict(Exception):
     """同一 fill_id 以不同内容重放——身份冲突，必须告警。"""
 
 
+class RecomputeIdentityConflict(Exception):
+    """同一重算身份（完整成交身份 + ctx 对 + 依据）以不同金额重放。
+
+    一致内容才是幂等；同身份金额不同 = 显式冲突，原记录保留。
+    """
+
+
 class Ledger:
     def __init__(self, path: str):
         self.path = path
@@ -977,6 +984,98 @@ class Ledger:
         except sqlite3.OperationalError:
             return []
 
+    _RECOMPUTE_IDENT_INDEX = "ux_fill_recompute_ident"
+
+    def _ensure_recompute_schema(self) -> None:
+        """R3-3：重算表 schema 升级的原子边界。
+
+        升级 = 补 symbol 列 + 唯一索引 + 版本标记（schema_upgrade_log）
+        三者同一显式事务，失败整体回滚（无半升级——DDL 在
+        SQLite 是事务性的，此前问题在于 DDL 走了自动提交）。
+        升级前预检历史同身份重复：存在即明确阻断（列明冲突组），
+        绝不自动删除/合并历史事件。索引在位 = 升级完成（快速路径）。
+        """
+        have_idx = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='index'"
+            " AND name = ?", (self._RECOMPUTE_IDENT_INDEX,)).fetchone()
+        if have_idx is not None:
+            return  # 升级已完成（列+索引+标记同事务原子落成）
+        own_txn = not self._conn.in_transaction
+        try:
+            if own_txn:
+                self._conn.execute("BEGIN IMMEDIATE")
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS fill_recomputations ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " fill_id TEXT NOT NULL,"
+                " old_value REAL NOT NULL,"
+                " new_value REAL NOT NULL,"
+                " old_ctx TEXT, new_ctx TEXT,"
+                " basis_ref TEXT,"
+                " symbol TEXT,"
+                " reason TEXT NOT NULL,"
+                " recomputed_at TEXT NOT NULL)")
+            _rc = {r[1] for r in self._conn.execute(
+                "PRAGMA table_info(fill_recomputations)")}
+            if "symbol" not in _rc:
+                self._conn.execute(
+                    "ALTER TABLE fill_recomputations"
+                    " ADD COLUMN symbol TEXT")
+            dups = self._conn.execute(
+                "SELECT COALESCE(symbol, '') s, fill_id,"
+                " COALESCE(old_ctx, '') oc, COALESCE(new_ctx, '') nc,"
+                " COALESCE(basis_ref, '') bc, COUNT(*) c"
+                " FROM fill_recomputations"
+                " GROUP BY s, fill_id, oc, nc, bc"
+                " HAVING c > 1 LIMIT 5").fetchall()
+            if dups:
+                raise SafetyViolation(
+                    "pre-existing duplicate recomputation identities"
+                    " block the identity-index upgrade (no auto"
+                    " adjudication — historical events are never"
+                    " deleted or merged): "
+                    + "; ".join(
+                        f"(symbol={r['s']!r}, fill_id={r['fill_id']!r},"
+                        f" old_ctx={r['oc']!r}, new_ctx={r['nc']!r},"
+                        f" basis_ref={r['bc']!r}, count={r['c']})"
+                        for r in dups))
+            self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS"
+                f" {self._RECOMPUTE_IDENT_INDEX} ON fill_recomputations ("
+                " COALESCE(symbol, ''), fill_id,"
+                " COALESCE(old_ctx, ''), COALESCE(new_ctx, ''),"
+                " COALESCE(basis_ref, ''))")
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS schema_upgrade_log ("
+                " component TEXT PRIMARY KEY,"
+                " upgraded_at TEXT NOT NULL)")
+            self._conn.execute(
+                "INSERT OR REPLACE INTO schema_upgrade_log"
+                " (component, upgraded_at) VALUES (?, ?)",
+                ("fill_recomputations_identity", utc_now()))
+            if own_txn:
+                self._conn.commit()
+        except BaseException:
+            if own_txn and self._conn.in_transaction:
+                self._conn.rollback()
+            raise  # 整体回滚：列/索引/版本标记同生同灭
+
+    def _lookup_recompute_identity(
+        self, symbol: Optional[str], fill_id: str,
+        old_ctx: Optional[str], new_ctx: Optional[str],
+        basis_ref: Optional[str],
+    ) -> Optional[Dict[str, Any]]:
+        """按稳定重算身份查既有记录（id + 金额内容）。"""
+        return self._conn.execute(
+            "SELECT id, old_value, new_value FROM fill_recomputations WHERE"
+            " COALESCE(symbol, '') = COALESCE(?, '')"
+            " AND fill_id = ?"
+            " AND COALESCE(old_ctx, '') = COALESCE(?, '')"
+            " AND COALESCE(new_ctx, '') = COALESCE(?, '')"
+            " AND COALESCE(basis_ref, '') = COALESCE(?, '')",
+            (symbol, fill_id, old_ctx, new_ctx,
+             basis_ref)).fetchone()
+
     def append_fill_recomputation(
         self, fill_id: str, old_value: float, new_value: float,
         reason: str, *, old_ctx: Optional[str] = None,
@@ -986,13 +1085,14 @@ class Ledger:
         """显式重算事件（append-only，Fix 4 / R3 强化）。
 
         - fill_id 必须已存在于 fills 表（提供符号时按复合身份验证）；
-        - 新重算记录必须提供冻结依据三元组 old_ctx/new_ctx/basis_ref
-          （缺一拒绝——重算无依据=不可审计）；
+        - 必须提供冻结依据三元组 old_ctx/new_ctx/basis_ref；
         - basis_ref 是机器引用时必须解析到已存在目标；
-        - R3：稳定重算事件身份 = 完整成交身份 (symbol, fill_id) +
-          old_ctx/new_ctx/basis_ref，数据库唯一约束 + 前置查重——
-          相同依据变化的重放零新增（幂等），真正的新依据才追加；
-        - 记录保留完整成交引用（symbol 列），避免跨 symbol 混淆；
+        - R3：稳定身份 = 完整成交身份 (symbol, fill_id) + ctx 对 +
+          依据。**一致内容才是幂等**：同身份同金额重放返回既有 id
+          零追加；同身份金额不同 = RecomputeIdentityConflict（原
+          记录保留）。并发窗口由唯一索引兜底：捕获本索引冲突后
+          重读并比较内容（一致收敛到同一 id，异容报告冲突）；
+        - 记录保留完整成交引用（symbol 列）；
         - 不改历史 fill 行。
         """
         for _n, _v in (("old_ctx", old_ctx), ("new_ctx", new_ctx),
@@ -1003,6 +1103,7 @@ class Ledger:
                     f" for fill {fill_id!r}; refusing to append"
                     " unattributed recomputation")
         self._validate_resolution_ref(str(basis_ref))
+        self._ensure_recompute_schema()
         with self._conn:
             if symbol is not None:
                 exists = self._conn.execute(
@@ -1016,51 +1117,46 @@ class Ledger:
                 raise SafetyViolation(
                     f"recomputation references nonexistent fill"
                     f" {fill_id!r}; refusing to append")
-            self._conn.execute(
-                "CREATE TABLE IF NOT EXISTS fill_recomputations ("
-                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
-                " fill_id TEXT NOT NULL,"
-                " old_value REAL NOT NULL,"
-                " new_value REAL NOT NULL,"
-                " old_ctx TEXT, new_ctx TEXT,"
-                " basis_ref TEXT,"
-                " symbol TEXT,"
-                " reason TEXT NOT NULL,"
-                " recomputed_at TEXT NOT NULL)")
-            # 既有表补 symbol 列（完整成交引用）
-            _rc = {r[1] for r in self._conn.execute(
-                "PRAGMA table_info(fill_recomputations)")}
-            if "symbol" not in _rc:
-                self._conn.execute(
-                    "ALTER TABLE fill_recomputations"
-                    " ADD COLUMN symbol TEXT")
-            # 稳定身份唯一约束（NULL 以空串归一）
-            self._conn.execute(
-                "CREATE UNIQUE INDEX IF NOT EXISTS"
-                " ux_fill_recompute_ident ON fill_recomputations ("
-                " COALESCE(symbol, ''), fill_id,"
-                " COALESCE(old_ctx, ''), COALESCE(new_ctx, ''),"
-                " COALESCE(basis_ref, ''))")
-            # 幂等：相同重算身份零新增（返回既有事件 id）
-            dup = self._conn.execute(
-                "SELECT id FROM fill_recomputations WHERE"
-                " COALESCE(symbol, '') = COALESCE(?, '')"
-                " AND fill_id = ?"
-                " AND COALESCE(old_ctx, '') = COALESCE(?, '')"
-                " AND COALESCE(new_ctx, '') = COALESCE(?, '')"
-                " AND COALESCE(basis_ref, '') = COALESCE(?, '')",
-                (symbol, fill_id, old_ctx, new_ctx,
-                 basis_ref)).fetchone()
+            dup = self._lookup_recompute_identity(
+                symbol, fill_id, old_ctx, new_ctx, basis_ref)
             if dup is not None:
-                return dup["id"]
-            cur = self._conn.execute(
-                "INSERT INTO fill_recomputations"
-                " (fill_id, old_value, new_value, old_ctx, new_ctx,"
-                "  basis_ref, symbol, reason, recomputed_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (fill_id, old_value, new_value, old_ctx, new_ctx,
-                 basis_ref, symbol, reason, utc_now()))
-            return cur.lastrowid
+                if (float(dup["old_value"]) == float(old_value)
+                        and float(dup["new_value"]) == float(new_value)):
+                    return dup["id"]  # 一致重放：幂等零追加
+                raise RecomputeIdentityConflict(
+                    f"recomputation identity replayed with different"
+                    f" amounts (symbol={symbol!r}, fill_id={fill_id!r},"
+                    f" old_ctx={old_ctx!r}, new_ctx={new_ctx!r},"
+                    f" basis_ref={basis_ref!r}): stored="
+                    f"({dup['old_value']}, {dup['new_value']})"
+                    f" incoming=({old_value}, {new_value});"
+                    " original record preserved")
+            try:
+                cur = self._conn.execute(
+                    "INSERT INTO fill_recomputations"
+                    " (fill_id, old_value, new_value, old_ctx, new_ctx,"
+                    "  basis_ref, symbol, reason, recomputed_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (fill_id, old_value, new_value, old_ctx, new_ctx,
+                     basis_ref, symbol, reason, utc_now()))
+                return cur.lastrowid
+            except sqlite3.IntegrityError as exc:
+                if self._RECOMPUTE_IDENT_INDEX not in str(exc):
+                    raise  # 非目标索引冲突（其他异常上抛）
+                # 并发一致重放竞态：唯一索引已防双写——重读并比较
+                row = self._lookup_recompute_identity(
+                    symbol, fill_id, old_ctx, new_ctx, basis_ref)
+                if (row is not None
+                        and float(row["old_value"]) == float(old_value)
+                        and float(row["new_value"]) == float(new_value)):
+                    return row["id"]  # 并发一致 → 收敛同一 id
+                raise RecomputeIdentityConflict(
+                    f"concurrent recomputation replay conflict"
+                    f" (symbol={symbol!r}, fill_id={fill_id!r}):"
+                    f" index={self._RECOMPUTE_IDENT_INDEX},"
+                    f" stored={dict(row) if row else None}"
+                    f" incoming=({old_value}, {new_value});"
+                    " original record preserved")
 
     def fill_recomputations(self, fill_id: str) -> list:
         try:
