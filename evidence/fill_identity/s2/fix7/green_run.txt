@@ -1,0 +1,6 @@
+== commit ==
+85b25da fill-identity S2-WIRE-FIX7: c623cd3 复审 R3-3 收尾——不接管调用方事务
+
+== 全套（本仓 85b25da） ==
+Ran 913 tests in 12.778s
+OK

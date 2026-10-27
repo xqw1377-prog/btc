@@ -1,0 +1,6 @@
+FAIL: test_success_path_never_commits_caller_txn (tests.test_fill_wire_fix7.CallerCommitIsolationTests)
+FAIL: test_open_txn_direct_schema_call_refused (tests.test_fill_wire_fix7.CallerTransactionTests)
+FAIL: test_open_txn_duplicate_upgrade_refused_then_rollback_clean (tests.test_fill_wire_fix7.CallerTransactionTests)
+FAIL: test_open_txn_fast_path_also_refused (tests.test_fill_wire_fix7.CallerTransactionTests)
+Ran 7 tests in 0.041s
+FAILED (failures=4)
