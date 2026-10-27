@@ -234,11 +234,20 @@ class Fix5_TD2_TD3_Tests(FBase):
                                  resolution_ref="test-r")
 
     def test_T_D3_explicit_recompute_appends_history_unchanged(self):
-        # 重算事件追加（append-only）；历史 fill 行值不变
+        # 重算事件追加（append-only）；历史 fill 行值不变。
+        # Fix 4：必须携带冻结依据三元组（缺一拒绝）。
+        from aurora.p0_boundary import SafetyViolation
+        with self.assertRaises(SafetyViolation):
+            self.led.append_fill_recomputation(
+                "F1", old_value=0.0, new_value=0.1,
+                reason="missing frozen basis must be refused")
         fill_before = self.led.get_fill("F1")
         rid = self.led.append_fill_recomputation(
             "F1", old_value=0.0, new_value=0.1,
-            reason="entry avg corrected by late fill")
+            reason="entry avg corrected by late fill",
+            old_ctx='{"v":1,"basis":"order:C1"}',
+            new_ctx='{"v":1,"basis":"order:C1+late:LF2"}',
+            basis_ref="order:C1 fill:LF2")
         self.assertIsNotNone(rid)
         fill_after = self.led.get_fill("F1")
         self.assertEqual(fill_before, fill_after)  # 历史行不变
@@ -247,16 +256,23 @@ class Fix5_TD2_TD3_Tests(FBase):
         self.assertAlmostEqual(recs[0]["old_value"], 0.0)
         self.assertAlmostEqual(recs[0]["new_value"], 0.1)
         self.assertIn("late fill", recs[0]["reason"])
-        # 追加第二条（多次重算）
+        self.assertEqual(recs[0]["old_ctx"],
+                         '{"v":1,"basis":"order:C1"}')
+        self.assertEqual(recs[0]["basis_ref"], "order:C1 fill:LF2")
+        # 追加第二条（多次重算）——机器引用指向第一条（已存在）
         self.led.append_fill_recomputation(
-            "F1", 0.1, 0.15, "second correction")
+            "F1", 0.1, 0.15, "second correction",
+            old_ctx='{"v":1,"basis":"order:C1+late:LF2"}',
+            new_ctx='{"v":2,"basis":"order:C1+late:LF2"}',
+            basis_ref=f"recompute:{rid}")
         self.assertEqual(len(self.led.fill_recomputations("F1")), 2)
         # 历史行仍不变
         self.assertEqual(self.led.get_fill("F1"), fill_before)
 
     def test_T_D3_recompute_persists_across_restart(self):
         self.led.append_fill_recomputation(
-            "F1", 0.0, 0.1, "before restart")
+            "F1", 0.0, 0.1, "before restart",
+            old_ctx="ctx-a", new_ctx="ctx-b", basis_ref="order:C1")
         self.led.close()
         led2 = Ledger(self.path)
         self.addCleanup(led2.close)

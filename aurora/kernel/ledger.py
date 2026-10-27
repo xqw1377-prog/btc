@@ -293,31 +293,6 @@ class Ledger:
                  quantity, stop_price, int(reduce_only), now, now),
             )
 
-    def _persist_venue_fields(
-        self, fill_id: str, symbol: Optional[str],
-        qty_raw: Optional[str], price_raw: Optional[str],
-        fee_raw: Optional[str], fee_asset: Optional[str],
-    ) -> None:
-        """venue 事实持久化到 S1 schema 列（symbol/origin/raw）。
-
-        列不存在（旧 schema）→ 拒收（不静默丢弃 venue 事实）。
-        只在 INSERT 事务内调用（跟随外层 with self._conn）。
-        """
-        cols = {r[1] for r in self._conn.execute(
-            "PRAGMA table_info(fills)")}
-        required = {"symbol", "origin", "qty_raw", "price_raw",
-                    "fee_raw", "fee_asset"}
-        if not required.issubset(cols):
-            raise SafetyViolation(
-                f"venue facts require S1 schema columns"
-                f" (missing: {sorted(required - cols)});"
-                " run isolated migration first; refusing to"
-                " silently drop venue facts")
-        self._conn.execute(
-            "UPDATE fills SET symbol=?, origin='EVENT', qty_raw=?,"
-            " price_raw=?, fee_raw=?, fee_asset=? WHERE fill_id=?",
-            (symbol, qty_raw, price_raw, fee_raw, fee_asset, fill_id))
-
     def update_order(
         self,
         client_order_id: str,
@@ -390,34 +365,78 @@ class Ledger:
         venue_price_raw: Optional[str] = None,
         venue_fee_raw: Optional[str] = None,
         venue_fee_asset: Optional[str] = None,
+        venue_derivation_ctx: Optional[str] = None,
     ) -> bool:
-        """幂等入账：fill_id 已存在且内容一致返回 False（不重复记账）。
+        """幂等入账：完整身份 (symbol, fill_id) 已存在且内容一致返回
+        False（不重复记账）。
 
-        W43 复审收紧：同一 fill_id 以**不同内容**（qty/price/side/
+        W43 复审收紧：同一身份以**不同内容**（qty/price/side/
         client_order_id）再次到达 = 身份冲突，抛 FillIdentityConflict
-        告警——绝不静默忽略。fill_id 的作用域由账本的物理命名空间
-        state/<mode>/<fingerprint>/ 结构性保证（账户+环境隔离）。
+        告警——绝不静默忽略。S2 复审 Fix 1：venue 事实随 INSERT
+        一次性写入（不允许先 INSERT 再按裸 fill_id UPDATE）；读写、
+        唯一冲突定位全部使用复合身份。
         """
+        _s1_cols = {"symbol", "origin", "qty_raw", "price_raw",
+                    "fee_raw", "fee_asset", "derivation_ctx"}
+        _cols = {r[1] for r in self._conn.execute(
+            "PRAGMA table_info(fills)")}
+        _has_s1 = _s1_cols.issubset(_cols)
+        _has_venue = (venue_symbol is not None
+                      or venue_qty_raw is not None
+                      or venue_price_raw is not None
+                      or venue_fee_raw is not None
+                      or venue_fee_asset is not None
+                      or venue_derivation_ctx is not None)
+        if _has_venue and not _has_s1:
+            raise SafetyViolation(
+                "venue facts require S1 schema columns"
+                f" (missing: {sorted(_s1_cols - _cols)});"
+                " run isolated migration first; refusing to"
+                " silently drop venue facts")
         try:
             with self._conn:
-                # S1 库 fills 有 origin NOT NULL——有该列时 INSERT 带
-                # 'LEGACY'（venue 路径随后由 _persist_venue_fields 覆盖
-                # 为 'EVENT'）；旧库无列保持原句
-                _cols = {r[1] for r in self._conn.execute(
-                    "PRAGMA table_info(fills)")}
-                if "origin" in _cols:
-                    self._conn.execute(
-                        "INSERT INTO fills (fill_id, client_order_id, qty,"
-                        " price, fee, realized_pnl, side, filled_at,"
-                        " synthetic, replaces_synthetic_fill_id,"
-                        " covered_by_fact_id, quantity_effect_applied,"
-                        " economic_effect_applied, origin)"
-                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?,"
-                        " 'LEGACY')",
-                        (fill_id, client_order_id, qty, price, fee,
-                         realized_pnl, side, filled_at, int(synthetic),
-                         replaces_synthetic_fill_id, covered_by_fact_id,
-                         int(economic_effect_applied)))
+                if _has_s1:
+                    if venue_symbol is not None:
+                        # Fix 1: 复合身份一次性 INSERT——symbol/origin/
+                        # raw/推导上下文随主写入原子落库；PK
+                        # (symbol, fill_id) 由 schema 强制。
+                        self._conn.execute(
+                            "INSERT INTO fills (fill_id, symbol, origin,"
+                            " client_order_id, qty, qty_raw, price,"
+                            " price_raw, fee, fee_raw, fee_asset,"
+                            " realized_pnl, derivation_ctx, side,"
+                            " filled_at, synthetic,"
+                            " replaces_synthetic_fill_id,"
+                            " covered_by_fact_id,"
+                            " quantity_effect_applied,"
+                            " economic_effect_applied)"
+                            " VALUES (?, ?, 'EVENT',"
+                            " ?, ?, ?, ?, ?, ?, ?, ?,"
+                            " ?, ?, ?, ?, ?, ?, ?,"
+                            " 1, ?)",
+                            (fill_id, venue_symbol, client_order_id,
+                             qty, venue_qty_raw, price, venue_price_raw,
+                             fee, venue_fee_raw, venue_fee_asset,
+                             realized_pnl, venue_derivation_ctx, side,
+                             filled_at, int(synthetic),
+                             replaces_synthetic_fill_id,
+                             covered_by_fact_id,
+                             int(economic_effect_applied)))
+                    else:
+                        self._conn.execute(
+                            "INSERT INTO fills (fill_id, client_order_id,"
+                            " qty, price, fee, realized_pnl, side,"
+                            " filled_at, synthetic,"
+                            " replaces_synthetic_fill_id,"
+                            " covered_by_fact_id, quantity_effect_applied,"
+                            " economic_effect_applied, origin)"
+                            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+                            " 1, ?, 'LEGACY')",
+                            (fill_id, client_order_id, qty, price, fee,
+                             realized_pnl, side, filled_at, int(synthetic),
+                             replaces_synthetic_fill_id,
+                             covered_by_fact_id,
+                             int(economic_effect_applied)))
                 else:
                     self._conn.execute(
                         "INSERT INTO fills (fill_id, client_order_id, qty, price, fee,"
@@ -429,12 +448,6 @@ class Ledger:
                          side, filled_at, int(synthetic), replaces_synthetic_fill_id,
                          covered_by_fact_id, int(economic_effect_applied)),
                     )
-                # venue 事实持久化（Fix 2）：S1 schema 列存在时存入
-                # symbol/raw/fee_asset；列不存在则拒收（不静默丢弃）
-                if venue_symbol is not None or venue_qty_raw is not None:
-                    self._persist_venue_fields(
-                        fill_id, venue_symbol, venue_qty_raw,
-                        venue_price_raw, venue_fee_raw, venue_fee_asset)
         except sqlite3.IntegrityError as exc:
             msg = str(exc)
             msg_u = msg.upper()
@@ -455,33 +468,112 @@ class Ledger:
             }
             if frozenset(target_cols) not in fills_targets:
                 raise  # 非目标 UNIQUE（评审触发器复现路径）
-            existing = self._conn.execute(
-                "SELECT client_order_id, qty, price, side FROM fills"
-                " WHERE fill_id = ?", (fill_id,)).fetchone()
+            # Fix 1: 按复合身份定位既有行——venue 插入用 venue_symbol；
+            # LEGACY 插入（symbol NULL）只可能命中 partial unique 的
+            # NULL-symbol 行。SELECT 列集按实际 schema 取（旧库无 S1 列）。
+            _q_symbol = venue_symbol
+            if _has_s1:
+                existing = self._conn.execute(
+                    "SELECT client_order_id, qty, price, side, symbol,"
+                    " qty_raw, price_raw, fee_raw, fee_asset, origin,"
+                    " realized_pnl, derivation_ctx FROM fills"
+                    " WHERE fill_id = ? AND (symbol IS ? OR"
+                    "  (? IS NULL AND symbol IS NULL))",
+                    (fill_id, _q_symbol, _q_symbol)).fetchone()
+            else:
+                existing = self._conn.execute(
+                    "SELECT client_order_id, qty, price, side FROM fills"
+                    " WHERE fill_id = ?", (fill_id,)).fetchone()
             if existing is None:
                 raise  # 无法以完整身份定位——上抛
-            # 统一校验器（S2 接线）：历史行走 HISTORY 模式比较
+            # Fix 2: 按两侧 origin 分别走 EVENT raw 校验 / HISTORY /
+            # 混合模式——不再一律包装为 HISTORY（评审 2 复现关闭）
             from aurora.kernel.fill_identity import (
-                compare_as, FillIdentityConflict as _FIX,
+                compare_as, compare_mixed,
             )
-            stored = {
-                "client_order_id": existing["client_order_id"],
-                "symbol": None, "side": existing["side"],
-                "qty": existing["qty"], "price": existing["price"],
-                "fee": None, "fee_asset": None,
-            }
-            incoming = {
-                "client_order_id": client_order_id, "symbol": None,
-                "side": side, "qty": qty, "price": price,
-                "fee": None, "fee_asset": None,
-            }
-            report = compare_as("HISTORY", stored, incoming)
+            _stored_origin = (existing["origin"]
+                              if "origin" in existing.keys() else None)
+            _incoming_is_event = venue_symbol is not None
+            if _stored_origin == "EVENT" and _incoming_is_event:
+                # 两侧 EVENT：同等级 raw 校验（raw 是权威，REAL 不参与）
+                _stored = {
+                    "client_order_id": existing["client_order_id"],
+                    "symbol": existing["symbol"],
+                    "side": existing["side"],
+                    "qty_raw": existing["qty_raw"],
+                    "price_raw": existing["price_raw"],
+                    "fee_raw": existing["fee_raw"],
+                    "fee_asset": existing["fee_asset"],
+                }
+                _incoming = {
+                    "client_order_id": client_order_id,
+                    "symbol": venue_symbol, "side": side,
+                    "qty_raw": venue_qty_raw,
+                    "price_raw": venue_price_raw,
+                    "fee_raw": venue_fee_raw,
+                    "fee_asset": venue_fee_asset,
+                }
+                report = compare_as("EVENT", _stored, _incoming)
+            elif _stored_origin == "EVENT" or _incoming_is_event:
+                # 一侧 EVENT 一侧 LEGACY → 混合（跨等级冻结语义：
+                # 离散冲突暴露，数值不可证实）
+                if _stored_origin == "EVENT":
+                    _lg_incoming = {
+                        "client_order_id": client_order_id,
+                        "symbol": None, "side": side,
+                        "qty": qty, "price": price,
+                        "fee": None, "fee_asset": None,
+                    }
+                    _ev_stored = {
+                        "origin": "EVENT",
+                        "client_order_id": existing["client_order_id"],
+                        "symbol": existing["symbol"],
+                        "side": existing["side"],
+                        "qty_raw": existing["qty_raw"],
+                        "price_raw": existing["price_raw"],
+                        "fee_raw": existing["fee_raw"],
+                        "fee_asset": existing["fee_asset"],
+                    }
+                    report = compare_mixed(_lg_incoming, _ev_stored)
+                else:
+                    _legacy = {
+                        "client_order_id": existing["client_order_id"],
+                        "symbol": existing["symbol"] if _has_s1 else None,
+                        "side": existing["side"],
+                        "qty": existing["qty"], "price": existing["price"],
+                        "fee": None, "fee_asset": None,
+                    }
+                    _event = {
+                        "origin": "EVENT",
+                        "client_order_id": client_order_id,
+                        "symbol": venue_symbol, "side": side,
+                        "qty_raw": venue_qty_raw,
+                        "price_raw": venue_price_raw,
+                        "fee_raw": venue_fee_raw,
+                        "fee_asset": venue_fee_asset,
+                    }
+                    report = compare_mixed(_legacy, _event)
+            else:
+                # 两侧 LEGACY → HISTORY（历史近似口径）
+                _stored = {
+                    "client_order_id": existing["client_order_id"],
+                    "symbol": None, "side": existing["side"],
+                    "qty": existing["qty"], "price": existing["price"],
+                    "fee": None, "fee_asset": None,
+                }
+                _incoming = {
+                    "client_order_id": client_order_id, "symbol": None,
+                    "side": side, "qty": qty, "price": price,
+                    "fee": None, "fee_asset": None,
+                }
+                report = compare_as("HISTORY", _stored, _incoming)
             if report["verdict"] == "MISMATCH":
                 raise FillIdentityConflict(
-                    f"fill_id {fill_id!r} identity conflict on fields"
-                    f" {report['conflict_fields']}: stored={dict(stored)}"
-                    f" incoming={dict(incoming)}")
-            # MATCH/INCOMPLETE → 一致或不可证实的重放：幂等
+                    f"fill {fill_id!r} identity conflict on fields"
+                    f" {report['conflict_fields']}: stored_origin="
+                    f"{_stored_origin}; composite key"
+                    f" ({_q_symbol!r}, {fill_id!r})")
+            # MATCH/INCOMPLETE → 幂等
             return False
         return True
 
@@ -530,17 +622,40 @@ class Ledger:
                 (f"replaced-by:{by_real_fill_id}", synthetic_fill_id),
             )
 
-    def fill_exists(self, fill_id: str) -> bool:
+    def fill_exists(self, fill_id: str,
+                    symbol: Optional[str] = None) -> bool:
+        """Fix 1：完整身份查询——提供 symbol 时按复合键 (symbol,
+        fill_id) 精确匹配；未提供（旧调用方）在 S1 库等价 NULL-symbol
+        历史行匹配（base schema fill_id 即 PK）。base schema 无
+        symbol 列 → 退化为 fill_id 查询（venue 行不可能存在）。"""
+        if symbol is not None and self._fills_has_symbol():
+            row = self._conn.execute(
+                "SELECT 1 FROM fills WHERE symbol IS ? AND fill_id = ?",
+                (symbol, fill_id,)).fetchone()
+            return row is not None
         row = self._conn.execute(
             "SELECT 1 FROM fills WHERE fill_id = ?", (fill_id,)
         ).fetchone()
         return row is not None
 
-    def get_fill(self, fill_id: str) -> Optional[Dict[str, Any]]:
+    def get_fill(self, fill_id: str,
+                 symbol: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """Fix 1：完整身份读取——语义同 fill_exists（venue 路径必须
+        传 symbol；裸 fill_id 仅用于 NULL-symbol 历史行/旧 schema）。"""
+        if symbol is not None and self._fills_has_symbol():
+            row = self._conn.execute(
+                "SELECT * FROM fills WHERE symbol IS ? AND fill_id = ?",
+                (symbol, fill_id,)).fetchone()
+            return dict(row) if row else None
         row = self._conn.execute(
             "SELECT * FROM fills WHERE fill_id = ?", (fill_id,)
         ).fetchone()
         return dict(row) if row else None
+
+    def _fills_has_symbol(self) -> bool:
+        cols = {r[1] for r in self._conn.execute(
+            "PRAGMA table_info(fills)")}
+        return "symbol" in cols
 
     def fills_for_order(self, client_order_id: str) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
@@ -720,21 +835,143 @@ class Ledger:
 
     # ---------- 推导重算与 DEVIATION（Fix 5：T-D2/D3） ----------
 
+    _MACHINE_REF_PREFIXES = ("fill:", "order:", "fact:", "recompute:",
+                             "recomputation-event:")
+
+    def _validate_resolution_ref(self, ref: str) -> str:
+        """Fix 4：机器引用必须解析到已存在的目标（悬空=拒绝）。
+
+        单 token 结构化引用（fill:SYM:FID / order:CID / fact:FID /
+        recompute:ID / recomputation-event:ID）视为机器引用——逐一
+        验证目标存在；其余（含空格复合注记、操作员处置文本）视为
+        人工依据，要求非空即可。
+        """
+        import re as _re
+        from aurora.kernel.fill_identity import validate_new_ref
+        stripped = (ref or "").strip()
+        if not stripped:
+            raise SafetyViolation(
+                "resolution_ref must be non-empty (machine ref must"
+                " resolve or operator disposition must be stated)")
+        machine = _re.fullmatch(
+            r"(fill|order|fact|recompute|recomputation-event):[^\s]+",
+            stripped)
+        if machine is None:
+            return stripped  # 人工处置/复合注记文本
+        kind, target = stripped.split(":", 1)
+        if kind == "fill":
+            res = validate_new_ref(self._conn, target)
+            if not res["ok"]:
+                raise SafetyViolation(
+                    f"machine fill ref does not resolve: {stripped!r}"
+                    f" ({res['reason']})")
+            return stripped
+        if kind == "order":
+            row = self._conn.execute(
+                "SELECT 1 FROM orders WHERE client_order_id = ?",
+                (target,)).fetchone()
+            if row is None:
+                raise SafetyViolation(
+                    f"machine order ref does not resolve: {stripped!r}")
+            return stripped
+        if kind == "fact":
+            row = self._conn.execute(
+                "SELECT 1 FROM reconciliation_facts WHERE fact_id = ?",
+                (target,)).fetchone()
+            if row is None:
+                raise SafetyViolation(
+                    f"machine fact ref does not resolve: {stripped!r}")
+            return stripped
+        # recompute / recomputation-event
+        try:
+            rid = int(target)
+        except ValueError:
+            raise SafetyViolation(
+                f"machine recomputation ref malformed: {stripped!r}")
+        try:
+            row = self._conn.execute(
+                "SELECT 1 FROM fill_recomputations WHERE id = ?",
+                (rid,)).fetchone()
+        except sqlite3.OperationalError:
+            row = None
+        if row is None:
+            raise SafetyViolation(
+                f"machine recomputation ref does not resolve:"
+                f" {stripped!r}")
+        return stripped
+
+    def append_resolution_record(self, kind: str, entity_id: str,
+                                 resolution_ref: str,
+                                 detail: str = "") -> int:
+        """Fix 4：解决记录（append-only）——解除任何阻断标志前必须
+        先落此记录，形成持久审计链（不是非空字符串检查）。"""
+        with self._conn:
+            self._conn.execute(
+                "CREATE TABLE IF NOT EXISTS resolution_log ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " kind TEXT NOT NULL,"
+                " entity_id TEXT NOT NULL,"
+                " resolution_ref TEXT NOT NULL,"
+                " detail TEXT NOT NULL DEFAULT '',"
+                " resolved_at TEXT NOT NULL)")
+            cur = self._conn.execute(
+                "INSERT INTO resolution_log"
+                " (kind, entity_id, resolution_ref, detail, resolved_at)"
+                " VALUES (?, ?, ?, ?, ?)",
+                (kind, entity_id, resolution_ref, detail, utc_now()))
+            return cur.lastrowid
+
+    def resolution_records(self, kind: Optional[str] = None,
+                           entity_id: Optional[str] = None) -> list:
+        try:
+            sql = "SELECT * FROM resolution_log"
+            conds, params = [], []
+            if kind is not None:
+                conds.append("kind = ?")
+                params.append(kind)
+            if entity_id is not None:
+                conds.append("entity_id = ?")
+                params.append(entity_id)
+            if conds:
+                sql += " WHERE " + " AND ".join(conds)
+            rows = self._conn.execute(
+                sql + " ORDER BY id", params).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.OperationalError:
+            return []
+
     def append_fill_recomputation(
         self, fill_id: str, old_value: float, new_value: float,
         reason: str, *, old_ctx: Optional[str] = None,
         new_ctx: Optional[str] = None, basis_ref: Optional[str] = None,
+        symbol: Optional[str] = None,
     ) -> int:
         """显式重算事件（append-only，Fix 4 强化）。
 
-        - fill_id 必须已存在于 fills 表（成交存在性约束）；
-        - 记录新旧推导上下文与依据引用（订单 ID / 迟到成交 ID）；
+        - fill_id 必须已存在于 fills 表（成交存在性约束；
+          提供符号时按复合身份验证）；
+        - 新重算记录必须提供冻结依据三元组 old_ctx/new_ctx/basis_ref
+          （缺一拒绝——重算无依据=不可审计）；
+        - basis_ref 是机器引用时必须解析到已存在目标；
         - 不改历史 fill 行。
         """
+        for _n, _v in (("old_ctx", old_ctx), ("new_ctx", new_ctx),
+                       ("basis_ref", basis_ref)):
+            if _v is None or not str(_v).strip():
+                raise SafetyViolation(
+                    f"recomputation requires frozen basis {_n}"
+                    f" for fill {fill_id!r}; refusing to append"
+                    " unattributed recomputation")
+        self._validate_resolution_ref(str(basis_ref))
         with self._conn:
-            exists = self._conn.execute(
-                "SELECT 1 FROM fills WHERE fill_id = ?",
-                (fill_id,)).fetchone()
+            if symbol is not None:
+                exists = self._conn.execute(
+                    "SELECT 1 FROM fills WHERE symbol IS ? AND fill_id = ?",
+                    (symbol, fill_id)).fetchone()
+            else:
+                exists = self._conn.execute(
+                    "SELECT 1 FROM fills WHERE fill_id = ?",
+                    (fill_id,)).fetchone()
             if exists is None:
                 raise SafetyViolation(
                     f"recomputation references nonexistent fill"
@@ -784,14 +1021,37 @@ class Ledger:
 
     def clear_pnl_unreliable(self, symbol: str,
                              resolution_ref: Optional[str] = None) -> None:
-        """解除 UNRELIABLE 需解决依据（Fix 4）：无依据拒绝解除。"""
-        if not resolution_ref or not resolution_ref.strip():
-            raise SafetyViolation(
-                "clearing pnl_unreliable requires resolution_ref"
-                " (e.g., recomputation event id or operator disposition)")
+        """解除 UNRELIABLE（Fix 4）：依据验证 → 先落解决记录 → 再删
+        标志（同一事务）。机器引用必须解析到已存在目标。"""
+        self._validate_resolution_ref(resolution_ref or "")
         with self._conn:
+            try:
+                marked = self._conn.execute(
+                    "SELECT reason FROM pnl_reliability WHERE symbol = ?",
+                    (symbol,)).fetchone()
+            except sqlite3.OperationalError:
+                marked = None  # 表未创建=从未标记
             self._conn.execute(
-                "DELETE FROM pnl_reliability WHERE symbol = ?", (symbol,))
+                "CREATE TABLE IF NOT EXISTS resolution_log ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " kind TEXT NOT NULL,"
+                " entity_id TEXT NOT NULL,"
+                " resolution_ref TEXT NOT NULL,"
+                " detail TEXT NOT NULL DEFAULT '',"
+                " resolved_at TEXT NOT NULL)")
+            self._conn.execute(
+                "INSERT INTO resolution_log"
+                " (kind, entity_id, resolution_ref, detail, resolved_at)"
+                " VALUES ('pnl_unreliable_cleared', ?, ?, ?, ?)",
+                (symbol, resolution_ref,
+                 f"prior mark reason: {marked['reason']}"
+                 if marked else "no prior mark", utc_now()))
+            try:
+                self._conn.execute(
+                    "DELETE FROM pnl_reliability WHERE symbol = ?",
+                    (symbol,))
+            except sqlite3.OperationalError:
+                pass  # 表未创建=无标志可删；解决记录仍保留
 
     def pnl_unreliable(self, symbol: str) -> bool:
         """读取损益可靠性。表不存在=正常可靠；其他异常→True。"""
@@ -823,15 +1083,37 @@ class Ledger:
 
     def clear_fill_unresolved(self, fill_id: str,
                               resolution_ref: Optional[str] = None) -> None:
-        """解除 unresolved 需解决依据（Fix 4）：无依据拒绝解除。"""
-        if not resolution_ref or not resolution_ref.strip():
-            raise SafetyViolation(
-                "clearing unresolved fill requires resolution_ref"
-                " (e.g., reconciliation fact id or operator disposition)")
+        """解除 unresolved（Fix 4）：依据验证 → 先落解决记录 → 再删
+        标志（同一事务）。机器引用必须解析到已存在目标。"""
+        self._validate_resolution_ref(resolution_ref or "")
         with self._conn:
+            try:
+                marked = self._conn.execute(
+                    "SELECT reason FROM unresolved_fills WHERE fill_id = ?",
+                    (fill_id,)).fetchone()
+            except sqlite3.OperationalError:
+                marked = None  # 表未创建=从未标记
             self._conn.execute(
-                "DELETE FROM unresolved_fills WHERE fill_id = ?",
-                (fill_id,))
+                "CREATE TABLE IF NOT EXISTS resolution_log ("
+                " id INTEGER PRIMARY KEY AUTOINCREMENT,"
+                " kind TEXT NOT NULL,"
+                " entity_id TEXT NOT NULL,"
+                " resolution_ref TEXT NOT NULL,"
+                " detail TEXT NOT NULL DEFAULT '',"
+                " resolved_at TEXT NOT NULL)")
+            self._conn.execute(
+                "INSERT INTO resolution_log"
+                " (kind, entity_id, resolution_ref, detail, resolved_at)"
+                " VALUES ('unresolved_cleared', ?, ?, ?, ?)",
+                (fill_id, resolution_ref,
+                 f"prior mark reason: {marked['reason']}"
+                 if marked else "no prior mark", utc_now()))
+            try:
+                self._conn.execute(
+                    "DELETE FROM unresolved_fills WHERE fill_id = ?",
+                    (fill_id,))
+            except sqlite3.OperationalError:
+                pass  # 表未创建=无标志可删；解决记录仍保留
 
     def unresolved_fill_ids(self):
         """读取未解析标志。表不存在=空状态（正常）；其他读取异常

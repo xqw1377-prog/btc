@@ -1663,8 +1663,17 @@ class Orchestrator:
                     "action": "MANUAL_RECOVERY"}
 
         # ④ 身份比较：venue=EVENT 严格；账本行为可信读取（模式在
-        #    调用处声明，不从载荷读取）
-        existing = self.ledger.get_fill(fill.fill_id)
+        #    调用处声明，不从载荷读取）——Fix 1：复合身份 (symbol,
+        #    fill_id) 定位既有行
+        existing = self.ledger.get_fill(fill.fill_id, symbol=fill.symbol)
+        if existing is None and fill.symbol is not None:
+            # 复合身份未命中 → 探测同 fill_id 的 NULL-symbol 历史行
+            # （迁移前的同一笔交易）：审计定位（resolve_fill_ref 的
+            # UNRESOLVED_NULL_LEGACY 语义），跨等级比较，绝不收养为
+            # 新身份（否则重放变新成交=二次记账）
+            shadow = self.ledger.get_fill(fill.fill_id)
+            if shadow is not None and shadow.get("symbol") is None:
+                existing = shadow
         if existing is not None:
             legacy = {
                 "client_order_id": existing["client_order_id"],
@@ -1733,28 +1742,59 @@ class Orchestrator:
                         "fill_id": fill.fill_id,
                         "action": "MANUAL_RECOVERY",
                         "report": report}
-            # Fix 3: DEVIATION 自动检测——同推导上下文重算 realized_pnl
-            # 与存储值比对；不一致 → 损益 UNRELIABLE（阻新增不阻减仓）
+            # Fix 3: DEVIATION 自动检测——按**冻结的**推导上下文重算
+            # realized_pnl 与存储值比对：
+            # - stored ctx 缺失 = 不可证实（绝不伪造空串为"同上下文"）；
+            # - 基准变化（entry avg 变）= EXPLICIT_RECOMPUTE 路径，
+            #   追加重算事件（append-only），不改历史行、不判偏离；
+            # - 同 ctx 重算不一致 → DEVIATION → 损益 UNRELIABLE。
             _order = self.ledger.get_order(fill.client_order_id)
             if _order is not None:
                 recomputed = self._realized_pnl(_order, fill)
-                stored = float(existing.get("realized_pnl") or 0)
-                ctx_stored = existing.get("derivation_ctx")
-                if ctx_stored is None and stored_origin == "EVENT":
-                    ctx_stored = ""  # EVENT 行缺 ctx：用空串保持同侧
-                d_check = _fi.derivation_check(
-                    ctx_stored, ctx_stored,  # 同 ctx（ venue 重放）
-                    Decimal(str(recomputed)), Decimal(str(stored)))
-                if d_check["deviation"]:
-                    self.ledger.mark_pnl_unreliable(
-                        self.symbol,
-                        f"derivation deviation on fill {fill.fill_id}:"
-                        f" recomputed={recomputed} stored={stored}")
+                stored_pnl = float(existing.get("realized_pnl") or 0)
+                stored_ctx = existing.get("derivation_ctx")
+                recompute_ctx = self._pnl_derivation_ctx(_order, fill)
+                if stored_ctx is None or str(stored_ctx).strip() == "":
+                    # 缺推导上下文：不可证实——审计但不伪造比较
                     self.ledger._log_transition(Transition(
-                        "fill", fill.fill_id, "", "DERIVATION_DEVIATION",
+                        "fill", fill.fill_id, "", "PNL_UNVERIFIABLE",
                         utc_now(),
-                        f"recomputed={recomputed} != stored={stored};"
-                        " pnl marked UNRELIABLE", fill.fill_id))
+                        "no derivation_ctx stored on existing row;"
+                        " pnl cannot be verified on replay (not"
+                        " fabricated as same-context)", fill.fill_id))
+                else:
+                    d_check = _fi.derivation_check(
+                        stored_ctx, recompute_ctx,
+                        Decimal(str(recomputed)),
+                        Decimal(str(stored_pnl)))
+                    if d_check["path"] == "EXPLICIT_RECOMPUTE":
+                        # 冻结基准已变化：显式重算（依据落审计链）
+                        self.ledger.append_fill_recomputation(
+                            fill.fill_id, stored_pnl, recomputed,
+                            f"basis changed on venue replay:"
+                            f" {d_check['reason']}",
+                            old_ctx=str(stored_ctx),
+                            new_ctx=str(recompute_ctx),
+                            basis_ref=(
+                                f"order:{_order['client_order_id']}"),
+                            symbol=fill.symbol)
+                        self.ledger._log_transition(Transition(
+                            "fill", fill.fill_id, "", "EXPLICIT_RECOMPUTE",
+                            utc_now(),
+                            f"basis changed: {d_check['reason']};"
+                            f" stored={stored_pnl}"
+                            f" recomputed={recomputed}",
+                            fill.fill_id))
+                    elif d_check["deviation"]:
+                        self.ledger.mark_pnl_unreliable(
+                            self.symbol,
+                            f"derivation deviation on fill {fill.fill_id}:"
+                            f" recomputed={recomputed} stored={stored_pnl}")
+                        self.ledger._log_transition(Transition(
+                            "fill", fill.fill_id, "", "DERIVATION_DEVIATION",
+                            utc_now(),
+                            f"recomputed={recomputed} != stored={stored_pnl};"
+                            " pnl marked UNRELIABLE", fill.fill_id))
             return {"class": "DUPLICATE", "fill_id": fill.fill_id,
                     "report": report}
 
@@ -1786,7 +1826,8 @@ class Orchestrator:
                 venue_qty_raw=fill.qty_raw,
                 venue_price_raw=fill.price_raw,
                 venue_fee_raw=fill.fee_raw,
-                venue_fee_asset=fill.fee_asset)
+                venue_fee_asset=fill.fee_asset,
+                venue_derivation_ctx=self._pnl_derivation_ctx(order))
             return {"class": "COVERED_BY_FACT", "fill_id": fill.fill_id,
                     "evidence_fact_id": fact_id,
                     "order": fill.client_order_id,
@@ -1811,7 +1852,8 @@ class Orchestrator:
                 venue_qty_raw=fill.qty_raw,
                 venue_price_raw=fill.price_raw,
                 venue_fee_raw=fill.fee_raw,
-                venue_fee_asset=fill.fee_asset)
+                venue_fee_asset=fill.fee_asset,
+                venue_derivation_ctx=self._pnl_derivation_ctx(order))
             if inserted:
                 self.ledger.mark_synthetic_replaced(
                     synthetic["fill_id"], fill.fill_id)
@@ -1837,8 +1879,10 @@ class Orchestrator:
             venue_price_raw=fill.price_raw,
             venue_fee_raw=fill.fee_raw,
             venue_fee_asset=fill.venue_fee_asset
-            if hasattr(fill, 'venue_fee_asset') else fill.fee_asset)
-        if not inserted and self.ledger.fill_exists(fill.fill_id):
+            if hasattr(fill, 'venue_fee_asset') else fill.fee_asset,
+            venue_derivation_ctx=self._pnl_derivation_ctx(order))
+        if not inserted and self.ledger.fill_exists(
+                fill.fill_id, symbol=fill.symbol):
             return {"class": "DUPLICATE", "fill_id": fill.fill_id}
 
         self.ledger.sync_order_projection_from_fills(fill.client_order_id)
@@ -1884,6 +1928,22 @@ class Orchestrator:
                 fill.client_order_id, filled_qty=round(economic, 10))
         return {"success": True, "synthetic_fill_id": fill.fill_id,
                 "reason": reason}
+
+    def _pnl_derivation_ctx(self, order: Optional[Dict],
+                            fill: Optional[Fill] = None) -> Optional[str]:
+        """Fix 3：realized_pnl 的推导上下文（冻结基准快照）。
+
+        依据 = 入场基准（entry 腿订单 + 其 avg_price）+ 平仓方向。
+        重算必须按该快照进行：基准变化走 EXPLICIT_RECOMPUTE（追加
+        重算事件），不是把当前上下文伪装成"相同"。order 缺失 = 无
+        上下文（不可证实），不伪造。
+        """
+        if not order:
+            return None
+        entry = self.ledger.get_order(f"{order['intent_id']}-ENTRY")
+        entry_avg = float(entry["avg_price"]) if entry else 0.0
+        return (f"v1|basis=order:{order['intent_id']}-ENTRY"
+                f"|entry_avg={entry_avg!r}|side={order['side']}")
 
     def _realized_pnl(self, order: Dict, fill: Fill) -> float:
         """平仓方向成交的已实现盈亏（入场腿记 0）。"""

@@ -150,13 +150,17 @@ class Fix3_3_DeviationAutoDetection(F3Base):
         # 同身份（EVENT 行 + raw）。构造该场景：
         orch = Orchestrator(led, FakeExchange(), instance_id="f3d")
         orch.recover()
-        # 先插一个 EVENT 行（S1 列存在）
+        # 先插一个 EVENT 行（S1 列存在）——Fix 3：随写携带冻结推导
+        # 上下文（venue_derivation_ctx），重放按同 ctx 校验
+        _c1 = led.get_order("C1")
+        _ctx = orch._pnl_derivation_ctx(_c1)
+        self.assertIsNotNone(_ctx)
         led.insert_fill(
             "EVF", "C1", 0.01, 99.0, 0, "SELL", "t3",
             realized_pnl=1.5,
             venue_symbol="BTCUSDT", venue_qty_raw="0.01",
             venue_price_raw="99.0", venue_fee_raw="0.0",
-            venue_fee_asset="USDT")
+            venue_fee_asset="USDT", venue_derivation_ctx=_ctx)
         # venue 重放：完全同 raw → 同 EVENT 身份 → compare_as
         # EVENT 同等级 → MATCH → DUPLICATE → DEVIATION 检查执行
         out = orch.apply_fill_event(
@@ -170,6 +174,86 @@ class Fix3_3_DeviationAutoDetection(F3Base):
         self.assertTrue(
             led.pnl_unreliable("BTCUSDT"),
             "DEVIATION must auto-mark pnl unreliable")
+
+    def test_replay_missing_ctx_is_unverifiable_not_fabricated(self):
+        # Fix 3：存储行缺 derivation_ctx → 不可证实（PNL_UNVERIFIABLE
+        # 审计），不得伪造空串为"同上下文"后强判 DEVIATION/一致
+        self.led.close()
+        fm.migrate_fills_identity(self.path)
+        led = Ledger(self.path)
+        self.addCleanup(led.close)
+        led.insert_fill(
+            "EVN", "C1", 0.01, 99.0, 0, "SELL", "t4",
+            realized_pnl=1.5,
+            venue_symbol="BTCUSDT", venue_qty_raw="0.01",
+            venue_price_raw="99.0", venue_fee_raw="0.0",
+            venue_fee_asset="USDT")  # 故意不带 ctx
+        orch = Orchestrator(led, FakeExchange(), instance_id="f3n")
+        orch.recover()
+        out = orch.apply_fill_event(
+            self._v(fill_id="EVN", client_order_id="C1",
+                    qty=0.01, qty_raw="0.01",
+                    price=99.0, price_raw="99.0",
+                    side="SELL", fee=0.0))
+        self.assertEqual(out["class"], "DUPLICATE")
+        self.assertFalse(
+            led.pnl_unreliable("BTCUSDT"),
+            "missing ctx must be unverifiable, not deviation-flagged")
+        trs = [t for t in led.all_transitions()
+               if t["to_state"] == "PNL_UNVERIFIABLE"]
+        self.assertTrue(any(t["entity_id"] == "EVN" for t in trs),
+                        "PNL_UNVERIFIABLE audit transition must exist")
+
+    def test_replay_basis_change_routes_explicit_recompute(self):
+        # Fix 3：冻结基准变化（entry avg 变）→ EXPLICIT_RECOMPUTE
+        # （追加 append-only 重算事件），不是 DEVIATION、不改历史行
+        self.led.close()
+        fm.migrate_fills_identity(self.path)
+        led = Ledger(self.path)
+        self.addCleanup(led.close)
+        # 真实腿结构：ENTRY 腿（basis）+ SL 平仓腿（recover 后建，
+        # 避免恢复逻辑把 SUBMITTING 腿扫进终态迁移）
+        orch = Orchestrator(led, FakeExchange(), instance_id="f3e")
+        orch.recover()
+        led.record_order_submitting(
+            client_order_id="I1-ENTRY", intent_id="I1",
+            order_kind="ENTRY", side="BUY", position_side="LONG",
+            quantity=0.25)
+        led.record_order_submitting(
+            client_order_id="I1-SL1", intent_id="I1",
+            order_kind="SL", side="SELL", position_side="LONG",
+            quantity=0.25, reduce_only=True)
+        led.update_order("I1-ENTRY", avg_price=100.5)
+        _sl = led.get_order("I1-SL1")
+        ctx0 = orch._pnl_derivation_ctx(_sl)
+        self.assertIn("entry_avg=100.5", ctx0)  # 基准冻结在写入时
+        led.insert_fill(
+            "EVB", "I1-SL1", 0.01, 99.0, 0, "SELL", "t5",
+            realized_pnl=-0.015,
+            venue_symbol="BTCUSDT", venue_qty_raw="0.01",
+            venue_price_raw="99.0", venue_fee_raw="0.0",
+            venue_fee_asset="USDT", venue_derivation_ctx=ctx0)
+        # 基准变化：入场 avg 100.5 → 90.0 → 冻结 ctx ≠ 当前 ctx
+        led.update_order("I1-ENTRY", avg_price=90.0)
+        before = led.get_fill("EVB")
+        out = orch.apply_fill_event(
+            self._v(fill_id="EVB", client_order_id="I1-SL1",
+                    qty=0.01, qty_raw="0.01",
+                    price=99.0, price_raw="99.0",
+                    side="SELL", fee=0.0))
+        self.assertEqual(out["class"], "DUPLICATE")
+        self.assertFalse(led.pnl_unreliable("BTCUSDT"),
+                         "basis change is not a deviation")
+        recs = led.fill_recomputations("EVB")
+        self.assertEqual(len(recs), 1,
+                         "EXPLICIT_RECOMPUTE must append a record")
+        self.assertIn("basis", recs[0]["reason"])
+        self.assertEqual(recs[0]["old_ctx"], ctx0)
+        self.assertIn("entry_avg=90.0", recs[0]["new_ctx"])
+        self.assertNotEqual(recs[0]["old_ctx"], recs[0]["new_ctx"])
+        self.assertEqual(recs[0]["basis_ref"], "order:I1-SL1")
+        self.assertEqual(led.get_fill("EVB"), before,
+                         "history row must stay unchanged")
 
 
 class Fix3_4_RecomputeRecords(F3Base):
@@ -207,9 +291,23 @@ class Fix3_4_RecomputeRecords(F3Base):
         self.led.mark_pnl_unreliable("BTCUSDT", "test")
         with self.assertRaises(SafetyViolation):
             self.led.clear_pnl_unreliable("BTCUSDT")  # 无依据 → 拒绝
+        # 悬空机器引用 → 拒绝（Fix 4：recomputation-event:42 不存在）
+        with self.assertRaises(SafetyViolation):
+            self.led.clear_pnl_unreliable(
+                "BTCUSDT", resolution_ref="recomputation-event:42")
+        # 真实重算事件 → 允许解除 + 落解决记录
+        rid = self.led.append_fill_recomputation(
+            "F1", 1.5, -0.015, "corrected pnl by frozen-basis replay",
+            old_ctx="ctx-old", new_ctx="ctx-new", basis_ref="order:C1")
         self.led.clear_pnl_unreliable(
-            "BTCUSDT", resolution_ref="recomputation-event:42")
+            "BTCUSDT", resolution_ref=f"recomputation-event:{rid}")
         self.assertFalse(self.led.pnl_unreliable("BTCUSDT"))
+        recs = self.led.resolution_records(kind="pnl_unreliable_cleared")
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]["entity_id"], "BTCUSDT")
+        self.assertEqual(recs[0]["resolution_ref"],
+                         f"recomputation-event:{rid}")
+        self.assertIn("test", recs[0]["detail"])  # 保留原标记原因
 
 
 if __name__ == "__main__":
