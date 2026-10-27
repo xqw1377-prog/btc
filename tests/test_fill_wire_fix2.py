@@ -46,15 +46,21 @@ class Fix1_RawAuthorityTests(FBase):
     """评审复现 1：fee_raw=0.5 存 0 / qty_raw=1e10000 存 inf / side=INVALID。"""
 
     def test_fee_raw_0_5_fee_display_0_correctly_handled(self):
-        # fee_raw=0.5, fee=0：raw 权威——派生 fee=0.5 存入（不是 0）
-        out = self.orch.apply_fill_event(
+        # S1 迁移库上：fee_raw=0.5, fee=0 → raw 权威派生 fee=0.5 存入
+        from aurora.kernel import fill_migration as fm
+        self.led.close()
+        fm.migrate_fills_identity(self.path)
+        led = Ledger(self.path)
+        self.addCleanup(led.close)
+        orch = Orchestrator(led, FakeExchange(), instance_id="f1t")
+        orch.recover()
+        out = orch.apply_fill_event(
             self._v(fill_id="NEW1", fee=0.0, fee_raw="0.5"))
-        self.assertIn(out["class"], ("LATE_NEW_FILL", "REJECTED"))
-        if out["class"] == "LATE_NEW_FILL":
-            stored = self.led.get_fill("NEW1")
-            self.assertAlmostEqual(
-                stored["fee"], 0.5, places=10,
-                msg="fee must be derived from raw (0.5), not display 0")
+        self.assertEqual(out["class"], "LATE_NEW_FILL")
+        stored = led.get_fill("NEW1")
+        self.assertAlmostEqual(
+            float(stored["fee"]), 0.5, places=10,
+            msg="fee must be derived from raw (0.5), not display 0")
 
     def test_qty_raw_overflow_rejected_not_inf(self):
         out = self.orch.apply_fill_event(
@@ -214,7 +220,8 @@ class Fix5_TD2_TD3_Tests(FBase):
             self.assertNotIn("pnl unreliable",
                              str(close_out.get("reason", "")))
         # 清除后恢复
-        self.led.clear_pnl_unreliable("BTCUSDT")
+        self.led.clear_pnl_unreliable("BTCUSDT",
+                                 resolution_ref="test-r")
         self.assertFalse(self.led.pnl_unreliable("BTCUSDT"))
 
     def test_T_D2_pnl_unreliable_persists_across_restart(self):
@@ -223,7 +230,8 @@ class Fix5_TD2_TD3_Tests(FBase):
         led2 = Ledger(self.path)
         self.addCleanup(led2.close)
         self.assertTrue(led2.pnl_unreliable("BTCUSDT"))
-        led2.clear_pnl_unreliable("BTCUSDT")
+        led2.clear_pnl_unreliable("BTCUSDT",
+                                 resolution_ref="test-r")
 
     def test_T_D3_explicit_recompute_appends_history_unchanged(self):
         # 重算事件追加（append-only）；历史 fill 行值不变

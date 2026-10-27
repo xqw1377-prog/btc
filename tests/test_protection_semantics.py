@@ -175,6 +175,19 @@ class DegradedRepairTests(Harness):
 
 
 class LateFillTests(Harness):
+    """D-a 后：venue 事件需 S1 schema——此类测试在迁移库上跑。"""
+
+    def setUp(self):
+        super().setUp()
+        # 隔离迁移到 S1 schema（venue 事实持久化需要 symbol/raw 列）
+        from aurora.kernel import fill_migration as fm
+        self.ledger.close()
+        fm.migrate_fills_identity(self.path)
+        self.ledger = Ledger(self.path)
+        self.orch = Orchestrator(
+            self.ledger, self.exchange, instance_id="lp")
+        bind_explicit_protect_prices(self.orch)
+
     def _make_fill(self, cid, fill_id, qty, price, side="BUY"):
         # D-a 夹具补字段（逐项说明）：venue 事件现在要求
         # symbol/raw 齐备——补 BTCUSDT（订单 symbol）+ 精确 raw 串

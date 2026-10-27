@@ -12,6 +12,7 @@ import sqlite3
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from ..p0_boundary import SafetyViolation
 from .state_machine import IntentState, assert_transition, utc_now
 
 SCHEMA = """
@@ -292,6 +293,31 @@ class Ledger:
                  quantity, stop_price, int(reduce_only), now, now),
             )
 
+    def _persist_venue_fields(
+        self, fill_id: str, symbol: Optional[str],
+        qty_raw: Optional[str], price_raw: Optional[str],
+        fee_raw: Optional[str], fee_asset: Optional[str],
+    ) -> None:
+        """venue 事实持久化到 S1 schema 列（symbol/origin/raw）。
+
+        列不存在（旧 schema）→ 拒收（不静默丢弃 venue 事实）。
+        只在 INSERT 事务内调用（跟随外层 with self._conn）。
+        """
+        cols = {r[1] for r in self._conn.execute(
+            "PRAGMA table_info(fills)")}
+        required = {"symbol", "origin", "qty_raw", "price_raw",
+                    "fee_raw", "fee_asset"}
+        if not required.issubset(cols):
+            raise SafetyViolation(
+                f"venue facts require S1 schema columns"
+                f" (missing: {sorted(required - cols)});"
+                " run isolated migration first; refusing to"
+                " silently drop venue facts")
+        self._conn.execute(
+            "UPDATE fills SET symbol=?, origin='EVENT', qty_raw=?,"
+            " price_raw=?, fee_raw=?, fee_asset=? WHERE fill_id=?",
+            (symbol, qty_raw, price_raw, fee_raw, fee_asset, fill_id))
+
     def update_order(
         self,
         client_order_id: str,
@@ -359,6 +385,11 @@ class Ledger:
         fee: float, side: str, filled_at: str, realized_pnl: float = 0.0,
         synthetic: bool = False, replaces_synthetic_fill_id: Optional[str] = None,
         covered_by_fact_id: Optional[str] = None, economic_effect_applied: bool = True,
+        *, venue_symbol: Optional[str] = None,
+        venue_qty_raw: Optional[str] = None,
+        venue_price_raw: Optional[str] = None,
+        venue_fee_raw: Optional[str] = None,
+        venue_fee_asset: Optional[str] = None,
     ) -> bool:
         """幂等入账：fill_id 已存在且内容一致返回 False（不重复记账）。
 
@@ -369,16 +400,41 @@ class Ledger:
         """
         try:
             with self._conn:
-                self._conn.execute(
-                    "INSERT INTO fills (fill_id, client_order_id, qty, price, fee,"
-                    " realized_pnl, side, filled_at, synthetic,"
-                    " replaces_synthetic_fill_id, covered_by_fact_id,"
-                    " quantity_effect_applied, economic_effect_applied)"
-                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
-                    (fill_id, client_order_id, qty, price, fee, realized_pnl,
-                     side, filled_at, int(synthetic), replaces_synthetic_fill_id,
-                     covered_by_fact_id, int(economic_effect_applied)),
-                )
+                # S1 库 fills 有 origin NOT NULL——有该列时 INSERT 带
+                # 'LEGACY'（venue 路径随后由 _persist_venue_fields 覆盖
+                # 为 'EVENT'）；旧库无列保持原句
+                _cols = {r[1] for r in self._conn.execute(
+                    "PRAGMA table_info(fills)")}
+                if "origin" in _cols:
+                    self._conn.execute(
+                        "INSERT INTO fills (fill_id, client_order_id, qty,"
+                        " price, fee, realized_pnl, side, filled_at,"
+                        " synthetic, replaces_synthetic_fill_id,"
+                        " covered_by_fact_id, quantity_effect_applied,"
+                        " economic_effect_applied, origin)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?,"
+                        " 'LEGACY')",
+                        (fill_id, client_order_id, qty, price, fee,
+                         realized_pnl, side, filled_at, int(synthetic),
+                         replaces_synthetic_fill_id, covered_by_fact_id,
+                         int(economic_effect_applied)))
+                else:
+                    self._conn.execute(
+                        "INSERT INTO fills (fill_id, client_order_id, qty, price, fee,"
+                        " realized_pnl, side, filled_at, synthetic,"
+                        " replaces_synthetic_fill_id, covered_by_fact_id,"
+                        " quantity_effect_applied, economic_effect_applied)"
+                        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)",
+                        (fill_id, client_order_id, qty, price, fee, realized_pnl,
+                         side, filled_at, int(synthetic), replaces_synthetic_fill_id,
+                         covered_by_fact_id, int(economic_effect_applied)),
+                    )
+                # venue 事实持久化（Fix 2）：S1 schema 列存在时存入
+                # symbol/raw/fee_asset；列不存在则拒收（不静默丢弃）
+                if venue_symbol is not None or venue_qty_raw is not None:
+                    self._persist_venue_fields(
+                        fill_id, venue_symbol, venue_qty_raw,
+                        venue_price_raw, venue_fee_raw, venue_fee_asset)
         except sqlite3.IntegrityError as exc:
             msg = str(exc)
             msg_u = msg.upper()
@@ -664,23 +720,42 @@ class Ledger:
 
     # ---------- 推导重算与 DEVIATION（Fix 5：T-D2/D3） ----------
 
-    def append_fill_recomputation(self, fill_id: str, old_value: float,
-                                  new_value: float, reason: str) -> int:
-        """显式重算事件（append-only）：追加记录，不改历史 fill 行。"""
+    def append_fill_recomputation(
+        self, fill_id: str, old_value: float, new_value: float,
+        reason: str, *, old_ctx: Optional[str] = None,
+        new_ctx: Optional[str] = None, basis_ref: Optional[str] = None,
+    ) -> int:
+        """显式重算事件（append-only，Fix 4 强化）。
+
+        - fill_id 必须已存在于 fills 表（成交存在性约束）；
+        - 记录新旧推导上下文与依据引用（订单 ID / 迟到成交 ID）；
+        - 不改历史 fill 行。
+        """
         with self._conn:
+            exists = self._conn.execute(
+                "SELECT 1 FROM fills WHERE fill_id = ?",
+                (fill_id,)).fetchone()
+            if exists is None:
+                raise SafetyViolation(
+                    f"recomputation references nonexistent fill"
+                    f" {fill_id!r}; refusing to append")
             self._conn.execute(
                 "CREATE TABLE IF NOT EXISTS fill_recomputations ("
                 " id INTEGER PRIMARY KEY AUTOINCREMENT,"
                 " fill_id TEXT NOT NULL,"
                 " old_value REAL NOT NULL,"
                 " new_value REAL NOT NULL,"
+                " old_ctx TEXT, new_ctx TEXT,"
+                " basis_ref TEXT,"
                 " reason TEXT NOT NULL,"
                 " recomputed_at TEXT NOT NULL)")
             cur = self._conn.execute(
                 "INSERT INTO fill_recomputations"
-                " (fill_id, old_value, new_value, reason, recomputed_at)"
-                " VALUES (?, ?, ?, ?, ?)",
-                (fill_id, old_value, new_value, reason, utc_now()))
+                " (fill_id, old_value, new_value, old_ctx, new_ctx,"
+                "  basis_ref, reason, recomputed_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (fill_id, old_value, new_value, old_ctx, new_ctx,
+                 basis_ref, reason, utc_now()))
             return cur.lastrowid
 
     def fill_recomputations(self, fill_id: str) -> list:
@@ -707,19 +782,30 @@ class Ledger:
                 " (symbol, unreliable, reason, marked_at)"
                 " VALUES (?, 1, ?, ?)", (symbol, reason, utc_now()))
 
-    def clear_pnl_unreliable(self, symbol: str) -> None:
+    def clear_pnl_unreliable(self, symbol: str,
+                             resolution_ref: Optional[str] = None) -> None:
+        """解除 UNRELIABLE 需解决依据（Fix 4）：无依据拒绝解除。"""
+        if not resolution_ref or not resolution_ref.strip():
+            raise SafetyViolation(
+                "clearing pnl_unreliable requires resolution_ref"
+                " (e.g., recomputation event id or operator disposition)")
         with self._conn:
             self._conn.execute(
                 "DELETE FROM pnl_reliability WHERE symbol = ?", (symbol,))
 
     def pnl_unreliable(self, symbol: str) -> bool:
+        """读取损益可靠性。表不存在=正常可靠；其他异常→True。"""
         try:
             row = self._conn.execute(
                 "SELECT unreliable FROM pnl_reliability WHERE symbol = ?",
                 (symbol,)).fetchone()
             return bool(row and row[0])
-        except sqlite3.OperationalError:
-            return False
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return False  # 表从未创建=正常
+            return True  # 真实读取异常 → 不可靠
+        except sqlite3.Error:
+            return True
 
     # ---------- Unresolved fill 标志（Fix 2：阻新增不阻减仓） ----------
 
@@ -735,19 +821,31 @@ class Ledger:
                 " (fill_id, reason, marked_at) VALUES (?, ?, ?)",
                 (fill_id, reason, utc_now()))
 
-    def clear_fill_unresolved(self, fill_id: str) -> None:
+    def clear_fill_unresolved(self, fill_id: str,
+                              resolution_ref: Optional[str] = None) -> None:
+        """解除 unresolved 需解决依据（Fix 4）：无依据拒绝解除。"""
+        if not resolution_ref or not resolution_ref.strip():
+            raise SafetyViolation(
+                "clearing unresolved fill requires resolution_ref"
+                " (e.g., reconciliation fact id or operator disposition)")
         with self._conn:
             self._conn.execute(
                 "DELETE FROM unresolved_fills WHERE fill_id = ?",
                 (fill_id,))
 
-    def unresolved_fill_ids(self) -> list:
+    def unresolved_fill_ids(self):
+        """读取未解析标志。表不存在=空状态（正常）；其他读取异常
+        → 哨兵（阻新增方向）。"""
         try:
             rows = self._conn.execute(
                 "SELECT fill_id FROM unresolved_fills").fetchall()
             return [r[0] for r in rows]
-        except sqlite3.OperationalError:
-            return []
+        except sqlite3.OperationalError as exc:
+            if "no such table" in str(exc).lower():
+                return []  # 表从未创建=正常空状态
+            return ["<READ_ERROR>"]  # 真实读取异常 → 哨兵
+        except sqlite3.Error:
+            return ["<READ_ERROR>"]
 
     # ---------- Kill Switch ----------
 

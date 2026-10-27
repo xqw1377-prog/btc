@@ -175,13 +175,15 @@ class A3HedgeDualLegSnapshotTests(unittest.TestCase):
             orch.recover()
             orch.open_position("LONG", 0.001, intent_id="W43-A3b")
             # 迟到的对侧腿成交：归属到"另一个"订单 id
+            # 旧库 venue 事件：无 raw 走旧形态→UNRESOLVED（不收养）
             out = orch.apply_fill_event(Fill(
                 fill_id="SHORTLEG-1",
                 client_order_id="W43-A3b-SL",
                 qty=0.002, price=99.0, fee=0.0, side="SELL",
-                filled_at="2026-10-22T00:00:00Z",
-                symbol="BTCUSDT", qty_raw="0.002", price_raw="99.0",
-                fee_raw="0.0", fee_asset="USDT"))
+                filled_at="2026-10-22T00:00:00Z"))
+            self.assertIn(out["class"],
+                          ("IDENTITY_UNRESOLVED", "LATE_NEW_FILL",
+                           "ORPHAN"))
             # 该成交必须进入证据路径（late fill 分类），不得静默把本腿订单
             # 标 FILLED 或意图标 RECONCILED
             intent = ledger.get_intent("W43-A3b")
@@ -399,7 +401,8 @@ ledger.close()
 
 class EventEntryConflictBypassTests(unittest.TestCase):
     """W43 复验缺陷1：事件入口在内容比较前直接返回 DUPLICATE，
-    绕过 insert_fill 的身份冲突检查。红→绿。"""
+    绕过 insert_fill 的身份冲突检查。红→绿。
+    D-a 后需 S1 schema（venue 事实持久化）。"""
 
     def _seed(self, led):
         led.create_intent("I-EE", "BTCUSDT", "LONG", 0.01)
@@ -408,9 +411,14 @@ class EventEntryConflictBypassTests(unittest.TestCase):
             side="BUY", position_side="LONG", quantity=0.01)
 
     def test_conflicting_event_content_is_not_silent_duplicate(self):
+        from aurora.kernel import fill_migration as fm
         with tempfile.TemporaryDirectory() as tmp:
-            led = Ledger(os.path.join(tmp, "l.db"))
-            self._seed(led)
+            _p = os.path.join(tmp, "l.db")
+            _pre = Ledger(_p)
+            self._seed(_pre)
+            _pre.close()
+            fm.migrate_fills_identity(_p)
+            led = Ledger(_p)
             orch = Orchestrator(led, FakeExchange(), instance_id="ee")
             first = orch.apply_fill_event(Fill(
                 fill_id="EE-1", client_order_id="EE-C",
@@ -421,15 +429,17 @@ class EventEntryConflictBypassTests(unittest.TestCase):
             self.assertEqual(first["class"], "LATE_NEW_FILL")
             # 同 fill_id、不同内容（qty/price/cid 变化）——事件入口必须
             # 识别为身份冲突并持久化告警，而不是 DUPLICATE
-            # 冻结语义（评审 3）：qty/price 跨等级→UNRESOLVED；
-            # 离散 side 冲突→CONFLICT+kill
+            # S1 库上两侧同 EVENT：qty_raw 变异→同等级可比→CONFLICT
+            # （EE-1 行由 first apply_fill_event 以 EVENT 持久化）
             out = orch.apply_fill_event(Fill(
                 fill_id="EE-1", client_order_id="EE-C",
                 qty=0.02, price=100.0, fee=0.0, side="BUY",
                 filled_at="t1",
                 symbol="BTCUSDT", qty_raw="0.02", price_raw="100.0",
                 fee_raw="0.0", fee_asset="USDT"))
-            self.assertEqual(out["class"], "IDENTITY_UNRESOLVED")
+            self.assertEqual(out["class"], "IDENTITY_CONFLICT")
+            self.assertIn("qty", out["report"]["conflict_fields"])
+            # 离散 side 冲突同理
             out2 = orch.apply_fill_event(Fill(
                 fill_id="EE-1", client_order_id="EE-C",
                 qty=0.01, price=100.0, fee=0.0, side="SELL",
@@ -437,6 +447,7 @@ class EventEntryConflictBypassTests(unittest.TestCase):
                 symbol="BTCUSDT", qty_raw="0.01", price_raw="100.0",
                 fee_raw="0.0", fee_asset="USDT"))
             self.assertEqual(out2["class"], "IDENTITY_CONFLICT")
+            self.assertIn("side", out2["report"]["conflict_fields"])
             self.assertEqual(led.kill_state()["engaged"], 1)
             self.assertIn("identity conflict",
                           led.kill_state()["reason"])
@@ -447,14 +458,9 @@ class EventEntryConflictBypassTests(unittest.TestCase):
                 filled_at="t1",
                 symbol="BTCUSDT", qty_raw="0.01", price_raw="100.0",
                 fee_raw="0.0", fee_asset="USDT"))
-            # D-a 语义（逐项说明）：qty/price 确认同值；fee 单侧
-            # 不可证实 → UNRESOLVED（不确认重复）。安全断言保留：
-            # 无第二次记账 + 不触发全局 kill（审计事件而非 kill）。
-            self.assertEqual(same["class"], "IDENTITY_UNRESOLVED")
-            with self.assertRaises(Exception):
-                conn_ro = sqlite3.connect(led.path
-                                          if hasattr(led, "path") else ":memory:")
-                conn_ro.close()
+            # S1 库两侧同 EVENT + raw 完全一致 → MATCH → DUPLICATE
+            # （幂等确认重复——安全断言保留：无第二次记账）
+            self.assertEqual(same["class"], "DUPLICATE")
             self.assertEqual(
                 len(led.fills_for_order("EE-C")), 1)
             led.close()

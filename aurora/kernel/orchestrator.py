@@ -19,6 +19,7 @@ G0-4B（执行事实真源）补充铁律：
 """
 import math
 import uuid
+from decimal import Decimal
 from typing import Any, Dict, Optional
 
 from .coverage import compute_protection_status
@@ -348,12 +349,23 @@ class Orchestrator:
 
         # Fix 2：未解析 fill 标志 → 阻断新增风险（不阻减仓——
         # close_position 不查此标志）
-        unresolved = self.ledger.unresolved_fill_ids()
+        try:
+            unresolved = self.ledger.unresolved_fill_ids()
+        except Exception:
+            unresolved = ["<READ_ERROR>"]  # fail-closed
+        if unresolved == ["<READ_ERROR>"]:
+            return self._refuse(
+                "unresolved-fill flag read error; new opens blocked"
+                " (fail-closed)")
         if unresolved:
             return self._refuse(
                 f"unresolved fills present ({len(unresolved)}):"
                 f" {unresolved[:3]}; new opens blocked until resolved")
-        if self.ledger.pnl_unreliable(self.symbol):
+        try:
+            pnl_bad = self.ledger.pnl_unreliable(self.symbol)
+        except Exception:
+            pnl_bad = True  # fail-closed：读不到就当不可靠
+        if pnl_bad:
             return self._refuse(
                 "pnl unreliable for symbol; new opens blocked")
 
@@ -1667,7 +1679,34 @@ class Orchestrator:
                 "qty_raw": fill.qty_raw, "price_raw": fill.price_raw,
                 "fee_raw": fill.fee_raw, "fee_asset": fill.fee_asset,
             }
-            report = _fi.compare_mixed(legacy, event)
+            # 依据存储行 origin 选择比较模式（两侧同 EVENT → 同等级
+            # compare_as('EVENT')；legacy 行 → compare_mixed 跨等级）
+            stored_origin = existing.get("origin")
+            if stored_origin == "EVENT" and existing.get("qty_raw"):
+                # 两侧 EVENT：用 raw 做同等级比较
+                both_event = {
+                    "client_order_id": fill.client_order_id,
+                    "symbol": fill.symbol, "side": fill.side,
+                    "qty": fill.qty, "price": fill.price,
+                    "qty_raw": fill.qty_raw,
+                    "price_raw": fill.price_raw,
+                    "fee_raw": fill.fee_raw,
+                    "fee_asset": fill.fee_asset,
+                }
+                stored_event = {
+                    "client_order_id": existing["client_order_id"],
+                    "symbol": existing.get("symbol") or fill.symbol,
+                    "side": existing["side"],
+                    "qty": existing["qty"],
+                    "price": existing["price"],
+                    "qty_raw": existing.get("qty_raw"),
+                    "price_raw": existing.get("price_raw"),
+                    "fee_raw": existing.get("fee_raw"),
+                    "fee_asset": existing.get("fee_asset"),
+                }
+                report = _fi.compare_as("EVENT", stored_event, both_event)
+            else:
+                report = _fi.compare_mixed(legacy, event)
             if report["verdict"] == "MISMATCH":
                 self.ledger.engage_kill(
                     f"fill identity conflict {fill.fill_id}: fields="
@@ -1694,6 +1733,28 @@ class Orchestrator:
                         "fill_id": fill.fill_id,
                         "action": "MANUAL_RECOVERY",
                         "report": report}
+            # Fix 3: DEVIATION 自动检测——同推导上下文重算 realized_pnl
+            # 与存储值比对；不一致 → 损益 UNRELIABLE（阻新增不阻减仓）
+            _order = self.ledger.get_order(fill.client_order_id)
+            if _order is not None:
+                recomputed = self._realized_pnl(_order, fill)
+                stored = float(existing.get("realized_pnl") or 0)
+                ctx_stored = existing.get("derivation_ctx")
+                if ctx_stored is None and stored_origin == "EVENT":
+                    ctx_stored = ""  # EVENT 行缺 ctx：用空串保持同侧
+                d_check = _fi.derivation_check(
+                    ctx_stored, ctx_stored,  # 同 ctx（ venue 重放）
+                    Decimal(str(recomputed)), Decimal(str(stored)))
+                if d_check["deviation"]:
+                    self.ledger.mark_pnl_unreliable(
+                        self.symbol,
+                        f"derivation deviation on fill {fill.fill_id}:"
+                        f" recomputed={recomputed} stored={stored}")
+                    self.ledger._log_transition(Transition(
+                        "fill", fill.fill_id, "", "DERIVATION_DEVIATION",
+                        utc_now(),
+                        f"recomputed={recomputed} != stored={stored};"
+                        " pnl marked UNRELIABLE", fill.fill_id))
             return {"class": "DUPLICATE", "fill_id": fill.fill_id,
                     "report": report}
 
@@ -1720,7 +1781,12 @@ class Orchestrator:
                 float(fill.qty), float(fill.price),
                 float(fill.fee or 0), fill.side, fill.filled_at,
                 realized_pnl=realized,
-                covered_by_fact_id=fact_id, economic_effect_applied=False)
+                covered_by_fact_id=fact_id, economic_effect_applied=False,
+                venue_symbol=fill.symbol,
+                venue_qty_raw=fill.qty_raw,
+                venue_price_raw=fill.price_raw,
+                venue_fee_raw=fill.fee_raw,
+                venue_fee_asset=fill.fee_asset)
             return {"class": "COVERED_BY_FACT", "fill_id": fill.fill_id,
                     "evidence_fact_id": fact_id,
                     "order": fill.client_order_id,
@@ -1740,7 +1806,12 @@ class Orchestrator:
                 float(fill.qty), float(fill.price),
                 float(fill.fee or 0), fill.side, fill.filled_at,
                 realized_pnl=realized,
-                replaces_synthetic_fill_id=synthetic["fill_id"])
+                replaces_synthetic_fill_id=synthetic["fill_id"],
+                venue_symbol=fill.symbol,
+                venue_qty_raw=fill.qty_raw,
+                venue_price_raw=fill.price_raw,
+                venue_fee_raw=fill.fee_raw,
+                venue_fee_asset=fill.fee_asset)
             if inserted:
                 self.ledger.mark_synthetic_replaced(
                     synthetic["fill_id"], fill.fill_id)
@@ -1760,7 +1831,13 @@ class Orchestrator:
             fill.fill_id, fill.client_order_id,
             float(fill.qty), float(fill.price),
             float(fill.fee or 0), fill.side, fill.filled_at,
-            realized_pnl=realized)
+            realized_pnl=realized,
+            venue_symbol=fill.symbol,
+            venue_qty_raw=fill.qty_raw,
+            venue_price_raw=fill.price_raw,
+            venue_fee_raw=fill.fee_raw,
+            venue_fee_asset=fill.venue_fee_asset
+            if hasattr(fill, 'venue_fee_asset') else fill.fee_asset)
         if not inserted and self.ledger.fill_exists(fill.fill_id):
             return {"class": "DUPLICATE", "fill_id": fill.fill_id}
 
