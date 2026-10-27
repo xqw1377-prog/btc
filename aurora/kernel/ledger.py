@@ -987,23 +987,32 @@ class Ledger:
     _RECOMPUTE_IDENT_INDEX = "ux_fill_recompute_ident"
 
     def _ensure_recompute_schema(self) -> None:
-        """R3-3：重算表 schema 升级的原子边界。
+        """R3-3：重算表 schema 升级的原子边界（调用方事务前置条件）。
 
-        升级 = 补 symbol 列 + 唯一索引 + 版本标记（schema_upgrade_log）
-        三者同一显式事务，失败整体回滚（无半升级——DDL 在
-        SQLite 是事务性的，此前问题在于 DDL 走了自动提交）。
-        升级前预检历史同身份重复：存在即明确阻断（列明冲突组），
-        绝不自动删除/合并历史事件。索引在位 = 升级完成（快速路径）。
+        - 事务前置条件：连接存在未提交事务 → 直接拒绝（与 S1 迁移
+          口径一致）。不加入调用方事务、不替调用方 commit/rollback、
+          不改连接配置——否则升级 DDL 会挂进外层事务（失败半升级）
+          或方法自身的事务会把调用方未提交数据一并提交。
+        - 升级 = 补 symbol 列 + 唯一索引 + 版本标记（schema_upgrade_log）
+          三者同一显式事务，失败整体回滚（无半升级）。
+        - 升级前预检历史同身份重复：存在即明确阻断（列明冲突组），
+          绝不自动删除/合并历史事件。索引在位 = 升级完成（快速路径，
+          同样受事务前置条件约束）。
         """
+        if self._conn.in_transaction:
+            raise SafetyViolation(
+                "_ensure_recompute_schema must own its transaction:"
+                " caller connection has an open transaction; refusing"
+                " to join it (finish or rollback the outer transaction"
+                " first) — DDL joining a caller transaction can leave"
+                " a half-upgrade on its commit")
         have_idx = self._conn.execute(
             "SELECT 1 FROM sqlite_master WHERE type='index'"
             " AND name = ?", (self._RECOMPUTE_IDENT_INDEX,)).fetchone()
         if have_idx is not None:
             return  # 升级已完成（列+索引+标记同事务原子落成）
-        own_txn = not self._conn.in_transaction
         try:
-            if own_txn:
-                self._conn.execute("BEGIN IMMEDIATE")
+            self._conn.execute("BEGIN IMMEDIATE")
             self._conn.execute(
                 "CREATE TABLE IF NOT EXISTS fill_recomputations ("
                 " id INTEGER PRIMARY KEY AUTOINCREMENT,"
@@ -1053,10 +1062,9 @@ class Ledger:
                 "INSERT OR REPLACE INTO schema_upgrade_log"
                 " (component, upgraded_at) VALUES (?, ?)",
                 ("fill_recomputations_identity", utc_now()))
-            if own_txn:
-                self._conn.commit()
+            self._conn.commit()
         except BaseException:
-            if own_txn and self._conn.in_transaction:
+            if self._conn.in_transaction:
                 self._conn.rollback()
             raise  # 整体回滚：列/索引/版本标记同生同灭
 
@@ -1092,9 +1100,18 @@ class Ledger:
           零追加；同身份金额不同 = RecomputeIdentityConflict（原
           记录保留）。并发窗口由唯一索引兜底：捕获本索引冲突后
           重读并比较内容（一致收敛到同一 id，异容报告冲突）；
+        - 事务前置条件（R3-3 收尾）：连接存在未提交事务 → 任何
+          写入前拒绝（不接管调用方事务，不替其 commit/rollback）；
         - 记录保留完整成交引用（symbol 列）；
         - 不改历史 fill 行。
         """
+        if self._conn.in_transaction:
+            raise SafetyViolation(
+                "append_fill_recomputation must own its transaction:"
+                " caller connection has an open transaction; refusing"
+                " before any write (the method's own commit would"
+                " otherwise publish the caller's uncommitted changes;"
+                " finish or rollback the outer transaction first)")
         for _n, _v in (("old_ctx", old_ctx), ("new_ctx", new_ctx),
                        ("basis_ref", basis_ref)):
             if _v is None or not str(_v).strip():
@@ -1347,12 +1364,22 @@ class Ledger:
     # ---------- 审计 ----------
 
     def _log_transition(self, transition) -> None:
-        self._conn.execute(
-            "INSERT INTO transitions (entity_type, entity_id, from_state, to_state,"
-            " at, reason, correlation_id) VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (transition.entity_type, transition.entity_id, transition.from_state,
-             transition.to_state, transition.at, transition.reason, transition.correlation_id),
-        )
+        # R3-3 收尾：独立调用时必须自持事务（此前裸 execute 留下
+        # 未提交的隐式事务，泄漏到后续写入方——append 的事务前置
+        # 条件守卫暴露了它）；被外层 with-block 调用时加入外层事务
+        # （嵌套 with 会在中途提交外层部分写，禁止）。
+        sql = ("INSERT INTO transitions (entity_type, entity_id,"
+               " from_state, to_state, at, reason, correlation_id)"
+               " VALUES (?, ?, ?, ?, ?, ?, ?)")
+        params = (transition.entity_type, transition.entity_id,
+                  transition.from_state, transition.to_state,
+                  transition.at, transition.reason,
+                  transition.correlation_id)
+        if self._conn.in_transaction:
+            self._conn.execute(sql, params)  # 加入调用方事务
+        else:
+            with self._conn:
+                self._conn.execute(sql, params)
 
     def transitions_for(self, entity_id: str) -> List[Dict[str, Any]]:
         rows = self._conn.execute(
