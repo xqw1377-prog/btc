@@ -282,10 +282,31 @@ class B4_ResolutionAuditTrailTests(F4Base):
         for good in ("fill:BTCUSDT:W4M", "order:C1", "fact:FACT1",
                      f"recompute:{rid}", f"recomputation-event:{rid}"):
             self.assertEqual(led._validate_resolution_ref(good), good)
-        # 人工复合注记（含空格）→ 接受为处置文本
+        # R4：机器前缀 + 附加文字 → 拒绝（不得降级为人工依据；
+        # 说明必须走 detail 参数）；裸前缀同样拒绝
+        for bad in ("order:NOPE plus explanation",
+                    "order:C1 plus explanation",
+                    "fill:BTCUSDT:W4M covered by fact FACT1",
+                    "order:"):
+            with self.assertRaises(SafetyViolation):
+                led._validate_resolution_ref(bad)
+        # 无机器前缀的人工处置文本 → 接受
         self.assertEqual(
-            led._validate_resolution_ref("order:C1 fill:BTCUSDT:W4M"),
-            "order:C1 fill:BTCUSDT:W4M")
+            led._validate_resolution_ref("operator disposition 2026-10-25"),
+            "operator disposition 2026-10-25")
+
+    def test_clear_with_detail_parameter(self):
+        # R4：引用与说明分离——机器引用走 resolution_ref，
+        # 说明文字走 detail，落进 resolution_log
+        self.led.mark_fill_unresolved("F1", "missing facts ['symbol']")
+        self.led.clear_fill_unresolved(
+            "F1", resolution_ref="order:C1",
+            detail="entry order ledger row re-verified by operator")
+        recs = self.led.resolution_records(kind="unresolved_cleared")
+        self.assertEqual(len(recs), 1)
+        self.assertEqual(recs[0]["resolution_ref"], "order:C1")
+        self.assertIn("re-verified by operator", recs[0]["detail"])
+        self.assertIn("missing facts", recs[0]["detail"])  # 保留原标记原因
 
     def test_basis_ref_machine_dangling_rejected_on_append(self):
         with self.assertRaises(SafetyViolation):

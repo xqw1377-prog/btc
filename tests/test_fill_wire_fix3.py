@@ -267,15 +267,15 @@ class Fix3_4_RecomputeRecords(F3Base):
 
     def test_recomputation_records_ctx_and_basis(self):
         rid = self.led.append_fill_recomputation(
-            "F1", 0.0, 0.1, "entry avg corrected",
-            old_ctx='{"v":1,"basis":"order:O1"}',
-            new_ctx='{"v":1,"basis":"order:O1+late:LF2"}',
-            basis_ref="order:O1 fill:LF2")
+            "F1", 0.0, 0.1, "entry avg corrected by late fill LF2",
+            old_ctx='{"v":1,"basis":"order:C1"}',
+            new_ctx='{"v":1,"basis":"order:C1+late:LF2"}',
+            basis_ref="order:C1")
         recs = self.led.fill_recomputations("F1")
         self.assertEqual(len(recs), 1)
-        self.assertEqual(recs[0]["old_ctx"], '{"v":1,"basis":"order:O1"}')
+        self.assertEqual(recs[0]["old_ctx"], '{"v":1,"basis":"order:C1"}')
         self.assertIn("late:LF2", recs[0]["new_ctx"])
-        self.assertEqual(recs[0]["basis_ref"], "order:O1 fill:LF2")
+        self.assertEqual(recs[0]["basis_ref"], "order:C1")
 
     def test_clear_unresolved_requires_ref(self):
         from aurora.p0_boundary import SafetyViolation

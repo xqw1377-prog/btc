@@ -244,10 +244,10 @@ class Fix5_TD2_TD3_Tests(FBase):
         fill_before = self.led.get_fill("F1")
         rid = self.led.append_fill_recomputation(
             "F1", old_value=0.0, new_value=0.1,
-            reason="entry avg corrected by late fill",
+            reason="entry avg corrected by late fill LF2",
             old_ctx='{"v":1,"basis":"order:C1"}',
             new_ctx='{"v":1,"basis":"order:C1+late:LF2"}',
-            basis_ref="order:C1 fill:LF2")
+            basis_ref="order:C1")
         self.assertIsNotNone(rid)
         fill_after = self.led.get_fill("F1")
         self.assertEqual(fill_before, fill_after)  # 历史行不变
@@ -258,13 +258,21 @@ class Fix5_TD2_TD3_Tests(FBase):
         self.assertIn("late fill", recs[0]["reason"])
         self.assertEqual(recs[0]["old_ctx"],
                          '{"v":1,"basis":"order:C1"}')
-        self.assertEqual(recs[0]["basis_ref"], "order:C1 fill:LF2")
-        # 追加第二条（多次重算）——机器引用指向第一条（已存在）
-        self.led.append_fill_recomputation(
+        self.assertEqual(recs[0]["basis_ref"], "order:C1")
+        # 追加第二条（不同依据三元组——机器引用指向第一条）
+        rid2 = self.led.append_fill_recomputation(
             "F1", 0.1, 0.15, "second correction",
             old_ctx='{"v":1,"basis":"order:C1+late:LF2"}',
             new_ctx='{"v":2,"basis":"order:C1+late:LF2"}',
             basis_ref=f"recompute:{rid}")
+        self.assertEqual(len(self.led.fill_recomputations("F1")), 2)
+        # 相同身份重放（R3）→ 零新增（幂等，返回既有 id）
+        rid_again = self.led.append_fill_recomputation(
+            "F1", 0.1, 0.15, "identical replay must not append",
+            old_ctx='{"v":1,"basis":"order:C1+late:LF2"}',
+            new_ctx='{"v":2,"basis":"order:C1+late:LF2"}',
+            basis_ref=f"recompute:{rid}")
+        self.assertEqual(rid_again, rid2)
         self.assertEqual(len(self.led.fill_recomputations("F1")), 2)
         # 历史行仍不变
         self.assertEqual(self.led.get_fill("F1"), fill_before)

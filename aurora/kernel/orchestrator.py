@@ -1667,12 +1667,12 @@ class Orchestrator:
         #    fill_id) 定位既有行
         existing = self.ledger.get_fill(fill.fill_id, symbol=fill.symbol)
         if existing is None and fill.symbol is not None:
-            # 复合身份未命中 → 探测同 fill_id 的 NULL-symbol 历史行
-            # （迁移前的同一笔交易）：审计定位（resolve_fill_ref 的
-            # UNRESOLVED_NULL_LEGACY 语义），跨等级比较，绝不收养为
-            # 新身份（否则重放变新成交=二次记账）
-            shadow = self.ledger.get_fill(fill.fill_id)
-            if shadow is not None and shadow.get("symbol") is None:
+            # 复合身份未命中 → **显式**查询同 fill_id 的 NULL-symbol
+            # 历史行（R1：裸 ID 探测受插入顺序影响命中任意一行；
+            # NULL 行是迁移前同一笔交易的确定性审计定位）→ 跨等级
+            # 比较，绝不收养为新身份（否则重放变新成交=二次记账）
+            shadow = self.ledger.get_legacy_fill(fill.fill_id)
+            if shadow is not None:
                 existing = shadow
         if existing is not None:
             legacy = {
@@ -1811,7 +1811,10 @@ class Orchestrator:
         order = self.ledger.get_order(fill.client_order_id)
 
         # 证据一：reconciliation fact 明确覆盖该 venue trade ID
-        fact_id = self.ledger.evidence_covers_fill(fill.fill_id)
+        # （R2：覆盖证据按订单归属核验——跨订单/跨 symbol 的同
+        # trade ID 不得套用他方 fact，否则经济影响被静默豁免）
+        fact_id = self.ledger.evidence_covers_fill(
+            fill.fill_id, client_order_id=fill.client_order_id)
         if fact_id:
             realized = 0.0
             if order is not None and order.get("order_kind") != "ENTRY":

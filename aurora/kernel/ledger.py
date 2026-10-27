@@ -592,12 +592,23 @@ class Ledger:
                  exchange_executed_qty, utc_now()),
             )
 
-    def evidence_covers_fill(self, fill_id: str) -> Optional[str]:
-        """返回把该 venue fill_id 明确列为已覆盖的 reconciliation fact_id。"""
+    def evidence_covers_fill(
+        self, fill_id: str, client_order_id: Optional[str] = None,
+    ) -> Optional[str]:
+        """返回把该 venue fill_id 明确列为已覆盖的 reconciliation
+        fact_id（R2 修正：覆盖证据按订单归属核验）。
+
+        fact 必须属于同一 client_order_id——跨订单/跨 symbol 的同
+        trade ID 不得自动套用他方覆盖证据（否则另一订单的成交经济
+        影响被静默豁免）。client_order_id 未提供时按无证据处理
+        （fail-closed，不再全表裸 ID 匹配）。
+        """
         import json as _json
+        if client_order_id is None:
+            return None
         rows = self._conn.execute(
             "SELECT fact_id, covered_fill_ids FROM reconciliation_facts"
-        ).fetchall()
+            " WHERE client_order_id = ?", (client_order_id,)).fetchall()
         for row in rows:
             try:
                 if fill_id in _json.loads(row["covered_fill_ids"]):
@@ -641,7 +652,9 @@ class Ledger:
     def get_fill(self, fill_id: str,
                  symbol: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """Fix 1：完整身份读取——语义同 fill_exists（venue 路径必须
-        传 symbol；裸 fill_id 仅用于 NULL-symbol 历史行/旧 schema）。"""
+        传 symbol；裸 fill_id 仅用于 NULL-symbol 历史行/旧 schema）。
+        注意：裸读在多行同 fill_id 时命中任意一行（受插入顺序影
+        响）——需要确定性 NULL 历史行请用 get_legacy_fill。"""
         if symbol is not None and self._fills_has_symbol():
             row = self._conn.execute(
                 "SELECT * FROM fills WHERE symbol IS ? AND fill_id = ?",
@@ -651,6 +664,21 @@ class Ledger:
             "SELECT * FROM fills WHERE fill_id = ?", (fill_id,)
         ).fetchone()
         return dict(row) if row else None
+
+    def get_legacy_fill(self, fill_id: str) -> Optional[Dict[str, Any]]:
+        """显式查询同 fill_id 的 NULL-symbol 历史行（R1 修正）。
+
+        裸 ID 探测会受插入顺序影响命中任意一行；legacy-shadow 语义
+        必须确定性指向 NULL-symbol 行（resolve_fill_ref 的
+        UNRESOLVED_NULL_LEGACY 定位）。base schema（fill_id 即 PK）
+        等价于 get_fill。
+        """
+        if self._fills_has_symbol():
+            row = self._conn.execute(
+                "SELECT * FROM fills WHERE fill_id = ?"
+                " AND symbol IS NULL", (fill_id,)).fetchone()
+            return dict(row) if row else None
+        return self.get_fill(fill_id)
 
     def _fills_has_symbol(self) -> bool:
         cols = {r[1] for r in self._conn.execute(
@@ -839,12 +867,13 @@ class Ledger:
                              "recomputation-event:")
 
     def _validate_resolution_ref(self, ref: str) -> str:
-        """Fix 4：机器引用必须解析到已存在的目标（悬空=拒绝）。
+        """Fix 4 / R4：机器引用必须完整解析；说明走独立 detail。
 
-        单 token 结构化引用（fill:SYM:FID / order:CID / fact:FID /
-        recompute:ID / recomputation-event:ID）视为机器引用——逐一
-        验证目标存在；其余（含空格复合注记、操作员处置文本）视为
-        人工依据，要求非空即可。
+        首 token 命中机器前缀（fill:/order:/fact:/recompute:/
+        recomputation-event:）即声明为机器引用——整串必须严格单
+        token 并解析到已存在目标；附加文字不得使其降级为人工依据
+        （拒绝并指向 detail 参数）。无机器前缀 = 人工处置文本
+        （非空即可）。
         """
         import re as _re
         from aurora.kernel.fill_identity import validate_new_ref
@@ -853,52 +882,60 @@ class Ledger:
             raise SafetyViolation(
                 "resolution_ref must be non-empty (machine ref must"
                 " resolve or operator disposition must be stated)")
-        machine = _re.fullmatch(
-            r"(fill|order|fact|recompute|recomputation-event):[^\s]+",
-            stripped)
-        if machine is None:
-            return stripped  # 人工处置/复合注记文本
-        kind, target = stripped.split(":", 1)
-        if kind == "fill":
-            res = validate_new_ref(self._conn, target)
-            if not res["ok"]:
+        first = stripped.split(None, 1)[0]
+        if first.startswith(("fill:", "order:", "fact:", "recompute:",
+                             "recomputation-event:")):
+            # 机器引用意图已声明：整串必须严格单 token
+            strict = _re.fullmatch(
+                r"(fill|order|fact|recompute|recomputation-event):[^\s]+",
+                stripped)
+            if strict is None:
                 raise SafetyViolation(
-                    f"machine fill ref does not resolve: {stripped!r}"
-                    f" ({res['reason']})")
-            return stripped
-        if kind == "order":
-            row = self._conn.execute(
-                "SELECT 1 FROM orders WHERE client_order_id = ?",
-                (target,)).fetchone()
+                    f"machine ref carries trailing text: {stripped!r};"
+                    " the reference must fully resolve — move the"
+                    " explanation to the detail parameter")
+            kind, target = stripped.split(":", 1)
+            if kind == "fill":
+                res = validate_new_ref(self._conn, target)
+                if not res["ok"]:
+                    raise SafetyViolation(
+                        f"machine fill ref does not resolve: {stripped!r}"
+                        f" ({res['reason']})")
+                return stripped
+            if kind == "order":
+                row = self._conn.execute(
+                    "SELECT 1 FROM orders WHERE client_order_id = ?",
+                    (target,)).fetchone()
+                if row is None:
+                    raise SafetyViolation(
+                        f"machine order ref does not resolve: {stripped!r}")
+                return stripped
+            if kind == "fact":
+                row = self._conn.execute(
+                    "SELECT 1 FROM reconciliation_facts WHERE fact_id = ?",
+                    (target,)).fetchone()
+                if row is None:
+                    raise SafetyViolation(
+                        f"machine fact ref does not resolve: {stripped!r}")
+                return stripped
+            # recompute / recomputation-event
+            try:
+                rid = int(target)
+            except ValueError:
+                raise SafetyViolation(
+                    f"machine recomputation ref malformed: {stripped!r}")
+            try:
+                row = self._conn.execute(
+                    "SELECT 1 FROM fill_recomputations WHERE id = ?",
+                    (rid,)).fetchone()
+            except sqlite3.OperationalError:
+                row = None
             if row is None:
                 raise SafetyViolation(
-                    f"machine order ref does not resolve: {stripped!r}")
+                    f"machine recomputation ref does not resolve:"
+                    f" {stripped!r}")
             return stripped
-        if kind == "fact":
-            row = self._conn.execute(
-                "SELECT 1 FROM reconciliation_facts WHERE fact_id = ?",
-                (target,)).fetchone()
-            if row is None:
-                raise SafetyViolation(
-                    f"machine fact ref does not resolve: {stripped!r}")
-            return stripped
-        # recompute / recomputation-event
-        try:
-            rid = int(target)
-        except ValueError:
-            raise SafetyViolation(
-                f"machine recomputation ref malformed: {stripped!r}")
-        try:
-            row = self._conn.execute(
-                "SELECT 1 FROM fill_recomputations WHERE id = ?",
-                (rid,)).fetchone()
-        except sqlite3.OperationalError:
-            row = None
-        if row is None:
-            raise SafetyViolation(
-                f"machine recomputation ref does not resolve:"
-                f" {stripped!r}")
-        return stripped
+        return stripped  # 人工处置文本（无机器前缀）
 
     def append_resolution_record(self, kind: str, entity_id: str,
                                  resolution_ref: str,
@@ -946,13 +983,16 @@ class Ledger:
         new_ctx: Optional[str] = None, basis_ref: Optional[str] = None,
         symbol: Optional[str] = None,
     ) -> int:
-        """显式重算事件（append-only，Fix 4 强化）。
+        """显式重算事件（append-only，Fix 4 / R3 强化）。
 
-        - fill_id 必须已存在于 fills 表（成交存在性约束；
-          提供符号时按复合身份验证）；
+        - fill_id 必须已存在于 fills 表（提供符号时按复合身份验证）；
         - 新重算记录必须提供冻结依据三元组 old_ctx/new_ctx/basis_ref
           （缺一拒绝——重算无依据=不可审计）；
         - basis_ref 是机器引用时必须解析到已存在目标；
+        - R3：稳定重算事件身份 = 完整成交身份 (symbol, fill_id) +
+          old_ctx/new_ctx/basis_ref，数据库唯一约束 + 前置查重——
+          相同依据变化的重放零新增（幂等），真正的新依据才追加；
+        - 记录保留完整成交引用（symbol 列），避免跨 symbol 混淆；
         - 不改历史 fill 行。
         """
         for _n, _v in (("old_ctx", old_ctx), ("new_ctx", new_ctx),
@@ -984,15 +1024,42 @@ class Ledger:
                 " new_value REAL NOT NULL,"
                 " old_ctx TEXT, new_ctx TEXT,"
                 " basis_ref TEXT,"
+                " symbol TEXT,"
                 " reason TEXT NOT NULL,"
                 " recomputed_at TEXT NOT NULL)")
+            # 既有表补 symbol 列（完整成交引用）
+            _rc = {r[1] for r in self._conn.execute(
+                "PRAGMA table_info(fill_recomputations)")}
+            if "symbol" not in _rc:
+                self._conn.execute(
+                    "ALTER TABLE fill_recomputations"
+                    " ADD COLUMN symbol TEXT")
+            # 稳定身份唯一约束（NULL 以空串归一）
+            self._conn.execute(
+                "CREATE UNIQUE INDEX IF NOT EXISTS"
+                " ux_fill_recompute_ident ON fill_recomputations ("
+                " COALESCE(symbol, ''), fill_id,"
+                " COALESCE(old_ctx, ''), COALESCE(new_ctx, ''),"
+                " COALESCE(basis_ref, ''))")
+            # 幂等：相同重算身份零新增（返回既有事件 id）
+            dup = self._conn.execute(
+                "SELECT id FROM fill_recomputations WHERE"
+                " COALESCE(symbol, '') = COALESCE(?, '')"
+                " AND fill_id = ?"
+                " AND COALESCE(old_ctx, '') = COALESCE(?, '')"
+                " AND COALESCE(new_ctx, '') = COALESCE(?, '')"
+                " AND COALESCE(basis_ref, '') = COALESCE(?, '')",
+                (symbol, fill_id, old_ctx, new_ctx,
+                 basis_ref)).fetchone()
+            if dup is not None:
+                return dup["id"]
             cur = self._conn.execute(
                 "INSERT INTO fill_recomputations"
                 " (fill_id, old_value, new_value, old_ctx, new_ctx,"
-                "  basis_ref, reason, recomputed_at)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "  basis_ref, symbol, reason, recomputed_at)"
+                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (fill_id, old_value, new_value, old_ctx, new_ctx,
-                 basis_ref, reason, utc_now()))
+                 basis_ref, symbol, reason, utc_now()))
             return cur.lastrowid
 
     def fill_recomputations(self, fill_id: str) -> list:
@@ -1020,9 +1087,11 @@ class Ledger:
                 " VALUES (?, 1, ?, ?)", (symbol, reason, utc_now()))
 
     def clear_pnl_unreliable(self, symbol: str,
-                             resolution_ref: Optional[str] = None) -> None:
-        """解除 UNRELIABLE（Fix 4）：依据验证 → 先落解决记录 → 再删
-        标志（同一事务）。机器引用必须解析到已存在目标。"""
+                             resolution_ref: Optional[str] = None,
+                             detail: str = "") -> None:
+        """解除 UNRELIABLE（Fix 4 / R4）：依据验证 → 先落解决记录 →
+        再删标志（同一事务）。机器引用必须完整解析（附加文字拒绝）；
+        说明放 detail，不与引用混写。"""
         self._validate_resolution_ref(resolution_ref or "")
         with self._conn:
             try:
@@ -1044,8 +1113,14 @@ class Ledger:
                 " (kind, entity_id, resolution_ref, detail, resolved_at)"
                 " VALUES ('pnl_unreliable_cleared', ?, ?, ?, ?)",
                 (symbol, resolution_ref,
-                 f"prior mark reason: {marked['reason']}"
-                 if marked else "no prior mark", utc_now()))
+                 (f"prior mark reason: {marked['reason']}; {detail}"
+                  if marked else detail), utc_now()))
+            try:
+                self._conn.execute(
+                    "DELETE FROM pnl_reliability WHERE symbol = ?",
+                    (symbol,))
+            except sqlite3.OperationalError:
+                pass  # 表未创建=无标志可删；解决记录仍保留
             try:
                 self._conn.execute(
                     "DELETE FROM pnl_reliability WHERE symbol = ?",
@@ -1082,9 +1157,11 @@ class Ledger:
                 (fill_id, reason, utc_now()))
 
     def clear_fill_unresolved(self, fill_id: str,
-                              resolution_ref: Optional[str] = None) -> None:
-        """解除 unresolved（Fix 4）：依据验证 → 先落解决记录 → 再删
-        标志（同一事务）。机器引用必须解析到已存在目标。"""
+                              resolution_ref: Optional[str] = None,
+                              detail: str = "") -> None:
+        """解除 unresolved（Fix 4 / R4）：依据验证 → 先落解决记录 →
+        再删标志（同一事务）。机器引用必须完整解析（附加文字拒绝）；
+        说明放 detail，不与引用混写。"""
         self._validate_resolution_ref(resolution_ref or "")
         with self._conn:
             try:
@@ -1106,8 +1183,8 @@ class Ledger:
                 " (kind, entity_id, resolution_ref, detail, resolved_at)"
                 " VALUES ('unresolved_cleared', ?, ?, ?, ?)",
                 (fill_id, resolution_ref,
-                 f"prior mark reason: {marked['reason']}"
-                 if marked else "no prior mark", utc_now()))
+                 (f"prior mark reason: {marked['reason']}; {detail}"
+                  if marked else detail), utc_now()))
             try:
                 self._conn.execute(
                     "DELETE FROM unresolved_fills WHERE fill_id = ?",
