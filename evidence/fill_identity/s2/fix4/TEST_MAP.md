@@ -8,8 +8,8 @@
 | 文件 | 内容 |
 |---|---|
 | `red_run.txt` | ca031f1 源码（detached worktree）+ 新测试 `tests/test_fill_wire_fix4.py` → 13 用例 12 red（1 例 `test_venue_replay_of_legacy_row_not_adopted_as_new` 在旧代码碰巧因 bare get_fill 命中而通过——其针对的回归在旧代码中不存在，属防御锚定） |
-| `green_run.txt` | 9289ae0 本仓全套 885 通过 |
-| `clone_run.txt` | 9289ae0 新克隆全套 885 通过（1 skip=G0-4D 环境门控探针，历轮一致） |
+| `green_run.txt` | 9289ae0 本仓全套：Ran 885，885 通过（0 skip） |
+| `clone_run.txt` | 9289ae0 新克隆全套：Ran 885，**884 通过 + 1 skip**。skip 溯源：`tests/test_fill_migration_s1.py::T_M3_IncidentCopyDrill ... skipped 'incident ledger absent'`（S1 事故库副本演练，环境缺事故账本；先前登记为"G0-4D 探针"系计数归属错误，本轮更正——G0-4D 探针输出 BLOCKED 状态行，不计入 unittest skip 口径） |
 
 ## 阻断 → 用例映射
 

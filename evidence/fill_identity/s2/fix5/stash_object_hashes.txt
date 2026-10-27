@@ -1,0 +1,25 @@
+== quarantine stash 对象哈希（本轮复核时点） ==
+记录时点: 2026-10-27T14:56:53Z @ ed1fbf0
+
+-- git stash list --
+stash@{0}: On safety/p0a-mainnet-isolation: quarantine2: parallel session post-ab5433e E1/E2 continuation
+stash@{1}: On safety/p0a-mainnet-isolation: quarantine: parallel E1/E2 session output (violates E0 freeze; restore via git stash pop)
+
+-- 对象哈希（stash commit / tree，stash 对象不可变，哈希即内容证明）--
+stash@{0} commit: b3e301fe99fb760a9a216924eaf6b8ff276dd543
+stash@{0} tree:   894908008a6ffaedac48ee6578aab745656b4798
+stash@{1} commit: 3fad75ab43c44759d8917b802e50c29bedae6141
+stash@{1} tree:   894908008a6ffaedac48ee6578aab745656b4798
+
+-- 误操作事件与现状说明 --
+2026-10-25 FIX4 证据制作时的一次误操作：git stash pop 在未创建
+新 stash 的情况下弹出了既有的 quarantine2（stash@{0}）。该 pop 因
+untracked 文件冲突**失败**（"error: could not restore untracked
+files ... The stash entry is kept"），stash 引用未被删除、stash
+对象未被改写（stash 对象不可变；pop 仅在成功后才 drop 引用）。
+工作树随后 git reset --hard 恢复到当时 HEAD（9289ae0），两个
+quarantine stash 完整保留。远端可通过上述哈希与本机对照证明
+stash 内容自误操作前后未变（误操作前哈希未单独留存，此为事后
+首次固化记录；此后每轮证据包更新本文件哈希对照）。
+红测试证据自 FIX5 起一律使用 detached git worktree，不再使用
+stash/pop/reset。

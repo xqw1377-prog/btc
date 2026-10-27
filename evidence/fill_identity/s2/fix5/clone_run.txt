@@ -1,0 +1,6 @@
+Ran 898 tests in 12.884s
+OK (skipped=1)
+
+== skip 溯源 ==
+test_incident_replica_migration_preserves_everything (tests.test_fill_migration_s1.T_M3_IncidentCopyDrill) ... skipped 'incident ledger absent'
+OK (skipped=1)
