@@ -1184,6 +1184,129 @@ class Ledger:
         except sqlite3.OperationalError:
             return []
 
+    # ---------- S3：费用补充与投影（离线隔离；不接默认初始化） ----------
+
+    _FEE_PROJECTION_TABLES = (
+        """CREATE TABLE IF NOT EXISTS fill_fee_supplements (
+        stable_event_id TEXT PRIMARY KEY,
+        fill_ref        TEXT NOT NULL,
+        fee_raw_s       TEXT,
+        fee_asset_s     TEXT,
+        observed_at     TEXT NOT NULL,
+        recorded_at     TEXT NOT NULL,
+        CHECK (fee_raw_s IS NULL
+               OR (fee_asset_s IS NOT NULL AND fee_asset_s != ''))
+        )""",
+        """CREATE TABLE IF NOT EXISTS fill_fee_projection (
+        fill_ref            TEXT PRIMARY KEY,
+        status              TEXT NOT NULL DEFAULT 'PENDING'
+                            CHECK (status IN
+                                   ('PENDING','KNOWN','CONFLICTED')),
+        projection_version  INTEGER NOT NULL DEFAULT 0,
+        effective_raw       TEXT,
+        effective_asset     TEXT,
+        applied_effect_key  TEXT UNIQUE,
+        updated_at          TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS fee_effect_ledger (
+        effect_key  TEXT PRIMARY KEY,
+        kind        TEXT NOT NULL CHECK (kind IN ('APPLY','REVERSE')),
+        amount_raw  TEXT NOT NULL,
+        asset       TEXT NOT NULL,
+        fill_ref    TEXT NOT NULL,
+        written_at  TEXT NOT NULL
+        )""",
+        """CREATE TABLE IF NOT EXISTS fee_corrections (
+        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+        fill_ref            TEXT NOT NULL,
+        old_effective_raw   TEXT,
+        old_effective_asset TEXT,
+        new_effective_raw   TEXT NOT NULL,
+        new_effective_asset TEXT NOT NULL,
+        mode                TEXT NOT NULL
+                            CHECK (mode IN
+                                   ('FIRST','DELTA','DOUBLE_LEG')),
+        delta_raw           TEXT,
+        credential_ref      TEXT NOT NULL,
+        note                TEXT NOT NULL DEFAULT '',
+        corrected_at        TEXT NOT NULL
+        )""",
+    )
+
+    def ensure_fee_projection_schema(self) -> None:
+        """S3 表 DDL（开工令：仅离线隔离，不接 Ledger.__init__）。
+
+        FIX7 同款事务纪律：调用方未提交事务 → 拒绝；DDL 单一显式
+        事务原子落成（逐条 execute——executescript 会隐式提交，
+        禁止）。fill_fee_projection 在位 = 完成（快速路径）。
+        """
+        if self._conn.in_transaction:
+            raise SafetyViolation(
+                "ensure_fee_projection_schema must own its"
+                " transaction: caller connection has an open"
+                " transaction; refusing before any write")
+        have = self._conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table'"
+            " AND name='fill_fee_projection'").fetchone()
+        if have is not None:
+            return
+        try:
+            self._conn.execute("BEGIN IMMEDIATE")
+            for ddl in self._FEE_PROJECTION_TABLES:
+                self._conn.execute(ddl)
+            self._conn.commit()
+        except BaseException:
+            if self._conn.in_transaction:
+                self._conn.rollback()
+            raise
+
+    def fee_projection_row(self, fill_ref: str) -> Optional[Dict[str, Any]]:
+        try:
+            row = self._conn.execute(
+                "SELECT * FROM fill_fee_projection WHERE fill_ref = ?",
+                (fill_ref,)).fetchone()
+            return dict(row) if row else None
+        except sqlite3.OperationalError:
+            return None  # 表未创建=未使用
+
+    def fee_supplements(self, fill_ref: str) -> List[Dict[str, Any]]:
+        try:
+            rows = self._conn.execute(
+                "SELECT stable_event_id, fill_ref, fee_raw_s,"
+                " fee_asset_s, observed_at FROM fill_fee_supplements"
+                " WHERE fill_ref = ? ORDER BY recorded_at,"
+                " stable_event_id", (fill_ref,)).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.OperationalError:
+            return []
+
+    def fee_effect_rows(
+        self, fill_ref: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        try:
+            if fill_ref is None:
+                rows = self._conn.execute(
+                    "SELECT * FROM fee_effect_ledger"
+                    " ORDER BY written_at, effect_key").fetchall()
+            else:
+                rows = self._conn.execute(
+                    "SELECT * FROM fee_effect_ledger"
+                    " WHERE fill_ref = ?"
+                    " ORDER BY written_at, effect_key",
+                    (fill_ref,)).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.OperationalError:
+            return []
+
+    def fee_correction_records(self, fill_ref: str) -> List[Dict[str, Any]]:
+        try:
+            rows = self._conn.execute(
+                "SELECT * FROM fee_corrections WHERE fill_ref = ?"
+                " ORDER BY id", (fill_ref,)).fetchall()
+            return [dict(r) for r in rows]
+        except sqlite3.OperationalError:
+            return []
+
     def mark_pnl_unreliable(self, symbol: str, reason: str) -> None:
         """损益不可依赖标志：阻新增风险（open 已查 unresolved +
         此标志）；不阻减仓。"""

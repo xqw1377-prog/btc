@@ -29,7 +29,7 @@ import sqlite3
 import sys
 import tempfile
 import unittest
-from decimal import Decimal
+from decimal import Decimal, localcontext
 from unittest import mock
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -53,7 +53,7 @@ class S3Base(unittest.TestCase):
         led.record_order_submitting(
             client_order_id="C1", intent_id="I1", order_kind="ENTRY",
             side="BUY", position_side="LONG", quantity=0.25)
-        led.insert_fill("F1", "C1", 0.25, 100.5, 0.0, "BUY", "t1")
+        led.insert_fill("F1", "C1", 0.25, 100.5, 0.5, "BUY", "t1")
         led.close()
         fm.migrate_fills_identity(self.path)
         self.led = Ledger(self.path)
@@ -114,8 +114,19 @@ class T_F4_NumericEquality(S3Base):
     def test_numeric_equality_representation_independent(self):
         self.assertIs(fp.fee_values_equal("-0.400", "-0.4"), True)
         self.assertIs(fp.fee_values_equal("0.4", "0.40"), True)
-        near = str(Decimal("0.4") + Decimal("1e-300"))
+        # 默认 prec=28 的加法会把 1e-300 抹掉，夹具必须在足够精度下构造原始串。
+        with localcontext() as ctx:
+            ctx.prec = 400
+            near = format(Decimal("0.4") + Decimal("1e-300"), "f")
+        self.assertNotEqual(near, "0.4")
         self.assertIs(fp.fee_values_equal("0.40", near), False)
+        over = "0." + "1" * (fp.PREC_CAP + 1)
+        other = "0." + "2" * (fp.PREC_CAP + 1)
+        with self.assertRaises(fp.ComparisonRefused):
+            fp.fee_values_equal(over, other)
+        with self.assertRaises(fp.ComparisonRefused):
+            fp.fee_values_equal(over, over)
+        self.assertIs(fp.fee_values_equal(None, "0.4"), None)
         self.assertIs(fp.fee_values_equal(None, "0.4"), None)
         self.assertIs(fp.fee_values_equal("0.4", None), None)
         self.assertIs(fp.fee_values_equal(None, None), None)
@@ -130,8 +141,12 @@ class T_F4R_LegacyFloatExcluded(S3Base):
             "SELECT fee, fee_raw FROM fills WHERE fill_id='F1'").fetchone()
         self.assertGreater(float(row["fee"]), 0)  # 展示值存在
         self.assertIsNone(row["fee_raw"])          # 基线 UNKNOWN
-        # 任何已知补充（哪怕与 float 展示值不同）→ KNOWN(S1) v1，
-        # 绝不因 float 伪差判 FEE_CONFLICT
+        # 迁移后的历史行 symbol 为空，限定引用无法消解。
+        # 只补归属，不填 fee_raw，float 展示值仍不参与比较。
+        self.led._conn.execute(
+            "UPDATE fills SET symbol='BTCUSDT'"
+            " WHERE fill_id='F1' AND fee_raw IS NULL")
+        self.led._conn.commit()
         ref = "BTCUSDT:F1"
         out = fp.record_fee_supplement(
             self.led, stable_event_id="STR", fill_ref=ref,
@@ -257,6 +272,7 @@ class T_FP5_EffectKeyIdempotency(S3Base):
                 " SELECT effect_key, kind, amount_raw, asset, fill_ref,"
                 " 't2' FROM fee_effect_ledger WHERE effect_key=?",
                 (key_v1,))
+        self.led._conn.rollback()
         # 修正到 v2 后，旧版本键不可复活（再次写入 v1 键仍被拒）
         fp.apply_fee_correction(
             self.led, fill_ref=self.fill_ref, new_fee_raw="0.8",
@@ -301,10 +317,22 @@ class T_FP6_ThreeStepAtomic(S3Base):
             if "fill_fee_projection" in sql:
                 calls["n"] += 1
             return real(sql, *a, **k)
-        with mock.patch.object(self.led._conn, "execute",
-                               side_effect=flaky):
+        class _ConnProxy:
+            def __init__(self, inner):
+                self._inner = inner
+
+            def execute(self, sql, *a, **k):
+                return flaky(sql, *a, **k)
+
+            def __getattr__(self, name):
+                return getattr(self._inner, name)
+
+        self.led._conn = _ConnProxy(self.led._conn)
+        try:
             with self.assertRaises(sqlite3.OperationalError):
                 self._supp(stable_event_id="ST1", fee_raw_s="0.5")
+        finally:
+            self.led._conn = real.__self__
         self.assertEqual(self.led.fee_supplements(self.fill_ref), [])
 
     def test_caller_open_transaction_refused_before_write(self):
@@ -331,6 +359,13 @@ class T_FP7_ConsistentSupplementZeroImpact(S3Base):
 
     def test_consistent_supplement_zero_impact(self):
         self._venue_fill(fee_raw="0.5", fee_asset="USDT")
+        booking = self.led._conn.execute(
+            "SELECT fee, fee_raw, economic_effect_applied FROM fills"
+            " WHERE symbol='BTCUSDT' AND fill_id='EF1'").fetchone()
+        self.assertEqual(booking["fee_raw"], "0.5")
+        self.assertEqual(int(booking["economic_effect_applied"]), 1)
+        self.assertGreater(float(booking["fee"]), 0)
+        fees_before = self.led.accounting_aggregate()["total_fees"]
         out = self._supp(stable_event_id="ST1", fee_raw_s="0.5000")
         self.assertEqual(out["verdict"], "KNOWN")
         self.assertEqual(out["rule"], "①")
@@ -338,7 +373,20 @@ class T_FP7_ConsistentSupplementZeroImpact(S3Base):
         self.assertEqual(eff["status"], "KNOWN")
         self.assertEqual(eff["effective_raw"], "0.5")  # 基线原值
         self.assertEqual(eff["projection_version"], 0)
+        self.assertEqual(self._effects(), [])  # 补充不另扣一笔
+        booking_after = self.led._conn.execute(
+            "SELECT fee, fee_raw, economic_effect_applied FROM fills"
+            " WHERE symbol='BTCUSDT' AND fill_id='EF1'").fetchone()
+        self.assertEqual(booking_after["fee"], booking["fee"])
+        self.assertEqual(booking_after["fee_raw"], "0.5")
+        self.assertEqual(int(booking_after["economic_effect_applied"]), 1)
+        self.assertEqual(
+            self.led.accounting_aggregate()["total_fees"], fees_before)
+        again = self._supp(stable_event_id="ST2", fee_raw_s="0.5")
+        self.assertEqual(again["rule"], "①")
         self.assertEqual(self._effects(), [])
+        self.assertEqual(
+            self.led.accounting_aggregate()["total_fees"], fees_before)
 
 
 class T_FP8_ConflictedIsolatedNoAutoDelta(S3Base):
@@ -466,6 +514,13 @@ class T_F6b_InputBoundsRefusal(S3Base):
         huge = "0." + "1" * 20000
         with self.assertRaises(fp.PrecisionRefused):
             fp.precise_sub(huge, "0.1")
+        self.assertEqual(fp._attempt_precs(28), [28, 56])
+        self.assertEqual(fp._attempt_precs(6000), [6000, fp.PREC_CAP])
+        self.assertEqual(fp._attempt_precs(fp.PREC_CAP), [fp.PREC_CAP])
+        self.assertTrue(all(p <= fp.PREC_CAP
+                            for p in fp._attempt_precs(6000)))
+        with self.assertRaises(fp.PrecisionRefused):
+            fp._attempt_precs(fp.PREC_CAP + 1)
         # 正常范围仍无损
         self.assertEqual(fp.precise_sub("1.5", "0.5"), "1.0")
 
