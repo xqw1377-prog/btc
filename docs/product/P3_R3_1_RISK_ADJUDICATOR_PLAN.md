@@ -2,7 +2,7 @@
 
 Status: `DOCUMENT CANDIDATE / IMPLEMENTATION NOT AUTHORIZED`  
 Date: `2026-10-28`  
-修订: `R31-P1～P5 与 R31-16～21 已写入；待评审，不是开工令`
+修订: `R31-D1～D3 已窄修；仍是文档候选，不是开工令`
 
 ```text
 本文件 = 实施方案 + 旧链隔离方案 + 验收清单
@@ -62,7 +62,7 @@ aurora/risk_adjudicator.py :: adjudicate_runtime()
         ↓
 调用已有 evaluate_risk()（不重写第二套风险数学）
         ↓
-追加只读计划日志（与成交账、下单账分离）
+仅本地追加的计划日志，无交易写入（与成交账、下单账分离）
         ↓
 RiskRuntimeRecord
         submit_allowed = false
@@ -153,10 +153,16 @@ RiskRuntimeRecord {
   submit_allowed                   false
   order_intent                     ABSENT
   execution_eligibility            DENIED
-  persisted                        bool
-  idempotent                       bool
+}
+
+CallReceipt {
+  record_present                   所引用的完整裁决记录是否已存在
+  wrote_now                        本次调用是否新写入了该记录
+  idempotent                       本次是否命中已有记录且未改其字节
 }
 ```
+
+`RiskRuntimeRecord` 是落盘后不再修改的裁决记录。`CallReceipt` 不写入该记录。两者的分工见 §11.3。
 
 语义：
 
@@ -182,9 +188,9 @@ allowed_new_risk <= requested_new_risk
 
 覆盖：现货再配置增量、BTC overlay、ETH overlay、cluster、事件增量、总暴露、损失预算。
 
-若检查失败：不写计划，`persisted=false`，`new_risk_allowed=false`，`risk_state` 不是 `PASS`，理由为 `RISK_MONOTONICITY_VIOLATION`。禁止改请求值来迁就一个更大的允许值。
+若检查失败：不写计划。回执 `wrote_now=false`、`record_present=false`，`new_risk_allowed=false`，`risk_state` 不是 `PASS`，理由为 `RISK_MONOTONICITY_VIOLATION`。禁止改请求值来迁就一个更大的允许值。
 
-同身份重放必须与已存结果逐字节一致。另一次输入的允许值不必小于这一次。见 §11.3。
+同身份重放的裁决记录必须与已存字节一致。是否重放只出现在回执。另一次输入的允许值不必小于这一次。见 §11.3。
 
 ---
 
@@ -227,7 +233,7 @@ kernel/binance_exchange.py
 ```text
 risk_contract_harness.evaluate_risk
 decision candidate 的纯数据结构
-本地只读计划日志
+仅本地追加的计划日志，无交易写入
 ```
 
 禁止 import：
@@ -275,18 +281,18 @@ socket / HTTP 发送       调用次数 = 0
 
 ## 7. 持久化与重启
 
-计划日志是独立的 append-only SQLite，路径由测试注入到临时目录。不写入 `state/kernel_ledger.db`，不迁移真实账本。
+计划日志是仅本地追加的计划日志，无交易写入。实现为独立 SQLite，路径由测试注入到临时目录。不写入 `state/kernel_ledger.db`，不迁移真实账本。
 
-记录键以 §11.1 为准：四份输入的规范化内容哈希，加上 `evaluation_at` 与所适用的 SLA 规则标识。版本号和调用方自报的 `policy_hash` 都不是身份本身。
+身份分两层，规则在 §11.1：版本声明身份绑定内容哈希；评估内容身份才是 `risk_plan_key`。二者不能互相代替。
 
 重启恢复规则：
 
 1. 进程退出后重新打开同一日志。
-2. 相同内容身份再次调用：`idempotent=true`，结果与已存行逐字节一致。不覆盖。
-3. 版本号相同但内容不同，或政策哈希与政策正文不一致：`INPUT_IDENTITY_CONFLICT`。旧行不改，不得当成幂等命中。
-4. 内容身份不同的新评估单独裁决，只受该次请求和政策约束。不要求它的允许值低于另一条输入。
+2. 相同评估内容身份再次调用：裁决记录逐字节不变。回执 `idempotent=true`、`wrote_now=false`。不覆盖。
+3. 同一来源、对象与版本声明下内容不同，或政策哈希与政策正文不一致：`INPUT_IDENTITY_CONFLICT`。旧绑定不改，不得当成新裁决或幂等命中。
+4. 合法新版本，或版本声明的内容绑定仍成立时的新 `evaluation_at`：独立裁决。不要求允许值低于另一条输入。
 5. 旧行不可 `UPDATE`。失效是追加事件，或在读取时派生。
-6. 写入中途失败：事务回滚。没有新行，或只有完整行。返回 `persisted=false`、`new_risk_allowed=false`，且 `risk_state` 不是 `PASS`。
+6. 写入中途失败：事务回滚。没有新行，或只有完整行。回执 `wrote_now=false`；这次尝试的 `record_present=false`，`new_risk_allowed=false`，且 `risk_state` 不是 `PASS`。
 
 ---
 
@@ -297,28 +303,28 @@ socket / HTTP 发送       调用次数 = 0
 | ID | 场景 | 必须结果 |
 |---|---|---|
 | R31-1 | 进程内调用 `adjudicate_runtime` | 返回记录；`submit_allowed=false`；无订单字段 |
-| R31-2 | 同一输入调用两次 | 同一 `risk_plan_key`；允许值不变 |
+| R31-2 | 同一输入调用两次 | 两次裁决记录逐字节相同；回执分别标出首次 `wrote_now` 与重放 `idempotent` |
 | R31-3 | 请求 10，政策只够 6 | `risk_state=REDUCED`；允许值 ≤ 6 |
 | R31-4 | 构造一个允许值大于请求值的假输出 | 运行时拒绝持久化 |
 | R31-5 | `btc_nav=null` | `BLOCK_NEW_RISK`；不用 0 |
 | R31-6 | 账户或报价 `STALE` / `unknown` | 拒绝新增风险 |
 | R31-7 | 持仓未知，同时候选含防守动作 | 意图保留；数量 `UNAVAILABLE` |
-| R31-8 | 保护状态只有 `PROPOSED` | 不允许新增 overlay 风险 |
+| R31-8 | 空仓且拟新增保护未满足；已有未保护仓位；纯防守 | 三者分开。前两者 `new_risk_allowed=false`；空仓只让现有仓位保护为 `NOT_APPLICABLE`。纯防守保留意图，执行资格仍是 `DENIED` |
 | R31-9 | 候选含 ETH overlay 与事件增量 | 两者 `execution_eligibility=DENIED`；计划文本可以保留请求对照 |
 | R31-10 | kill 活跃 | 新增风险拒绝；防守意图可保留；写探针仍为 0 |
-| R31-11 | 重启后重放 | 幂等；允许值不升 |
+| R31-11 | 重启后跨进程重放 | 裁决字节与首次完全相同；回执 `idempotent=true`、`wrote_now=false` |
 | R31-12 | 写入中途注入异常 | 无半截计划；重试后结果与成功路径一致 |
 | R31-13 | 运行期间探针 | 交易所写、旧 `RiskGate`、旧 `PortfolioBrainV2` 调用均为 0 |
 | R31-14 | 静态 import 扫描 | 裁决器与旧写路径互不引用 |
 | R31-15 | E2/E1 文件哈希 | 与开工时记录的哈希一致 |
-| R31-16 | 同版本异内容；伪造政策哈希 | `INPUT_IDENTITY_CONFLICT`；旧记录不变 |
+| R31-16 | 正常哈希下同版本异内容；另给合法新版本；伪造政策哈希 | 同声明异内容冲突且旧绑定不改；合法新版本独立成功。不能只伪造哈希碰撞 |
 | R31-17 | SLA 边界、未来时间戳、跨快照错时；改墙钟后重放同一历史输入 | 历史结果不随墙钟变；超界拒绝新增风险 |
-| R31-18 | 夹具注入 `KNOWN`；首次无仓位；已有仓位但保护未确认 | `KNOWN` 不升格为权威。两种仓位情形分开，`NOT_APPLICABLE` 不能绕过保护 |
+| R31-18 | 夹具注入 `KNOWN`；空仓＋拟新增保护未满足；已有未保护仓位；纯防守 | `KNOWN` 不升格为权威。三种情况分开断言，空仓不免掉拟新增仓位的保护 |
 | R31-19 | 失效之后再写一条不同内容的新评估 | 旧行字节不变；新裁决不要求允许值更小 |
-| R31-20 | NaN、Infinity、非法范围、合法零、多条阻断同时成立、日志不可写 | 零不是未知；状态按 §11.5 唯一；不可写时 `persisted=false` 且不是 `PASS` |
-| R31-21 | 两个独立进程重放；两个独立连接并发同一键 | 内容一致则恰一条且结果一致；内容冲突可见，旧行不改 |
+| R31-20 | NaN、Infinity、非法范围、合法零、多条阻断同时成立、日志不可写 | 零不是未知；状态按 §11.5 唯一；不可写时回执 `wrote_now=false`、`record_present=false`，且不是 `PASS` |
+| R31-21 | 两个独立进程重放；两个独立连接并发同一版本声明 | 一致内容恰一条，裁决字节相同，回执区分首次与重放。并发的异内容绑定不被覆盖 |
 
-R31-1 至 R31-15 保留。R31-11 的「允许值不升」由 R31-19 收紧为同身份逐字节一致，并不要求不同输入之间下降。
+R31-1 至 R31-15 的编号保留。R31-2 与 R31-11 的比较对象是裁决记录，不是带 `idempotent` 的回执。R31-19 仍不要求不同输入之间允许值下降。
 
 R31-15 用开工提交里记下的 `strategy_v2.py` 与 `risk_semantics.py` 哈希。验收失败条件包括这两个文件被改动。
 
@@ -376,6 +382,8 @@ EXECUTION ELIGIBILITY    = DENIED
 - `null`、`true`、`false` 保持原样。缺键与 `null` 都不是 `0`。
 - 数组保持调用方给出的顺序。
 
+两套身份分开。内容哈希自己生成新键，不能代替版本声明上的冲突检查。
+
 ```text
 content_hash = hash(
   canonical(decision),
@@ -383,19 +391,21 @@ content_hash = hash(
   canonical(market),
   canonical(policy_body)
 )
-risk_plan_key = hash(content_hash, evaluation_at, sla_rule_id)
+declaration_key = hash(source, object, version_claim)   # 四份输入各一条
+risk_plan_key   = hash(四份 content_hash, evaluation_at, sla_rule_id)
 ```
 
-`policy_body` 不含调用方自带的 `policy_hash`。运行时用同一规范化算法重算政策哈希。与自报哈希不一致，就是 `INPUT_IDENTITY_CONFLICT`，不是静默改写哈希。
+`policy_body` 不含调用方自带的 `policy_hash`。运行时重算政策哈希。与自报值不一致，就是 `INPUT_IDENTITY_CONFLICT`。
 
-日志保存四份规范化输入和结果全文。
+每个 `declaration_key` 第一次出现时，绑定当时的 `content_hash`。同一来源、同一对象、同一版本声明再次出现而内容哈希不同：拒绝。不新增裁决，不覆盖旧绑定。合法的新版本是版本声明本身变了，并与其内容首次绑定，于是另有一条裁决。
 
-相同 `risk_plan_key`、内容与已存行一致：幂等，返回已存结果，逐字节一致。
-相同键位置但内容不同：`INPUT_IDENTITY_CONFLICT`。不 `UPDATE`，不把这次调用当成幂等命中。
+只更换 `evaluation_at`、且该版本声明的内容绑定仍然成立：这是另一次评估，独立裁决。同一版本声明下内容已经不同，不能靠改 `evaluation_at` 变成新裁决。
+
+日志保存四份规范化输入、声明绑定和裁决记录全文。评估内容身份相同的重放，比较的是裁决记录字节；回执见 §11.3。
 
 ### 11.2 R31-P2 评估时点与来源
 
-`evaluation_at` 由调用方显式传入，进入 §11.1 的身份。历史重放使用记录里的 `evaluation_at`，不读墙钟。现在重新评估必须传入新的 `evaluation_at`，因而成为另一次身份；旧的 `PASS` 不是当前资格。
+`evaluation_at` 由调用方显式传入，进入评估内容身份。历史重放使用记录里的 `evaluation_at`，不读墙钟。现在重新评估必须传入新的 `evaluation_at`。只有对应版本声明的内容绑定未被打破时，这才是另一次裁决；旧的 `PASS` 不是当前资格。同声明异内容仍按 §11.1 拒绝。
 
 时间比较只相对于这次 `evaluation_at`：
 
@@ -414,9 +424,19 @@ risk_plan_key = hash(content_hash, evaluation_at, sla_rule_id)
 
 失效用追加的失效事件表达；读取方也可以用内容身份和 `evaluation_at` 派生某条旧记录已不是当前评估。两种做法都不改旧行。
 
-同身份重放的输出必须与已存结果逐字节一致，包括允许值。
+落盘的是裁决记录，不是调用回执。记录里没有 `idempotent`、`wrote_now`、`record_present`。同评估内容身份重放时，记录字节保持不变，包括允许值。
 
-内容身份不同的新版本，按它自己的请求和政策重新裁决。它的允许值可以高于另一次输入的允许值。同一次裁决内部仍须 `allowed_new_risk <= requested_new_risk`。
+回执每次调用单独产生，不写回记录：
+
+- `record_present`：所引用的完整裁决记录是否已经存在。
+- `wrote_now`：本次调用是否新写入了该记录。首次成功为 true，重放为 false。
+- `idempotent`：本次命中已有记录且没有改它的字节。重放为 true，首次成功为 false。
+
+因此首次与重放可以逐字节相同，同时回执仍能区分两次调用。`record_present` 不表示「这次新写成功」；`wrote_now` 不表示「旧记录还在不在」。
+
+冲突时旧记录保持 `record_present=true`，本次 `wrote_now=false`。写失败时这次尝试没有记录：`record_present=false`，`wrote_now=false`。两种回执都不是一条新的有效 `PASS`。
+
+合法新版本或新的评估时点，在 §11.1 允许独立裁决时，按它自己的请求和政策裁决。它的允许值可以高于另一次输入的允许值。同一次裁决内部仍须 `allowed_new_risk <= requested_new_risk`。
 
 ### 11.4 R31-P4 保护不循环
 
@@ -425,25 +445,27 @@ risk_plan_key = hash(content_hash, evaluation_at, sla_rule_id)
 - 现有仓位的保护状态。
 - 拟新增仓位所要求的保护。
 
-没有可验证的现有仓位时，不得为了让首次计划存在而假装保护已经 `ACTIVE_CONFIRMED`。只读阶段可以写出「保护条件未满足」的条件性计划：请求对照仍在，`new_risk_allowed=false`，`execution_eligibility=DENIED`。
+没有可验证的现有仓位时，不得为了让首次计划存在而假装现有保护已经 `ACTIVE_CONFIRMED`。现有仓位不存在，只使现有仓位保护为 `NOT_APPLICABLE`，不能免除拟新增仓位的保护要求。
 
-`NOT_APPLICABLE` 只在仓位可被验证为不存在时成立。持仓未知、或仓位存在但保护不是 `ACTIVE_CONFIRMED`，都不能标 `NOT_APPLICABLE`，也不能因此跳过保护。已有未保护仓位拒绝新增风险，防守意图仍可保留，数量仍遵守未知则 `UNAVAILABLE`。
+拟新增仓位的保护未满足时，包括首次开仓，可以形成条件性计划：请求对照仍在，`new_risk_allowed=false`，`execution_eligibility=DENIED`。不得标成允许新增风险，也不得因此进入 `PASS`。
+
+持仓未知、或仓位存在但保护不是 `ACTIVE_CONFIRMED`，都不能把现有仓位保护标成 `NOT_APPLICABLE`。已有未保护仓位拒绝新增风险。纯防守没有拟新增仓位，不借用这条保护要求取消防守意图；执行资格仍然是 `DENIED`。防守数量在持仓未知时仍是 `UNAVAILABLE`。
 
 ### 11.5 R31-P5 状态、数值、写失败
 
 一条输入只取表中最先命中的状态。其余命中的原因全部列入 `blockers`，但不改这一个状态。
 
-| 顺序 | 条件 | `risk_state` | `new_risk_allowed` | `persisted` |
+| 顺序 | 条件 | `risk_state` | `new_risk_allowed` | 本次 `wrote_now` |
 |---|---|---|---|---|
-| 1 | 内容冲突，或计划日志写不进去 | `BLOCK_NEW_RISK` | false | false |
+| 1 | 版本声明冲突，或计划日志写不进去 | `BLOCK_NEW_RISK` | false | false。冲突不覆盖旧绑定 |
 | 2 | NaN、Infinity、单位不符、符号不符、超出声明范围 | `BLOCK_NEW_RISK` | false | false |
 | 3 | 政策不完整，或 `parameter_status` 不是 `PROVISIONAL_E3_PARAM` | `BLOCK_NEW_RISK` | false | false |
 | 4 | 单调性检查失败 | `BLOCK_NEW_RISK` | false | false |
 | 5 | kill 或 incident 活跃 | `BLOCK_NEW_RISK`；若同时有防守意图，则为 `DEFENSIVE_ONLY` | false | 仅当整行写完 |
 | 6 | 账户、行情、净值未知，或 §11.2 的时间规则失败 | `BLOCK_NEW_RISK` | false | 仅当整行写完 |
 | 7 | 持仓未知 | `BLOCK_NEW_RISK`；防守数量为 `UNAVAILABLE` | false | 仅当整行写完 |
-| 8 | 拟新增仓位的保护未满足，且并非可验证的无仓位 | `BLOCK_NEW_RISK`，计划标明 `PROTECTION_UNMET` | false | 仅当整行写完 |
-| 9 | 其余，由 `evaluate_risk` 给出 | `PASS` 或 `REDUCED` | 按合同 | 仅当整行写完 |
+| 8 | 请求含新增风险，且拟新增仓位的保护未满足。可验证无现有仓位不能跳过本行 | `BLOCK_NEW_RISK`，计划标明 `PROTECTION_UNMET` | false | 仅当整行写完 |
+| 9 | 其余，由 `evaluate_risk` 给出。纯防守不在本行变成 `PASS` | `PASS` 或 `REDUCED`；纯防守为 `DEFENSIVE_ONLY` | 仅 `PASS` / `REDUCED` 按合同；纯防守为 false | 仅当整行写完 |
 
 出现在字段里的合法 `0` 是已知零，不是未知，也不是缺失。未知只来自 `null`、空串或然缺键。
 
