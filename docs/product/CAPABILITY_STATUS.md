@@ -78,7 +78,7 @@ EXECUTION BOUNDARY            FROZEN      6b2cc7c
 EXECUTE_AUTHORIZED            FALSE
 EXECUTION AUTHORIZATION       NOT ISSUED
 REAL WRITE PATH               DENIED
-NEXT STAGE                    P3-R3.1 RISK ADJUDICATOR（HOLD · READ-ONLY · 不接旧 RiskGate）
+NEXT STAGE                    P3-R3.1 RISK ADJUDICATOR（PLAN CHANGES-REQUIRED · 实现未授权 · 不接旧 RiskGate）
 P2-PRE DECISION HARNESS       CLOSED · PASS（T1–T10 · 见 P2_PRE_DECISION_BRAIN_HARNESS.md）
 AURORA PRODUCT NORTH STAR V2  APPROVED
   P0  NORTH STAR DOC          docs/product/AURORA_NORTH_STAR.md
@@ -115,7 +115,7 @@ AURORA PRODUCT NORTH STAR V2  APPROVED
   P3 READ-ONLY DECISION LOOP  COMPLETE（≠ P3 COMPLETE · RiskGate 仍 HOLD）
   P3-R3.0 RISK CONTRACT       CONTRACT-PASS（R3-1–R3-16 · 见 P3_R3_RISK_CONTRACT_HARNESS.md）
   RISK SEMANTICS              FROZEN（RISK MONOTONICITY · 只减不增）
-  P3-R3.1 RISK ADJUDICATOR    HOLD
+  P3-R3.1 RISK ADJUDICATOR    PLAN CHANGES-REQUIRED / IMPLEMENTATION NOT AUTHORIZED
   P3-R3.2 RISK OBSERVATORY     HOLD
   P3-R3 RISKGATE ADAPTER      HOLD（旧 risk_gate 非 authority）
   P3-R4 EXECUTION ADAPTER     FORBIDDEN / HOLD
@@ -204,9 +204,19 @@ FILL IDENTITY S1        = CLOSED / OFFLINE PASS（独立复验 f235d0d：
   不据此授权真实账本迁移）
   实现链：f201973 红 → d709a63 绿 → a003dd7 fix1 → 7591c3f
   fix2（探针）→ f235d0d fix3（事务纪律）
-FILL IDENTITY S3        = HOLD（费用补充与投影；仍需单独开工令，
-  不因 S2 关闭连续放行；真实账本迁移 NOT AUTHORIZED、funding
-  接线 HOLD、部署/交易权限 UNCHANGED、LIVE=NO-GO）
+FILL IDENTITY S3        = CLOSED / OFFLINE PASS（独立复验 802e0b6、
+  证据入口 f262946。专项 29 passed；全套 941 passed / 1 skipped
+  （S1 incident ledger absent），另有 74 subtests passed。
+  工作树 CLEAN、git diff 检查 PASS。S3-01..S3-05 五项阻断关闭：
+  UNKNOWN 补充不重记已知基线全额；无投影行的修正按已记基线做差额；
+  显式解决后旧证据重放保持当前版本、新冲突仍识别；读取故障上抛且
+  补充写入整体回滚；精度公式超过 10000 直接拒绝。
+  独立复验使用 detached worktree。开发方全新克隆日志
+  evidence/fill_identity/s3/fix1 分开登记，不并入独立复验。
+  事故副本演练仍为 DEVELOPER-VERIFIED / 未独立验证。
+  费用投影消费方接线 HOLD、funding 接线 HOLD、
+  真实账本迁移 NOT AUTHORIZED、LIVE=NO-GO、
+  TRADING AUTHORITY UNCHANGED。本关闭不连续放行接线、迁移或交易。）
 FILL IDENTITY IMPL PLAN = ACCEPTED WITH EXECUTION CONDITIONS（三段拆分：迁移与
   历史兼容 15 测 / 统一身份校验 21 测 / 费用补充与投影 14 测；
   52 项全覆盖零残留；三条实施说明已确定化——raw 仅 EVENT、
