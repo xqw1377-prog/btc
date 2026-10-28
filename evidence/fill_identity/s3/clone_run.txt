@@ -1,0 +1,45 @@
+commit: 502ac70239f4d79c38ff635d8dbd636445eced90
+clone: git clone /Users/xinquanwang/AURORA /tmp/aurora-s3-502ac70
+clone status: clean (no untracked R3.1 plan)
+note: this is a git clone of that commit, not /tmp/aurora-s3-clean
+
+== env ==
+Darwin xinquandeMacBook-Air.local 25.3.0 Darwin Kernel Version 25.3.0: Wed Jan 28 20:49:24 PST 2026; root:xnu-12377.81.4~5/RELEASE_ARM64_T8132 arm64
+Python 3.9.6
+/Library/Developer/CommandLineTools/usr/bin/python3
+3.9.6 (default, Mar  6 2026, 16:22:43) 
+[Clang 21.0.0 (clang-2100.0.123.102)]
+== commands ==
+python3 -m unittest tests.test_fill_fee_projection_s3
+PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 python3 -m pytest tests/ -q --tb=no -ra
+== unittest ==
+......................
+----------------------------------------------------------------------
+Ran 22 tests in 0.166s
+
+OK
+UNITTEST_EXIT:0
+== pytest ==
+........................................................................ [  7%]
+........................................................................ [ 15%]
+........................................................................ [ 23%]
+........................................................................ [ 30%]
+........................................................................ [ 38%]
+........................................................................ [ 46%]
+s....................................................................... [ 53%]
+........................................................................ [ 61%]
+........................................................................ [ 69%]
+........................................................................ [ 77%]
+........................................................................ [ 84%]
+........................................................................ [ 92%]
+.......................................................................  [100%]
+=============================== warnings summary ===============================
+../../../Users/xinquanwang/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35
+  /Users/xinquanwang/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_fill_migration_s1.py:93: incident ledger absent
+934 passed, 1 skipped, 1 warning in 13.96s
+PYTEST_EXIT:0
