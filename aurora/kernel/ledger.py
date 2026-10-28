@@ -1217,21 +1217,40 @@ class Ledger:
         written_at  TEXT NOT NULL
         )""",
         """CREATE TABLE IF NOT EXISTS fee_corrections (
-        id                  INTEGER PRIMARY KEY AUTOINCREMENT,
-        fill_ref            TEXT NOT NULL,
-        old_effective_raw   TEXT,
-        old_effective_asset TEXT,
-        new_effective_raw   TEXT NOT NULL,
-        new_effective_asset TEXT NOT NULL,
-        mode                TEXT NOT NULL
-                            CHECK (mode IN
-                                   ('FIRST','DELTA','DOUBLE_LEG')),
-        delta_raw           TEXT,
-        credential_ref      TEXT NOT NULL,
-        note                TEXT NOT NULL DEFAULT '',
-        corrected_at        TEXT NOT NULL
+        id                      INTEGER PRIMARY KEY AUTOINCREMENT,
+        fill_ref                TEXT NOT NULL,
+        old_effective_raw       TEXT,
+        old_effective_asset     TEXT,
+        new_effective_raw       TEXT NOT NULL,
+        new_effective_asset     TEXT NOT NULL,
+        mode                    TEXT NOT NULL
+                                CHECK (mode IN
+                                       ('FIRST','DELTA','DOUBLE_LEG')),
+        delta_raw               TEXT,
+        credential_ref          TEXT NOT NULL,
+        note                    TEXT NOT NULL DEFAULT '',
+        corrected_at            TEXT NOT NULL,
+        resolved_through_rowid  INTEGER
         )""",
     )
+
+    @staticmethod
+    def _s3_table_absent(exc: sqlite3.OperationalError, table: str) -> bool:
+        """只有「表尚未启用」可以当成空。锁库等真实故障必须上抛。"""
+        msg = str(exc).lower()
+        return "no such table" in msg and table.lower() in msg
+
+    def _s3_read(self, sql: str, params, table: str, many: bool):
+        try:
+            cur = self._conn.execute(sql, params)
+        except sqlite3.OperationalError as exc:
+            if self._s3_table_absent(exc, table):
+                return [] if many else None
+            raise
+        if many:
+            return [dict(r) for r in cur.fetchall()]
+        row = cur.fetchone()
+        return dict(row) if row else None
 
     def ensure_fee_projection_schema(self) -> None:
         """S3 表 DDL（开工令：仅离线隔离，不接 Ledger.__init__）。
@@ -1261,51 +1280,36 @@ class Ledger:
             raise
 
     def fee_projection_row(self, fill_ref: str) -> Optional[Dict[str, Any]]:
-        try:
-            row = self._conn.execute(
-                "SELECT * FROM fill_fee_projection WHERE fill_ref = ?",
-                (fill_ref,)).fetchone()
-            return dict(row) if row else None
-        except sqlite3.OperationalError:
-            return None  # 表未创建=未使用
+        return self._s3_read(
+            "SELECT * FROM fill_fee_projection WHERE fill_ref = ?",
+            (fill_ref,), "fill_fee_projection", many=False)
 
     def fee_supplements(self, fill_ref: str) -> List[Dict[str, Any]]:
-        try:
-            rows = self._conn.execute(
-                "SELECT stable_event_id, fill_ref, fee_raw_s,"
-                " fee_asset_s, observed_at FROM fill_fee_supplements"
-                " WHERE fill_ref = ? ORDER BY recorded_at,"
-                " stable_event_id", (fill_ref,)).fetchall()
-            return [dict(r) for r in rows]
-        except sqlite3.OperationalError:
-            return []
+        return self._s3_read(
+            "SELECT rowid AS supplement_rowid, stable_event_id,"
+            " fill_ref, fee_raw_s, fee_asset_s, observed_at,"
+            " recorded_at FROM fill_fee_supplements"
+            " WHERE fill_ref = ? ORDER BY rowid",
+            (fill_ref,), "fill_fee_supplements", many=True)
 
     def fee_effect_rows(
         self, fill_ref: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        try:
-            if fill_ref is None:
-                rows = self._conn.execute(
-                    "SELECT * FROM fee_effect_ledger"
-                    " ORDER BY written_at, effect_key").fetchall()
-            else:
-                rows = self._conn.execute(
-                    "SELECT * FROM fee_effect_ledger"
-                    " WHERE fill_ref = ?"
-                    " ORDER BY written_at, effect_key",
-                    (fill_ref,)).fetchall()
-            return [dict(r) for r in rows]
-        except sqlite3.OperationalError:
-            return []
+        if fill_ref is None:
+            return self._s3_read(
+                "SELECT * FROM fee_effect_ledger"
+                " ORDER BY written_at, effect_key",
+                (), "fee_effect_ledger", many=True)
+        return self._s3_read(
+            "SELECT * FROM fee_effect_ledger WHERE fill_ref = ?"
+            " ORDER BY written_at, effect_key",
+            (fill_ref,), "fee_effect_ledger", many=True)
 
     def fee_correction_records(self, fill_ref: str) -> List[Dict[str, Any]]:
-        try:
-            rows = self._conn.execute(
-                "SELECT * FROM fee_corrections WHERE fill_ref = ?"
-                " ORDER BY id", (fill_ref,)).fetchall()
-            return [dict(r) for r in rows]
-        except sqlite3.OperationalError:
-            return []
+        return self._s3_read(
+            "SELECT * FROM fee_corrections WHERE fill_ref = ?"
+            " ORDER BY id",
+            (fill_ref,), "fee_corrections", many=True)
 
     def mark_pnl_unreliable(self, symbol: str, reason: str) -> None:
         """损益不可依赖标志：阻新增风险（open 已查 unresolved +

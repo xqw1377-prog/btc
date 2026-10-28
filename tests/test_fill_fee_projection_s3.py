@@ -536,6 +536,171 @@ class T_F6b_InputBoundsRefusal(S3Base):
         self.assertEqual(len(self._effects()), 1)  # 未新增
         self.assertEqual(self._proj()["projection_version"], 1)
 
+    def test_formula_over_cap_refused_without_truncation(self):
+        # 操作数 9997 位未超 10000，公式 max+4 = 10001，必须拒绝
+        operand = "1" * 9997
+        self.assertLessEqual(
+            len(Decimal(operand).as_tuple().digits), fp.PREC_CAP)
+        with self.assertRaises(fp.PrecisionRefused) as caught:
+            fp.precise_sub(operand, "0")
+        self.assertIn("10001", str(caught.exception))
+
+
+class S3_01_UnknownSupplementDoesNotRebook(S3Base):
+    """S3-01：UNKNOWN 补充不能触发已知基线的再次全额记账。"""
+
+    def test_unknown_supplement_does_not_rebook_known_baseline(self):
+        self._venue_fill(fee_raw="0.5", fee_asset="USDT")
+        self.assertIsNone(self.led.fee_projection_row(self.fill_ref))
+        out = self._supp(stable_event_id="STU", fee_raw_s=None,
+                         fee_asset_s=None)
+        self.assertNotEqual(out["rule"], "②")
+        self.assertEqual(out["effect_keys"], [])
+        self.assertEqual(self._effects(), [])
+        eff = self._proj()
+        self.assertEqual(eff["status"], "KNOWN")
+        self.assertEqual(eff["effective_raw"], "0.5")
+        self.assertEqual(eff["effective_asset"], "USDT")
+        self.assertEqual(eff["projection_version"], 0)
+
+
+class S3_02_CorrectionSeesBookedBaseline(S3Base):
+    """S3-02：无投影行仍须识别已记账基线。"""
+
+    def test_same_asset_correction_is_delta_not_full_apply(self):
+        self._venue_fill(fee_raw="0.5", fee_asset="USDT")
+        self.assertIsNone(self.led.fee_projection_row(self.fill_ref))
+        corr = fp.apply_fee_correction(
+            self.led, fill_ref=self.fill_ref, new_fee_raw="0.7",
+            new_fee_asset="USDT", credential_ref="order:C1")
+        self.assertEqual(corr["mode"], "DELTA")
+        self.assertEqual(corr["delta_raw"], "0.2")
+        effects = self._effects()
+        self.assertEqual(len(effects), 1)
+        self.assertEqual(effects[0]["amount_raw"], "0.2")
+        self.assertNotEqual(effects[0]["amount_raw"], "0.7")
+
+    def test_cross_asset_correction_reverses_booked_baseline(self):
+        self._venue_fill(fee_raw="0.5", fee_asset="USDT")
+        corr = fp.apply_fee_correction(
+            self.led, fill_ref=self.fill_ref, new_fee_raw="0.01",
+            new_fee_asset="BNB", credential_ref="order:C1")
+        self.assertEqual(corr["mode"], "DOUBLE_LEG")
+        self.assertIsNone(corr["delta_raw"])
+        effects = self._effects()
+        self.assertEqual(len(effects), 2)
+        rev = [e for e in effects if e["kind"] == "REVERSE"]
+        app = [e for e in effects if e["kind"] == "APPLY"]
+        self.assertEqual(len(rev), 1)
+        self.assertEqual(rev[0]["amount_raw"], "0.5")
+        self.assertEqual(rev[0]["asset"], "USDT")
+        self.assertEqual(len(app), 1)
+        self.assertEqual(app[0]["amount_raw"], "0.01")
+        self.assertEqual(app[0]["asset"], "BNB")
+
+
+class S3_03_ResolutionStaysInForce(S3Base):
+    """S3-03：显式解决之后，旧证据重放不能推翻；新冲突仍暴露。"""
+
+    def test_resolved_projection_survives_replay_and_matching_supplement(self):
+        self._venue_fill()
+        self._supp(stable_event_id="ST1", fee_raw_s="0.5")
+        self._supp(stable_event_id="ST2", fee_raw_s="0.8")
+        self.assertEqual(self._proj()["status"], "CONFLICTED")
+        fp.apply_fee_correction(
+            self.led, fill_ref=self.fill_ref, new_fee_raw="0.7",
+            new_fee_asset="USDT", credential_ref="order:C1")
+        self.assertEqual(self._proj()["status"], "KNOWN")
+        self.assertEqual(self._proj()["projection_version"], 2)
+        self.assertEqual(self._proj()["effective_raw"], "0.7")
+        replay = self._supp(stable_event_id="ST1", fee_raw_s="0.5")
+        self.assertTrue(replay["replayed"])
+        self.assertEqual(replay["verdict"], "KNOWN")
+        self.assertEqual(replay["version"], 2)
+        self.assertEqual(self._proj()["status"], "KNOWN")
+        matched = self._supp(stable_event_id="ST3", fee_raw_s="0.7")
+        self.assertEqual(matched["rule"], "①")
+        self.assertEqual(self._proj()["status"], "KNOWN")
+        self.assertEqual(self._proj()["projection_version"], 2)
+        self.assertEqual(self._proj()["effective_raw"], "0.7")
+        fresh = self._supp(stable_event_id="ST4", fee_raw_s="0.9")
+        self.assertEqual(fresh["verdict"], "FEE_CONFLICT")
+        self.assertEqual(self._proj()["status"], "CONFLICTED")
+        self.assertEqual(self._proj()["effective_raw"], "0.7")
+        self.assertEqual(self._proj()["projection_version"], 2)
+
+
+class S3_04_ReadFailureIsNotEmpty(S3Base):
+    """S3-04：真实读取故障上抛并回滚；缺表才是空。"""
+
+    def test_locked_supplement_read_rolls_back_whole_write(self):
+        self._venue_fill()
+        self._supp(stable_event_id="ST1", fee_raw_s="0.5")
+        real = self.led._conn.execute
+
+        def flaky(sql, *a, **k):
+            if "supplement_rowid" in sql:
+                raise sqlite3.OperationalError("database is locked")
+            return real(sql, *a, **k)
+
+        class _ConnProxy:
+            def execute(self, sql, *a, **k):
+                return flaky(sql, *a, **k)
+
+            def __getattr__(self, name):
+                return getattr(real.__self__, name)
+
+        self.led._conn = _ConnProxy()
+        try:
+            with self.assertRaises(sqlite3.OperationalError):
+                self._supp(stable_event_id="ST2", fee_raw_s="0.8")
+        finally:
+            self.led._conn = real.__self__
+        kept = self.led.fee_supplements(self.fill_ref)
+        self.assertEqual([s["fee_raw_s"] for s in kept], ["0.5"])
+        self.assertEqual(self._proj()["status"], "KNOWN")
+        self.assertEqual(self._proj()["effective_raw"], "0.5")
+
+    def test_absent_table_is_empty_locked_read_is_raised(self):
+        self.led.ensure_fee_projection_schema()
+        real = self.led._conn.execute
+
+        def locked(sql, *a, **k):
+            raise sqlite3.OperationalError("database is locked")
+
+        class _ConnProxy:
+            def execute(self, sql, *a, **k):
+                return locked(sql, *a, **k)
+
+            def __getattr__(self, name):
+                return getattr(real.__self__, name)
+
+        self.led._conn = _ConnProxy()
+        try:
+            for call in (
+                lambda: self.led.fee_supplements(self.fill_ref),
+                lambda: self.led.fee_projection_row(self.fill_ref),
+                lambda: self.led.fee_effect_rows(self.fill_ref),
+                lambda: self.led.fee_correction_records(self.fill_ref),
+            ):
+                with self.assertRaises(sqlite3.OperationalError):
+                    call()
+        finally:
+            self.led._conn = real.__self__
+        c = self.led._conn
+        for table, call, empty in (
+            ("fill_fee_supplements",
+             lambda: self.led.fee_supplements(self.fill_ref), []),
+            ("fill_fee_projection",
+             lambda: self.led.fee_projection_row(self.fill_ref), None),
+            ("fee_effect_ledger",
+             lambda: self.led.fee_effect_rows(self.fill_ref), []),
+            ("fee_corrections",
+             lambda: self.led.fee_correction_records(self.fill_ref), []),
+        ):
+            c.execute(f"DROP TABLE {table}")
+            self.assertEqual(call(), empty)
+
 
 if __name__ == "__main__":
     unittest.main()

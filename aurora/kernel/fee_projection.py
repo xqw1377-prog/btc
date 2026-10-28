@@ -156,7 +156,9 @@ def _needed_prec(vals: List[Decimal]) -> int:
             - min(v.as_tuple().exponent for v in vals) + 1)
     needed = max(digits, span, PREC_FLOOR) + PREC_EXTRA
     if needed > PREC_CAP:
-        return PREC_CAP
+        raise PrecisionRefused(
+            f"precision formula {needed} exceeds cap {PREC_CAP};"
+            f" refusing instead of truncating the requirement")
     return needed
 
 
@@ -292,30 +294,43 @@ def _effect_key(fill_ref: str, version: int, asset: str) -> str:
     return f"{fill_ref}:FEE:v{version}:{asset}"
 
 
-def _require_known_baseline_booking(conn, fill_ref: str,
-                                    baseline_raw: str) -> None:
-    """一致补充的零增量不能代替已知基线的首次记账。
+def _booked_baseline(conn, fill_ref: str):
+    """成交行上已经生效的费用。无 fee_raw → None（确实没记过）。
 
-    成交行必须仍是 economic_effect_applied=1，且 fee_raw 与基线
-    数值相等。本函数不写效果、不改成交行：既有记账留在 fills，
-    补充路径不得再插一条同额 APPLY。
+    fee_raw 在、但经济效果未应用 → 拒绝。无投影行不等于未记账。
+    本函数不写效果、不改成交行。
     """
     sym, tid = fill_ref.split(":", 1)
     row = conn.execute(
-        "SELECT fee_raw, economic_effect_applied FROM fills"
-        " WHERE symbol = ? AND fill_id = ?", (sym, tid)).fetchone()
-    intact = (
-        row is not None
-        and row["fee_raw"] not in (None, "")
-        and int(row["economic_effect_applied"]) == 1
-        and fee_values_equal(row["fee_raw"], baseline_raw) is True
-    )
-    if not intact:
+        "SELECT fee_raw, fee_asset, economic_effect_applied"
+        " FROM fills WHERE symbol = ? AND fill_id = ?",
+        (sym, tid)).fetchone()
+    if row is None or row["fee_raw"] in (None, ""):
+        return None
+    if int(row["economic_effect_applied"]) != 1 or not row["fee_asset"]:
         raise SafetyViolation(
-            "known baseline economic booking is absent or does"
-            " not match the projected baseline; a consistent"
-            " supplement has zero incremental effect and cannot"
-            " exempt or replace the first booking")
+            "known baseline fee_raw is present but its economic"
+            " booking is not applied; refusing to treat the fee"
+            " as never booked and refusing to book it again")
+    return row["fee_raw"], str(row["fee_asset"])
+
+
+def _latest_resolution(conn, fill_ref: str):
+    row = conn.execute(
+        "SELECT new_effective_raw, new_effective_asset,"
+        " resolved_through_rowid FROM fee_corrections"
+        " WHERE fill_ref = ? ORDER BY id DESC LIMIT 1",
+        (fill_ref,)).fetchone()
+    return row
+
+
+def _supplements_in_scope(supplements, resolution):
+    """显式解决事件之前的补充已结案，不再参与推翻裁决。"""
+    if resolution is None:
+        return supplements
+    bound = resolution["resolved_through_rowid"] or 0
+    return [s for s in supplements
+            if int(s["supplement_rowid"]) > int(bound)]
 
 
 def _write_effect(conn, key: str, kind: str, amount_raw: str,
@@ -379,13 +394,24 @@ def record_fee_supplement(
                     f" {dup['fee_asset_s']}) incoming="
                     f"({fill_ref}, {fee_raw_s}, {fee_asset_s})")
             conn.rollback()
-            cur_state = evaluate_fee_state(
-                *_baseline_of(ledger, fill_ref),
-                ledger.fee_supplements(fill_ref))
-            return {"verdict": cur_state["verdict"], "rule": "replay",
-                    "replayed": True, "version": 0,
+            proj = ledger.fee_projection_row(fill_ref)
+            if proj is None:
+                cur_state = evaluate_fee_state(
+                    *_baseline_of(ledger, fill_ref),
+                    ledger.fee_supplements(fill_ref))
+                verdict = cur_state["verdict"]
+                version = 0
+                effective = cur_state["effective_raw"]
+            else:
+                verdict = ("FEE_CONFLICT"
+                           if proj["status"] == "CONFLICTED"
+                           else proj["status"])
+                version = proj["projection_version"]
+                effective = proj["effective_raw"]
+            return {"verdict": verdict, "rule": "replay",
+                    "replayed": True, "version": version,
                     "effect_keys": [],
-                    "effective_raw": cur_state["effective_raw"]}
+                    "effective_raw": effective}
         # (a) 补充事实
         conn.execute(
             "INSERT INTO fill_fee_supplements (stable_event_id,"
@@ -393,12 +419,25 @@ def record_fee_supplement(
             " recorded_at) VALUES (?, ?, ?, ?, ?, ?)",
             (stable_event_id, fill_ref, fee_raw_s, fee_asset_s,
              now, utc_now()))
-        # 求值（基线 + 全部补充）
-        baseline_raw, baseline_asset = _baseline_of(ledger, fill_ref)
-        state = evaluate_fee_state(
-            baseline_raw, baseline_asset,
-            ledger.fee_supplements(fill_ref))
+        # 求值。已知基线的初始化不取决于本条补充是否已知。
+        # 显式解决事件之后，只把新补充拿来对照解决后的有效值。
+        fill_raw, fill_asset = _baseline_of(ledger, fill_ref)
+        booked = _booked_baseline(conn, fill_ref)
+        resolution = _latest_resolution(conn, fill_ref)
+        supplements = _supplements_in_scope(
+            ledger.fee_supplements(fill_ref), resolution)
+        if resolution is not None:
+            judge_raw = resolution["new_effective_raw"]
+            judge_asset = resolution["new_effective_asset"]
+        else:
+            judge_raw, judge_asset = fill_raw, fill_asset
+        state = evaluate_fee_state(judge_raw, judge_asset, supplements)
         proj = ledger.fee_projection_row(fill_ref)
+        if booked is not None and proj is None and resolution is None:
+            _upsert_projection(
+                conn, fill_ref, "KNOWN", 0,
+                booked[0], booked[1], None, utc_now())
+            proj = ledger.fee_projection_row(fill_ref)
         if state["verdict"] == "FEE_CONFLICT":
             # ③ 冲突只隔离告警：保留既有有效值，零差额
             eff_raw = (proj["effective_raw"] if proj
@@ -421,52 +460,53 @@ def record_fee_supplement(
             return {"verdict": "INCOMPLETE", "rule": "—",
                     "replayed": False, "version": 0,
                     "effect_keys": [], "effective_raw": None}
-        # KNOWN：
-        consistent_with_known = (
-            fee_raw_s not in (None, "")
-            and fee_values_equal(fee_raw_s, state["effective_raw"]) is True
-            and str(fee_asset_s) == str(state["effective_asset"])
-        )
-        if proj is None and baseline_raw not in (None, "") \
-                and consistent_with_known:
-            # ① 与基线 V0 一致：补充增量为零。基线首次记账仍在成交行，
-            # 这里不另写 APPLY，也不改 fee / economic_effect_applied。
-            _require_known_baseline_booking(
-                conn, fill_ref, baseline_raw)
-            _upsert_projection(
-                conn, fill_ref, "KNOWN", 0,
-                state["effective_raw"], state["effective_asset"],
-                None, utc_now())
+        # 已知基线或已解决的有效值：本条补充无论已知与否，都不写全额。
+        if booked is not None or resolution is not None:
+            version = proj["projection_version"] if proj else 0
+            effective = (proj["effective_raw"] if proj
+                         else state["effective_raw"])
+            if fee_raw_s not in (None, "") and fee_values_equal(
+                    fee_raw_s, effective) is True and proj is not None \
+                    and proj["status"] == "KNOWN" \
+                    and str(fee_asset_s) == str(proj["effective_asset"]):
+                conn.commit()
+                return {"verdict": "KNOWN", "rule": "①",
+                        "replayed": False, "version": version,
+                        "effect_keys": [], "effective_raw": effective}
             conn.commit()
-            return {"verdict": "KNOWN", "rule": "①", "replayed": False,
-                    "version": 0, "effect_keys": [],
-                    "effective_raw": state["effective_raw"]}
+            kept = proj["status"] if proj else "KNOWN"
+            return {"verdict": "FEE_CONFLICT" if kept == "CONFLICTED"
+                    else "KNOWN",
+                    "rule": "V0", "replayed": False,
+                    "version": version, "effect_keys": [],
+                    "effective_raw": effective}
+        # KNOWN：
         if proj is not None and proj["status"] == "KNOWN" \
                 and fee_values_equal(
                     proj["effective_raw"], state["effective_raw"]) \
                 is True \
                 and str(proj["effective_asset"]) == \
                 str(state["effective_asset"]):
-            # ① 与已投影有效值一致 → 补充增量为零。已知基线的
-            # 既有记账必须仍在，且不新增效果。
-            if baseline_raw not in (None, ""):
-                _require_known_baseline_booking(
-                    conn, fill_ref, baseline_raw)
+            # ① 与已投影有效值一致 → 补充增量为零
             conn.commit()
             return {"verdict": "KNOWN", "rule": "①", "replayed": False,
                     "version": proj["projection_version"],
                     "effect_keys": [], "effective_raw":
                         proj["effective_raw"]}
         if proj is not None and proj["status"] == "KNOWN":
-            # 已知有效值 + 不一致已知补充 → 判定表已判冲突；此处
-            # 仅在求值未捕获的组合上防御（不产生任何差额）
+            # 已知有效值 + 求值未另判冲突：不产生差额，也不改状态
             conn.commit()
             return {"verdict": "KNOWN", "rule": "①",
                     "replayed": False,
                     "version": proj["projection_version"],
                     "effect_keys": [],
                     "effective_raw": proj["effective_raw"]}
-        # ② UNKNOWN 首次查明 → v1 全额恰一次
+        if fee_raw_s in (None, ""):
+            conn.commit()
+            return {"verdict": "INCOMPLETE", "rule": "—",
+                    "replayed": False, "version": 0,
+                    "effect_keys": [], "effective_raw": None}
+        # ② 基线 UNKNOWN 的首次已知补充 → v1 全额恰一次
         version = (proj["projection_version"] + 1) if proj else 1
         eff_raw = state["effective_raw"]
         eff_asset = str(state["effective_asset"])
@@ -536,9 +576,18 @@ def apply_fee_correction(
     conn.execute("BEGIN IMMEDIATE")
     try:
         proj = ledger.fee_projection_row(fill_ref)
-        old_raw = proj["effective_raw"] if proj else None
-        old_asset = (str(proj["effective_asset"]) if proj else None)
-        old_version = proj["projection_version"] if proj else 0
+        booked = _booked_baseline(conn, fill_ref)
+        if proj is not None and proj["effective_raw"] not in (None, ""):
+            old_raw = proj["effective_raw"]
+            old_asset = (str(proj["effective_asset"])
+                         if proj["effective_asset"] else None)
+            old_version = proj["projection_version"]
+        elif booked is not None:
+            # 无投影行 ≠ 未记过费用。旧值是已生效的基线。
+            old_raw, old_asset = booked
+            old_version = 0
+        else:
+            old_raw, old_asset, old_version = None, None, 0
         new_version = old_version + 1
         new_asset = str(new_fee_asset)
         effects: List[Dict[str, Any]] = []
@@ -582,14 +631,20 @@ def apply_fee_correction(
                 "kind": "APPLY", "amount_raw": new_fee_raw,
                 "asset": new_asset})
         # 追加修正记录（append-only）
+        bound = conn.execute(
+            "SELECT COALESCE(MAX(rowid), 0) AS m"
+            " FROM fill_fee_supplements WHERE fill_ref = ?",
+            (fill_ref,)).fetchone()
         conn.execute(
             "INSERT INTO fee_corrections (fill_ref,"
             " old_effective_raw, old_effective_asset,"
             " new_effective_raw, new_effective_asset, mode,"
-            " delta_raw, credential_ref, note, corrected_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " delta_raw, credential_ref, note, corrected_at,"
+            " resolved_through_rowid)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (fill_ref, old_raw, old_asset, new_fee_raw, new_asset,
-             mode, delta_raw, credential_ref, note, utc_now()))
+             mode, delta_raw, credential_ref, note, utc_now(),
+             int(bound["m"])))
         primary_key = effects[-1]["key"] if effects else None
         _upsert_projection(conn, fill_ref, "KNOWN", new_version,
                            new_fee_raw, new_asset, primary_key,
