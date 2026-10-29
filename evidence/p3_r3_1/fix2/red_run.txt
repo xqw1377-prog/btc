@@ -1,0 +1,112 @@
+commit: 82f675ecb5adf60d47bf30d9642b5196391a12ff
+worktree: detached /tmp/aurora-r31-05-red
+ledger: absent
+note: R31-05a/05b semantic failures against 27f125b; R31-01..04 and R31-06 stay in the same run; not RUNTIME-PASS
+
+..../private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py:548: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-05-red/aurora/risk_adjudicator.py' mode='r' encoding='utf-8'>
+  source = open(path, encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py:565: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-05-red/aurora/trading_cycle.py' mode='r' encoding='utf-8'>
+  text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py:565: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-05-red/aurora/production_main.py' mode='r' encoding='utf-8'>
+  text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py:565: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-05-red/aurora/ops_t3_extended.py' mode='r' encoding='utf-8'>
+  text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py:565: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-05-red/aurora/ops_controlled_requal.py' mode='r' encoding='utf-8'>
+  text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py:565: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-05-red/aurora/portfolio_brain_v2.py' mode='r' encoding='utf-8'>
+  text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+./private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py:228: ResourceWarning: unclosed file <_io.BufferedReader name='/private/tmp/aurora-r31-05-red/aurora/strategy_v2.py'>
+  data = open(os.path.join(ROOT, rel), "rb").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py:228: ResourceWarning: unclosed file <_io.BufferedReader name='/private/tmp/aurora-r31-05-red/aurora/risk_semantics.py'>
+  data = open(os.path.join(ROOT, rel), "rb").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py:572: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-05-red/evidence/p3_r3_1/BASELINE.md' mode='r' encoding='utf-8'>
+  baseline = open(os.path.join(ROOT, "evidence", "p3_r3_1", "BASELINE.md"), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+...../private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py:298: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-05-red/aurora/risk_adjudicator.py' mode='r' encoding='utf-8'>
+  self.assertNotIn("kernel_ledger.db", open(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+................F.
+======================================================================
+FAIL: test_r31_05a_non_finite_is_not_null_and_cannot_pass (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (name='nan-target')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py", line 1262, in test_r31_05a_non_finite_is_not_null_and_cannot_pass
+    self.assertIsInstance(stored, dict)
+AssertionError: None is not an instance of <class 'dict'>
+
+======================================================================
+FAIL: test_r31_05a_non_finite_is_not_null_and_cannot_pass (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (name='nan-delta')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py", line 1262, in test_r31_05a_non_finite_is_not_null_and_cannot_pass
+    self.assertIsInstance(stored, dict)
+AssertionError: None is not an instance of <class 'dict'>
+
+======================================================================
+FAIL: test_r31_05a_non_finite_is_not_null_and_cannot_pass (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (name='pos-inf-target')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py", line 1262, in test_r31_05a_non_finite_is_not_null_and_cannot_pass
+    self.assertIsInstance(stored, dict)
+AssertionError: None is not an instance of <class 'dict'>
+
+======================================================================
+FAIL: test_r31_05a_non_finite_is_not_null_and_cannot_pass (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (name='neg-inf-delta')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py", line 1262, in test_r31_05a_non_finite_is_not_null_and_cannot_pass
+    self.assertIsInstance(stored, dict)
+AssertionError: None is not an instance of <class 'dict'>
+
+======================================================================
+FAIL: test_r31_05b_outer_declaration_cannot_bypass_inner_binding (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (field='decision_key')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py", line 1312, in test_r31_05b_outer_declaration_cannot_bypass_inner_binding
+    self.assertNotEqual(out["record"]["risk_state"], "PASS")
+AssertionError: 'PASS' == 'PASS'
+
+======================================================================
+FAIL: test_r31_05b_outer_declaration_cannot_bypass_inner_binding (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (field='source')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py", line 1312, in test_r31_05b_outer_declaration_cannot_bypass_inner_binding
+    self.assertNotEqual(out["record"]["risk_state"], "PASS")
+AssertionError: 'PASS' == 'PASS'
+
+======================================================================
+FAIL: test_r31_05b_outer_declaration_cannot_bypass_inner_binding (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (field='as_of')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py", line 1316, in test_r31_05b_outer_declaration_cannot_bypass_inner_binding
+    self.assertEqual(len(read_records(log_path)), 1)
+AssertionError: 3 != 1
+
+======================================================================
+FAIL: test_r31_05b_outer_declaration_cannot_bypass_inner_binding (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (field='submit_allowed')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py", line 1316, in test_r31_05b_outer_declaration_cannot_bypass_inner_binding
+    self.assertEqual(len(read_records(log_path)), 1)
+AssertionError: 3 != 1
+
+======================================================================
+FAIL: test_r31_05b_outer_declaration_cannot_bypass_inner_binding (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-05-red/tests/test_risk_adjudicator_r31.py", line 1327, in test_r31_05b_outer_declaration_cannot_bypass_inner_binding
+    self.assertEqual(len(read_records(log_path)), 2)
+AssertionError: 4 != 2
+
+----------------------------------------------------------------------
+Ran 29 tests in 1.331s
+
+FAILED (failures=9)
