@@ -1,0 +1,68 @@
+HEAD 921472921eb287b1d04cb4d1ff396e6673f7c697
+STATUS ## HEAD (no branch)
+macOS-26.3-arm64-arm-64bit
+3.9.6 (default, Mar  6 2026, 16:22:43) 
+[Clang 21.0.0 (clang-2100.0.123.102)]
+LEDGER absent
+--- unittest ---
+..../private/tmp/aurora-r31-9214729/tests/test_risk_adjudicator_r31.py:545: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-9214729/aurora/risk_adjudicator.py' mode='r' encoding='utf-8'>
+  source = open(path, encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-9214729/tests/test_risk_adjudicator_r31.py:562: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-9214729/aurora/trading_cycle.py' mode='r' encoding='utf-8'>
+  text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-9214729/tests/test_risk_adjudicator_r31.py:562: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-9214729/aurora/production_main.py' mode='r' encoding='utf-8'>
+  text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-9214729/tests/test_risk_adjudicator_r31.py:562: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-9214729/aurora/ops_t3_extended.py' mode='r' encoding='utf-8'>
+  text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-9214729/tests/test_risk_adjudicator_r31.py:562: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-9214729/aurora/ops_controlled_requal.py' mode='r' encoding='utf-8'>
+  text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-9214729/tests/test_risk_adjudicator_r31.py:562: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-9214729/aurora/portfolio_brain_v2.py' mode='r' encoding='utf-8'>
+  text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+./private/tmp/aurora-r31-9214729/tests/test_risk_adjudicator_r31.py:225: ResourceWarning: unclosed file <_io.BufferedReader name='/private/tmp/aurora-r31-9214729/aurora/strategy_v2.py'>
+  data = open(os.path.join(ROOT, rel), "rb").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-9214729/tests/test_risk_adjudicator_r31.py:225: ResourceWarning: unclosed file <_io.BufferedReader name='/private/tmp/aurora-r31-9214729/aurora/risk_semantics.py'>
+  data = open(os.path.join(ROOT, rel), "rb").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-9214729/tests/test_risk_adjudicator_r31.py:569: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-9214729/evidence/p3_r3_1/BASELINE.md' mode='r' encoding='utf-8'>
+  baseline = open(os.path.join(ROOT, "evidence", "p3_r3_1", "BASELINE.md"), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+...../private/tmp/aurora-r31-9214729/tests/test_risk_adjudicator_r31.py:295: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-9214729/aurora/risk_adjudicator.py' mode='r' encoding='utf-8'>
+  self.assertNotIn("kernel_ledger.db", open(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+...........
+----------------------------------------------------------------------
+Ran 21 tests in 1.132s
+
+OK
+UNIT_EXIT:0
+--- pytest ---
+........................................................................ [  7%]
+........................................................................ [ 14%]
+........................................................................ [ 22%]
+........................................................................ [ 29%]
+........................................................................ [ 37%]
+........................................................................ [ 44%]
+.......s................................................................ [ 52%]
+........................................................................ [ 59%]
+........................................................................ [ 67%]
+........................................................................ [ 74%]
+........................................................................ [ 82%]
+........................................................................ [ 89%]
+........................................................................ [ 97%]
+...........................                                              [100%]
+=============================== warnings summary ===============================
+../../../Users/xinquanwang/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35
+  /Users/xinquanwang/Library/Python/3.9/lib/python/site-packages/urllib3/__init__.py:35: NotOpenSSLWarning: urllib3 v2 only supports OpenSSL 1.1.1+, currently the 'ssl' module is compiled with 'LibreSSL 2.8.3'. See: https://github.com/urllib3/urllib3/issues/3020
+    warnings.warn(
+
+-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html
+=========================== short test summary info ============================
+SKIPPED [1] tests/test_fill_migration_s1.py:93: incident ledger absent
+962 passed, 1 skipped, 1 warning in 14.95s
+PY_EXIT:0
