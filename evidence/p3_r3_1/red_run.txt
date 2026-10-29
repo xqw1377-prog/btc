@@ -1,0 +1,213 @@
+EEEEE/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py:226: ResourceWarning: unclosed file <_io.BufferedReader name='/Users/xinquanwang/AURORA/aurora/strategy_v2.py'>
+  data = open(os.path.join(ROOT, rel), "rb").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py:226: ResourceWarning: unclosed file <_io.BufferedReader name='/Users/xinquanwang/AURORA/aurora/risk_semantics.py'>
+  data = open(os.path.join(ROOT, rel), "rb").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py:570: ResourceWarning: unclosed file <_io.TextIOWrapper name='/Users/xinquanwang/AURORA/evidence/p3_r3_1/BASELINE.md' mode='r' encoding='utf-8'>
+  baseline = open(os.path.join(ROOT, "evidence", "p3_r3_1", "BASELINE.md"), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+.EEEEEEEEEEEEEEE
+======================================================================
+ERROR: test_r31_10_kill_blocks_new_risk_and_probes_stay_zero (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 472, in test_r31_10_kill_blocks_new_risk_and_probes_stay_zero
+    out = self._run(
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_11_cross_process_replay_bytes (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 495, in test_r31_11_cross_process_replay_bytes
+    first = self._run()
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_12_mid_write_failure_rolls_back_and_retry_matches (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 507, in test_r31_12_mid_write_failure_rolls_back_and_retry_matches
+    failed = self._run(before_commit=boom)
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_13_runtime_probes_stay_zero (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 539, in test_r31_13_runtime_probes_stay_zero
+    self._run()
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_14_static_import_scan (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 546, in test_r31_14_static_import_scan
+    source = open(path, encoding="utf-8").read()
+FileNotFoundError: [Errno 2] No such file or directory: '/Users/xinquanwang/AURORA/aurora/risk_adjudicator.py'
+
+======================================================================
+ERROR: test_r31_16_declaration_conflict_and_legal_new_version (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 576, in test_r31_16_declaration_conflict_and_legal_new_version
+    first = self._run()
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_17_time_rules_ignore_wall_clock (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 632, in test_r31_17_time_rules_ignore_wall_clock
+    on_boundary = self._run(
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_18_known_does_not_become_authority (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 692, in test_r31_18_known_does_not_become_authority
+    synthetic = self._run(account=_account(status="KNOWN", source="SYNTHETIC"))
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_19_invalidation_appends_and_new_version_may_allow_more (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 712, in test_r31_19_invalidation_appends_and_new_version_may_allow_more
+    from aurora.risk_adjudicator import append_invalidation
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_1_in_process_record_has_no_order (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 289, in test_r31_1_in_process_record_has_no_order
+    out = self._run()
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_20_numbers_priority_and_unwritable_log (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 764, in test_r31_20_numbers_priority_and_unwritable_log
+    nan = self._run(account=_account(btc_nav=float("nan")))
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_21_process_replay_and_concurrent_bindings (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 853, in test_r31_21_process_replay_and_concurrent_bindings
+    first = self._run()
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_2_same_input_record_bytes_receipt_differs (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 301, in test_r31_2_same_input_record_bytes_receipt_differs
+    first = self._run()
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_3_request_10_policy_6_reduced (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 327, in test_r31_3_request_10_policy_6_reduced
+    out = self._run(decision=decision)
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_4_inflated_output_is_not_persisted (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 345, in test_r31_4_inflated_output_is_not_persisted
+    out = self._run(risk_evaluator=inflate)
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_5_null_nav_blocks_without_zero_fill (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 355, in test_r31_5_null_nav_blocks_without_zero_fill
+    out = self._run(account=_account(btc_nav=None))
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_6_stale_account_or_quote_blocks_new_risk (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 365, in test_r31_6_stale_account_or_quote_blocks_new_risk
+    stale_account = self._run(
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_7_unknown_position_defensive_quantity_unavailable (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 385, in test_r31_7_unknown_position_defensive_quantity_unavailable
+    out = self._run(
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_8_protection_cases_stay_separate (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 437, in test_r31_8_protection_cases_stay_separate
+    self._protection_trio(self._run)
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 396, in _protection_trio
+    flat = run(
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+======================================================================
+ERROR: test_r31_9_eth_and_event_execution_stay_denied (tests.test_risk_adjudicator_r31.R31AcceptanceTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 460, in test_r31_9_eth_and_event_execution_stay_denied
+    out = self._run(decision=decision)
+  File "/Users/xinquanwang/AURORA/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    from aurora.risk_adjudicator import adjudicate_runtime
+ModuleNotFoundError: No module named 'aurora.risk_adjudicator'
+
+----------------------------------------------------------------------
+Ran 21 tests in 0.010s
+
+FAILED (errors=20)
+EXIT:1
