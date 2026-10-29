@@ -1,0 +1,212 @@
+commit: ef3e9ca99316b725bd11cad4e6e0c9ec766675ab
+worktree: detached /tmp/aurora-r31-red
+ledger: absent
+note: semantic counterexamples against product code 9214729; not an import-missing run; not RUNTIME-PASS
+
+..../private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py:545: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-red/aurora/risk_adjudicator.py' mode='r' encoding='utf-8'>
+  source = open(path, encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py:562: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-red/aurora/trading_cycle.py' mode='r' encoding='utf-8'>
+  text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py:562: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-red/aurora/production_main.py' mode='r' encoding='utf-8'>
+  text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py:562: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-red/aurora/ops_t3_extended.py' mode='r' encoding='utf-8'>
+  text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py:562: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-red/aurora/ops_controlled_requal.py' mode='r' encoding='utf-8'>
+  text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py:562: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-red/aurora/portfolio_brain_v2.py' mode='r' encoding='utf-8'>
+  text = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+./private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py:225: ResourceWarning: unclosed file <_io.BufferedReader name='/private/tmp/aurora-r31-red/aurora/strategy_v2.py'>
+  data = open(os.path.join(ROOT, rel), "rb").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py:225: ResourceWarning: unclosed file <_io.BufferedReader name='/private/tmp/aurora-r31-red/aurora/risk_semantics.py'>
+  data = open(os.path.join(ROOT, rel), "rb").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py:569: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-red/evidence/p3_r3_1/BASELINE.md' mode='r' encoding='utf-8'>
+  baseline = open(os.path.join(ROOT, "evidence", "p3_r3_1", "BASELINE.md"), encoding="utf-8").read()
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+...../private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py:295: ResourceWarning: unclosed file <_io.TextIOWrapper name='/private/tmp/aurora-r31-red/aurora/risk_adjudicator.py' mode='r' encoding='utf-8'>
+  self.assertNotIn("kernel_ledger.db", open(
+ResourceWarning: Enable tracemalloc to get the object allocation traceback
+...........FE
+======================================================================
+ERROR: test_r31_01_bad_timestamps_do_not_pass (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (name='naive')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1046, in test_r31_01_bad_timestamps_do_not_pass
+    out = self._run(
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1029, in _run
+    return R31AcceptanceTests._run(self, **kw)
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 255, in _run
+    return adjudicate_runtime(
+  File "/private/tmp/aurora-r31-red/aurora/risk_adjudicator.py", line 919, in adjudicate_runtime
+    hits = _local_hits(decision, account, market, policy, evaluation_at)
+  File "/private/tmp/aurora-r31-red/aurora/risk_adjudicator.py", line 642, in _local_hits
+    if moment is not None and moment > evaluation:
+TypeError: can't compare offset-naive and offset-aware datetimes
+
+======================================================================
+ERROR: test_r31_05_evaluate_decision_boundary (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1194, in test_r31_05_evaluate_decision_boundary
+    from aurora.risk_adjudicator import adapt_decision_candidate
+ImportError: cannot import name 'adapt_decision_candidate' from 'aurora.risk_adjudicator' (/private/tmp/aurora-r31-red/aurora/risk_adjudicator.py)
+
+======================================================================
+ERROR: test_r31_06_probes_bind_real_entries_and_block_send (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (probe='send')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1257, in test_r31_06_probes_bind_real_entries_and_block_send
+    call()
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1230, in <lambda>
+    ("send", lambda: socket.socket.send(None, b"x"), "send"),
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 961, in _send
+    return self._orig_send(sock, data, *args, **kwargs)
+TypeError: descriptor 'send' for '_socket.socket' objects doesn't apply to a 'NoneType' object
+
+======================================================================
+ERROR: test_r31_06_probes_bind_real_entries_and_block_send (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (probe='futures_create_order')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1257, in test_r31_06_probes_bind_real_entries_and_block_send
+    call()
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1233, in <lambda>
+    lambda: WireTee.futures_create_order(
+  File "/private/tmp/aurora-r31-red/aurora/ops_controlled_requal.py", line 570, in futures_create_order
+    raw = self._inner.futures_create_order(**params)
+AttributeError: 'object' object has no attribute '_inner'
+
+======================================================================
+ERROR: test_r31_06_probes_bind_real_entries_and_block_send (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (probe='create_order')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1257, in test_r31_06_probes_bind_real_entries_and_block_send
+    call()
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1240, in <lambda>
+    lambda: BinanceBroker.create_order(
+  File "/private/tmp/aurora-r31-red/aurora/production_main.py", line 135, in create_order
+    raise SafetyViolation("[P0] production_main will not place orders in this phase.")
+aurora.p0_boundary.SafetyViolation: [P0] production_main will not place orders in this phase.
+
+======================================================================
+ERROR: test_r31_06_probes_bind_real_entries_and_block_send (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (probe='submit_order')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1257, in test_r31_06_probes_bind_real_entries_and_block_send
+    call()
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1247, in <lambda>
+    lambda: BinanceExchange.submit_order(object(), object()),
+  File "/private/tmp/aurora-r31-red/aurora/kernel/binance_exchange.py", line 341, in submit_order
+    self._refuse_mutate("submit")
+AttributeError: 'object' object has no attribute '_refuse_mutate'
+
+======================================================================
+ERROR: test_r31_06_probes_bind_real_entries_and_block_send (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (probe='risk_gate')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1257, in test_r31_06_probes_bind_real_entries_and_block_send
+    call()
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1250, in <lambda>
+    ("risk_gate", lambda: RiskGate.approve(object(), "LONG", 1), "risk_gate"),
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 985, in _wrapped
+    return _attr(*args, **kwargs)
+TypeError: approve() missing 3 required positional arguments: 'vol_atr_pct', 'regime', and 'confidence'
+
+======================================================================
+ERROR: test_r31_06_probes_bind_real_entries_and_block_send (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (probe='brain')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1257, in test_r31_06_probes_bind_real_entries_and_block_send
+    call()
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1251, in <lambda>
+    ("brain", lambda: PortfolioBrainV2.process(object(), [], "BULL", 1), "brain"),
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 992, in _process
+    return self._orig_process(*args, **kwargs)
+TypeError: process() missing 4 required positional arguments: 'volatility', 'price', 'atr', and 'current_ts'
+
+======================================================================
+FAIL: test_r31_01_bad_timestamps_do_not_pass (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (name='missing')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1052, in test_r31_01_bad_timestamps_do_not_pass
+    self.assertNotEqual(out["record"]["risk_state"], "PASS")
+AssertionError: 'PASS' == 'PASS'
+
+======================================================================
+FAIL: test_r31_01_bad_timestamps_do_not_pass (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (name='garbage')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1052, in test_r31_01_bad_timestamps_do_not_pass
+    self.assertNotEqual(out["record"]["risk_state"], "PASS")
+AssertionError: 'PASS' == 'PASS'
+
+======================================================================
+FAIL: test_r31_02_unknown_governance_and_bad_positions (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (name='governance-missing')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1066, in test_r31_02_unknown_governance_and_bad_positions
+    self.assertNotEqual(missing["record"]["risk_state"], "PASS")
+AssertionError: 'PASS' == 'PASS'
+
+======================================================================
+FAIL: test_r31_02_unknown_governance_and_bad_positions (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (name='governance-unknown')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1076, in test_r31_02_unknown_governance_and_bad_positions
+    self.assertNotEqual(unknown["record"]["risk_state"], "PASS")
+AssertionError: 'PASS' == 'PASS'
+
+======================================================================
+FAIL: test_r31_02_unknown_governance_and_bad_positions (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (name='account-status')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1086, in test_r31_02_unknown_governance_and_bad_positions
+    self.assertNotEqual(bad_status["record"]["risk_state"], "PASS")
+AssertionError: 'PASS' == 'PASS'
+
+======================================================================
+FAIL: test_r31_02_unknown_governance_and_bad_positions (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (name='positions')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1095, in test_r31_02_unknown_governance_and_bad_positions
+    self.assertNotEqual(garbage_pos["record"]["risk_state"], "PASS")
+AssertionError: 'PASS' == 'PASS'
+
+======================================================================
+FAIL: test_r31_03_submit_flag_and_policy_hash_are_required (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (name='submit-allowed')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1110, in test_r31_03_submit_flag_and_policy_hash_are_required
+    self.assertNotEqual(second["record"]["risk_state"], "PASS")
+AssertionError: 'PASS' == 'PASS'
+
+======================================================================
+FAIL: test_r31_03_submit_flag_and_policy_hash_are_required (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples) (name='policy-hash')
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1128, in test_r31_03_submit_flag_and_policy_hash_are_required
+    self.assertNotEqual(omitted["record"]["risk_state"], "PASS")
+AssertionError: 'PASS' == 'PASS'
+
+======================================================================
+FAIL: test_r31_04_block_does_not_keep_requested_increase (tests.test_risk_adjudicator_r31.R31IndependentCounterexamples)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  File "/private/tmp/aurora-r31-red/tests/test_risk_adjudicator_r31.py", line 1149, in test_r31_04_block_does_not_keep_requested_increase
+    self.assertEqual(out["record"]["risk_adjusted_delta"].get("status"), "UNAVAILABLE")
+AssertionError: 'AVAILABLE' != 'UNAVAILABLE'
+- AVAILABLE
++ UNAVAILABLE
+? ++
+
+
+----------------------------------------------------------------------
+Ran 27 tests in 1.192s
+
+FAILED (failures=9, errors=8)
