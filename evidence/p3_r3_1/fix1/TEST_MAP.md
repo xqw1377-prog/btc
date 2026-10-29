@@ -13,13 +13,13 @@
 
 环境：macOS 26.3 arm64，Python 3.9.6。
 
-| 运行 | 对象 | passed | failed | errors | skipped |
-|---|---|---:|---:|---:|---:|
-| 红 unittest | ef3e9ca | 21 | 9 | 8 | 0 |
-| 绿 unittest | 27f125b | 27 | 0 | 0 | 0 |
-| 绿 pytest | 27f125b | 968 | 0 | 0 | 1 |
+| 运行 | 对象 | 结果 |
+|---|---|---|
+| 红 unittest | ef3e9ca | Ran 27；failures=9；errors=8 |
+| 绿 unittest | 27f125b | Ran 27；OK |
+| 绿 pytest | 27f125b | 968 passed；1 skipped |
 
-红跑的 9 个失败和 8 个错误都在 R31-01～06 的子例上。原先 R31-1～21 在同一进程里通过。  
+红跑的 9 个失败和 8 个错误都是 R31-01～06 的子例。同一进程里原先的 R31-1～21 没有失败。  
 绿跑跳过项是 `tests/test_fill_migration_s1.py:93` `incident ledger absent`。  
 含事故账本的主工作树曾得到 `969 passed / 0 skipped`。那是另一份证书，不与 `968/1` 合并。
 
