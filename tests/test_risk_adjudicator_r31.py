@@ -1230,6 +1230,103 @@ class R31IndependentCounterexamples(unittest.TestCase):
         self.assertIn(out["record"]["risk_state"], ("PASS", "REDUCED"))
         self.assertTrue(out["receipt"]["wrote_now"])
 
+    def test_r31_05a_non_finite_is_not_null_and_cannot_pass(self):
+        import copy
+        from aurora.risk_adjudicator import adapt_decision_candidate, read_records
+
+        legal_input = _decision(decision_key="dec-null")
+        legal_input["target_state"]["btc_overlay"] = None
+        legal_input["delta_proposal"]["btc_overlay"] = None
+        legal = adapt_decision_candidate(legal_input)
+        self.assertIsNone(legal["candidate"]["target_state"]["btc_overlay"])
+        self.assertIsNone(legal["candidate"]["delta_proposal"]["btc_overlay"])
+        self.assertFalse(legal.get("non_finite_paths"))
+        legal_out = self._run(
+            decision=legal,
+            log_path=os.path.join(self.tmp, "null-ok.sqlite"),
+        )
+        self.assertNotIn("NON_FINITE", legal_out["record"]["blockers"])
+
+        samples = (
+            ("nan-target", "target_state", float("nan")),
+            ("nan-delta", "delta_proposal", float("nan")),
+            ("pos-inf-target", "target_state", float("inf")),
+            ("neg-inf-delta", "delta_proposal", float("-inf")),
+        )
+        for name, field, value in samples:
+            with self.subTest(name=name):
+                raw = _decision(decision_key="dec-" + name)
+                raw[field]["btc_overlay"] = value
+                adapted = adapt_decision_candidate(copy.deepcopy(raw))
+                stored = adapted["candidate"][field]["btc_overlay"]
+                self.assertIsInstance(stored, dict)
+                self.assertIn(stored.get("$aurora_non_finite"), ("nan", "inf", "-inf"))
+                log_path = os.path.join(self.tmp, name + ".sqlite")
+                out = self._run(
+                    decision=adapted,
+                    account=_account(account_version="acc-" + name),
+                    market=_market(quote_version="q-" + name),
+                    policy=_policy(policy_version="pol-" + name),
+                    log_path=log_path,
+                )
+                self.assertNotEqual(out["record"]["risk_state"], "PASS")
+                self.assertFalse(out["record"]["new_risk_allowed"])
+                self.assertFalse(out["receipt"]["wrote_now"])
+                self.assertFalse(out["receipt"]["record_present"])
+                self.assertIn("NON_FINITE", out["record"]["blockers"])
+                self.assertEqual(read_records(log_path), [])
+
+    def test_r31_05b_outer_declaration_cannot_bypass_inner_binding(self):
+        import copy
+        from aurora.risk_adjudicator import adapt_decision_candidate, read_records
+
+        log_path = os.path.join(self.tmp, "boundary-bind.sqlite")
+        first = adapt_decision_candidate(_decision())
+        opened = self._run(decision=first, log_path=log_path)
+        self.assertEqual(opened["record"]["risk_state"], "PASS")
+        self.assertTrue(opened["receipt"]["wrote_now"])
+        self.assertEqual(opened["record"]["based_on_decision_key"], "dec-v1")
+        self.assertEqual(len(read_records(log_path)), 1)
+
+        changed = copy.deepcopy(first)
+        changed["candidate"]["target_state"]["btc_overlay"] = Decimal("2")
+        changed["candidate"]["delta_proposal"]["btc_overlay"] = Decimal("2")
+        conflict = self._run(decision=changed, log_path=log_path)
+        self.assertNotEqual(conflict["record"]["risk_state"], "PASS")
+        self.assertIn("INPUT_IDENTITY_CONFLICT", conflict["record"]["blockers"])
+        self.assertFalse(conflict["receipt"]["wrote_now"])
+        self.assertTrue(conflict["receipt"]["record_present"])
+        self.assertEqual(len(read_records(log_path)), 1)
+
+        bypasses = (
+            ("decision_key", "dec-other"),
+            ("source", "AUTHORITATIVE"),
+            ("as_of", "2026-10-28T00:45:00Z"),
+            ("submit_allowed", True),
+        )
+        for field, value in bypasses:
+            with self.subTest(field=field):
+                forged = copy.deepcopy(changed)
+                forged[field] = value
+                out = self._run(decision=forged, log_path=log_path)
+                self.assertNotEqual(out["record"]["risk_state"], "PASS")
+                self.assertFalse(out["record"]["new_risk_allowed"])
+                self.assertFalse(out["receipt"]["wrote_now"])
+                self.assertNotEqual(out["record"]["based_on_decision_key"], value)
+                self.assertEqual(len(read_records(log_path)), 1)
+                self.assertIn("BOUNDARY_DECLARATION_MISMATCH", out["record"]["blockers"])
+
+        legal = copy.deepcopy(changed)
+        legal["decision_key"] = "dec-v2"
+        legal["candidate"]["decision_key"] = "dec-v2"
+        fresh = self._run(decision=legal, log_path=log_path)
+        self.assertNotIn("INPUT_IDENTITY_CONFLICT", fresh["record"]["blockers"])
+        self.assertNotIn("BOUNDARY_DECLARATION_MISMATCH", fresh["record"]["blockers"])
+        self.assertEqual(fresh["record"]["based_on_decision_key"], "dec-v2")
+        self.assertTrue(fresh["receipt"]["wrote_now"])
+        self.assertEqual(len(read_records(log_path)), 2)
+        self.assertEqual(read_records(log_path)[0]["record_canonical"], opened["record_canonical"])
+
     def test_r31_06_probes_bind_real_entries_and_block_send(self):
         from aurora.kernel.binance_exchange import BinanceExchange
         from aurora.ops_controlled_requal import WireTee
