@@ -1012,6 +1012,244 @@ class R31AcceptanceTests(unittest.TestCase):
             delattr(self._brain.PortfolioBrainV2, "decide")
 
 
+class ProbeBlocked(RuntimeError):
+    """A write or send probe stopped the call before the real entry."""
+
+
+class R31IndependentCounterexamples(R31AcceptanceTests):
+    """R31-01～06。这些断言在 9214729 上失败，不是导入失败。"""
+
+    def test_r31_01_bad_timestamps_do_not_pass(self):
+        cases = (
+            ("missing", _account(), "acc-missing-ts"),
+            ("garbage", _account(as_of="garbage", account_version="acc-garbage-ts"), "acc-garbage-ts"),
+            ("naive", _account(as_of="2026-10-28T00:30:00", account_version="acc-naive"), "acc-naive"),
+        )
+        cases[0][1].pop("as_of", None)
+        for name, account, version in cases:
+            with self.subTest(name=name):
+                out = self._run(
+                    account=account,
+                    decision=_decision(decision_key="dec-" + name),
+                    market=_market(quote_version="q-" + name),
+                    log_path=os.path.join(self.tmp, "ts-" + name + ".sqlite"),
+                )
+                self.assertNotEqual(out["record"]["risk_state"], "PASS")
+                self.assertFalse(out["record"]["new_risk_allowed"])
+                self.assertIn("TIMESTAMP_INVALID", out["record"]["blockers"])
+                self.assertFalse(out["receipt"]["idempotent"])
+
+    def test_r31_02_unknown_governance_and_bad_positions(self):
+        bare = _account()
+        del bare["kill"]
+        del bare["incident"]
+        with self.subTest(name="governance-missing"):
+            missing = self._run(
+                account=bare,
+                log_path=os.path.join(self.tmp, "gov-missing.sqlite"),
+            )
+            self.assertNotEqual(missing["record"]["risk_state"], "PASS")
+            self.assertFalse(missing["record"]["new_risk_allowed"])
+            self.assertIn("GOVERNANCE_UNKNOWN", missing["record"]["blockers"])
+
+        with self.subTest(name="governance-unknown"):
+            unknown = self._run(
+                account=_account(kill="UNKNOWN", incident="UNKNOWN", account_version="acc-gov-u"),
+                decision=_decision(decision_key="dec-gov-u"),
+                log_path=os.path.join(self.tmp, "gov-unknown.sqlite"),
+            )
+            self.assertNotEqual(unknown["record"]["risk_state"], "PASS")
+            self.assertFalse(unknown["record"]["new_risk_allowed"])
+            self.assertIn("GOVERNANCE_UNKNOWN", unknown["record"]["blockers"])
+
+        with self.subTest(name="account-status"):
+            bad_status = self._run(
+                account=_account(status="garbage", account_version="acc-status"),
+                decision=_decision(decision_key="dec-status"),
+                log_path=os.path.join(self.tmp, "status.sqlite"),
+            )
+            self.assertNotEqual(bad_status["record"]["risk_state"], "PASS")
+            self.assertIn("ACCOUNT_STATUS_INVALID", bad_status["record"]["blockers"])
+
+        with self.subTest(name="positions"):
+            garbage_pos = self._run(
+                account=_account(positions="garbage", account_version="acc-pos"),
+                decision=_decision(decision_key="dec-pos"),
+                log_path=os.path.join(self.tmp, "pos.sqlite"),
+            )
+            self.assertNotEqual(garbage_pos["record"]["risk_state"], "PASS")
+            self.assertFalse(garbage_pos["record"]["new_risk_allowed"])
+            self.assertIn("POSITION_MALFORMED", garbage_pos["record"]["blockers"])
+            self.assertNotEqual(garbage_pos["record"]["existing_position_protection"], "NOT_APPLICABLE")
+            self.assertNotEqual(garbage_pos["record"]["existing_position_protection"], "ACTIVE_CONFIRMED")
+
+    def test_r31_03_submit_flag_and_policy_hash_are_required(self):
+        with self.subTest(name="submit-allowed"):
+            first = self._run(log_path=os.path.join(self.tmp, "submit.sqlite"))
+            altered = _decision()
+            altered["submit_allowed"] = True
+            second = self._run(
+                decision=altered,
+                log_path=os.path.join(self.tmp, "submit.sqlite"),
+            )
+            self.assertNotEqual(second["record"]["risk_state"], "PASS")
+            self.assertFalse(second["record"]["new_risk_allowed"])
+            self.assertFalse(second["receipt"]["idempotent"])
+            self.assertFalse(second["receipt"]["wrote_now"])
+            self.assertNotEqual(second["record_canonical"], first["record_canonical"])
+            self.assertIn("SUBMIT_NOT_FALSE", second["record"]["blockers"])
+            self.assertTrue(first["record"]["submit_allowed"] is False)
+
+        with self.subTest(name="policy-hash"):
+            policy = _policy(policy_version="pol-no-hash")
+            policy.pop("policy_hash", None)
+            omitted = self._run(
+                policy=policy,
+                decision=_decision(decision_key="dec-no-hash"),
+                account=_account(account_version="acc-no-hash"),
+                market=_market(quote_version="q-no-hash"),
+                log_path=os.path.join(self.tmp, "no-hash.sqlite"),
+            )
+            self.assertNotEqual(omitted["record"]["risk_state"], "PASS")
+            self.assertFalse(omitted["record"]["new_risk_allowed"])
+            self.assertFalse(omitted["receipt"]["wrote_now"])
+            self.assertIn("POLICY_INCOMPLETE", omitted["record"]["blockers"])
+
+    def test_r31_04_block_does_not_keep_requested_increase(self):
+        out = self._run(
+            account=_account(as_of="2026-10-27T00:00:00Z", account_version="acc-old"),
+            decision=_decision(decision_key="dec-old"),
+            market=_market(quote_version="q-old"),
+            policy=_policy(
+                policy_version="pol-sla-account",
+                sla_account_sec=Decimal("60"),
+                skew_limit_sec=Decimal("1000000"),
+            ),
+            log_path=os.path.join(self.tmp, "adjust.sqlite"),
+        )
+        self.assertEqual(out["record"]["risk_state"], "BLOCK_NEW_RISK")
+        self.assertEqual(_num(out["record"]["new_risk"]["allowed"]), Decimal("0"))
+        self.assertFalse(out["record"]["new_risk_allowed"])
+        self.assertEqual(_num(out["record"]["requested_cluster"]["btc"]), Decimal("1"))
+        self.assertEqual(out["record"]["risk_adjusted_delta"].get("status"), "UNAVAILABLE")
+        self.assertEqual(out["record"]["risk_adjusted_target"].get("status"), "UNAVAILABLE")
+        self.assertNotIn("btc_overlay", out["record"]["risk_adjusted_delta"])
+        self.assertNotIn("btc_overlay", out["record"]["risk_adjusted_target"])
+
+        defensive = self._run(
+            decision=_defensive_decision(decision_key="dec-def-old"),
+            account=_account(as_of="2026-10-27T00:00:00Z", account_version="acc-def-old"),
+            market=_market(quote_version="q-def-old"),
+            policy=_policy(
+                policy_version="pol-sla-def",
+                sla_account_sec=Decimal("60"),
+                skew_limit_sec=Decimal("1000000"),
+            ),
+            log_path=os.path.join(self.tmp, "adjust-def.sqlite"),
+        )
+        self.assertTrue(defensive["record"]["defensive_intent_preserved"])
+        self.assertEqual(defensive["record"]["risk_adjusted_delta"].get("status"), "UNAVAILABLE")
+        self.assertFalse(defensive["record"]["new_risk_allowed"])
+
+    def test_r31_05_evaluate_decision_boundary(self):
+        from aurora.decision_brain import (
+            build_normalized_decision_input,
+            default_decision_policy,
+            evaluate_decision,
+        )
+        from tests.fixtures.decision_brain_r1_cases import (
+            CURRENT_80_10,
+            KNOWN_ACCOUNT,
+            TREND_L5,
+            _base,
+        )
+
+        candidate = evaluate_decision(
+            build_normalized_decision_input(**_base(
+                trend_btc=TREND_L5,
+                account_truth=KNOWN_ACCOUNT,
+                current_state=CURRENT_80_10,
+                as_of=ASOF,
+            )),
+            default_decision_policy(),
+        )
+        self.assertEqual(candidate["btc_overlay_action"], "INCREASE_CANDIDATE")
+        self.assertFalse(candidate["submit_allowed"])
+        self.assertIsInstance(candidate["crypto_beta_cluster"]["btc_request"], float)
+        from aurora.risk_adjudicator import adapt_decision_candidate
+
+        raw = self._run(
+            decision=candidate,
+            log_path=os.path.join(self.tmp, "brain-raw.sqlite"),
+        )
+        self.assertIn("BINARY_FLOAT", raw["record"]["blockers"])
+        self.assertNotEqual(raw["record"]["risk_state"], "PASS")
+
+        adapted = adapt_decision_candidate(candidate)
+        out = self._run(
+            decision=adapted,
+            account=_account(account_version="acc-brain"),
+            market=_market(quote_version="q-brain"),
+            policy=_policy(policy_version="pol-brain"),
+            log_path=os.path.join(self.tmp, "brain-adapted.sqlite"),
+        )
+        self.assertNotIn("BINARY_FLOAT", out["record"]["blockers"])
+        self.assertEqual(out["record"]["decision_boundary"], "evaluate-decision-boundary-v1")
+        self.assertEqual(out["record"]["decision_representation"], "decimal-from-str-float-v1")
+        self.assertEqual(out["record"]["execution_eligibility"], "DENIED")
+        self.assertFalse(out["record"]["submit_allowed"])
+        self.assertGreater(_num(out["record"]["requested_cluster"]["btc"]), Decimal("0"))
+        self.assertIn(out["record"]["risk_state"], ("PASS", "REDUCED"))
+        self.assertTrue(out["receipt"]["wrote_now"])
+
+    def test_r31_06_probes_bind_real_entries_and_block_send(self):
+        from aurora.kernel.binance_exchange import BinanceExchange
+        from aurora.ops_controlled_requal import WireTee
+        from aurora.portfolio_brain_v2 import PortfolioBrainV2
+        from aurora.production_main import BinanceBroker
+        from aurora.risk_gate import RiskGate
+
+        counts = self._install_probes()
+        try:
+            probes = (
+                ("send", lambda: socket.socket.send(None, b"x"), "send"),
+                (
+                    "futures_create_order",
+                    lambda: WireTee.futures_create_order(
+                        object(), symbol="BTCUSDT", side="BUY", type="MARKET", quantity=1
+                    ),
+                    "futures_create_order",
+                ),
+                (
+                    "create_order",
+                    lambda: BinanceBroker.create_order(
+                        object(), symbol="BTCUSDT", side="BUY", type="MARKET", quantity=1
+                    ),
+                    "create_order",
+                ),
+                (
+                    "submit_order",
+                    lambda: BinanceExchange.submit_order(object(), object()),
+                    "futures_create_order",
+                ),
+                ("risk_gate", lambda: RiskGate.approve(object(), "LONG", 1), "risk_gate"),
+                ("brain", lambda: PortfolioBrainV2.process(object(), [], "BULL", 1), "brain"),
+            )
+            for name, call, counter in probes:
+                with self.subTest(probe=name):
+                    before = counts[counter]
+                    with self.assertRaises(ProbeBlocked):
+                        call()
+                    self.assertGreater(counts[counter], before)
+
+            for key in counts:
+                counts[key] = 0
+            self._run(log_path=os.path.join(self.tmp, "probes.sqlite"))
+            self.assertEqual(counts, {key: 0 for key in counts})
+        finally:
+            self._restore_probes()
+
+
 def _replay_stdin():
     from aurora.risk_adjudicator import adjudicate_runtime
     payload = _dec_hook(json.loads(sys.stdin.read()))
