@@ -1016,8 +1016,23 @@ class ProbeBlocked(RuntimeError):
     """A write or send probe stopped the call before the real entry."""
 
 
-class R31IndependentCounterexamples(R31AcceptanceTests):
+class R31IndependentCounterexamples(unittest.TestCase):
     """R31-01～06。这些断言在 9214729 上失败，不是导入失败。"""
+
+    def setUp(self):
+        R31AcceptanceTests.setUp(self)
+
+    def tearDown(self):
+        R31AcceptanceTests.tearDown(self)
+
+    def _run(self, **kw):
+        return R31AcceptanceTests._run(self, **kw)
+
+    def _install_probes(self):
+        return R31AcceptanceTests._install_probes(self)
+
+    def _restore_probes(self):
+        return R31AcceptanceTests._restore_probes(self)
 
     def test_r31_01_bad_timestamps_do_not_pass(self):
         cases = (
