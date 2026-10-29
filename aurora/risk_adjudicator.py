@@ -32,6 +32,16 @@ CANONICAL_VERSION = "aurora-canonical-json-v1"
 HASH_ALG = "sha256"
 RUNTIME_KIND = "P3_R3_1_RISK_ADJUDICATOR"
 PARAMETER_STATUS = "PROVISIONAL_E3_PARAM"
+DECISION_BOUNDARY_VERSION = "evaluate-decision-boundary-v1"
+DECISION_REPRESENTATION = "decimal-from-str-float-v1"
+_POSITION_QTY = (
+    "btc",
+    "eth",
+    "usdt",
+    "btc_overlay",
+    "eth_overlay",
+    "event_increment",
+)
 
 _BUDGET_FIELDS = (
     "per_trade_loss_budget",
@@ -254,14 +264,36 @@ def _blank(value: Any) -> bool:
     return value is None or value == ""
 
 
-def _parse_ts(value: Any) -> Optional[datetime]:
+def _has_explicit_offset(text: str) -> bool:
+    if len(text) >= 6 and text[-6] in "+-" and text[-3] == ":":
+        return True
+    if len(text) >= 5 and text[-5] in "+-" and text[-4:].isdigit():
+        return True
+    return False
+
+
+def _strict_timestamp(value: Any) -> Tuple[Optional[datetime], bool]:
+    """Accept only an explicit Z or numeric offset. Naive and garbage are invalid."""
     if not isinstance(value, str) or value == "":
-        return None
-    text = value[:-1] + "+00:00" if value.endswith("Z") else value
+        return None, False
+    if value.endswith("Z"):
+        text = value[:-1] + "+00:00"
+    elif _has_explicit_offset(value):
+        text = value
+    else:
+        return None, False
     try:
-        return datetime.fromisoformat(text)
+        moment = datetime.fromisoformat(text)
     except ValueError:
-        return None
+        return None, False
+    if moment.tzinfo is None or moment.utcoffset() is None:
+        return None, False
+    return moment, True
+
+
+def _parse_ts(value: Any) -> Optional[datetime]:
+    moment, ok = _strict_timestamp(value)
+    return moment if ok else None
 
 
 def _as_decimal(value: Any) -> Decimal:
@@ -325,40 +357,48 @@ def _is_zero(value: Any) -> bool:
         return False
 
 
-def _position_unknown(account: Dict[str, Any]) -> bool:
+def _position_kind(account: Dict[str, Any]) -> str:
+    """unknown, malformed, flat, or known. Only a checked structure is flat or known."""
     if "positions" not in account or account.get("positions") is None:
-        return True
+        return "unknown"
     positions = account["positions"]
-    if isinstance(positions, dict):
-        if "status" in positions:
-            status = positions.get("status")
-            if _blank(status) or str(status).upper() in ("UNKNOWN", "UNAVAILABLE"):
-                return True
-    return False
+    if positions == []:
+        return "flat"
+    if not isinstance(positions, dict):
+        return "malformed"
+    if "status" not in positions or _blank(positions.get("status")):
+        return "unknown"
+    status = positions.get("status")
+    if status in ("UNKNOWN", "UNAVAILABLE"):
+        return "unknown"
+    if status != "KNOWN":
+        return "malformed"
+    quantities = [positions[key] for key in _POSITION_QTY if key in positions]
+    if not quantities:
+        return "malformed"
+    for qty in quantities:
+        try:
+            _as_decimal(qty)
+        except NumericFault:
+            return "malformed"
+    if all(_is_zero(qty) for qty in quantities):
+        return "flat"
+    return "known"
+
+
+def _position_unknown(account: Dict[str, Any]) -> bool:
+    return _position_kind(account) == "unknown"
 
 
 def _verifiable_flat(account: Dict[str, Any]) -> bool:
-    if _position_unknown(account):
-        return False
-    positions = account.get("positions")
-    if positions == []:
-        return True
-    if not isinstance(positions, dict):
-        return False
-    quantities = [
-        positions[key]
-        for key in ("btc", "eth", "usdt", "btc_overlay", "eth_overlay", "event_increment")
-        if key in positions
-    ]
-    if not quantities:
-        return False
-    return all(_is_zero(qty) for qty in quantities)
+    return _position_kind(account) == "flat"
 
 
 def _existing_label(account: Dict[str, Any]) -> str:
-    if _position_unknown(account):
+    kind = _position_kind(account)
+    if kind in ("unknown", "malformed"):
         return "UNKNOWN"
-    if _verifiable_flat(account):
+    if kind == "flat":
         return "NOT_APPLICABLE"
     label = account.get("protection_state")
     if _blank(label):
@@ -408,6 +448,50 @@ def _policy_body(policy: Dict[str, Any]) -> Dict[str, Any]:
     return {key: value for key, value in policy.items() if key != "policy_hash"}
 
 
+def policy_content_hash(policy: Dict[str, Any]) -> str:
+    """Hash the policy body. The caller-supplied policy_hash is not part of the body."""
+    return _content_hash(_policy_body(policy))
+
+
+def _convert_representation(obj: Any, notes: Dict[str, bool]) -> Any:
+    if isinstance(obj, float):
+        notes["converted_float"] = True
+        if not math.isfinite(obj):
+            notes["non_finite"] = True
+            return None
+        return Decimal(str(obj))
+    if isinstance(obj, dict):
+        return {key: _convert_representation(value, notes) for key, value in obj.items()}
+    if isinstance(obj, list):
+        return [_convert_representation(value, notes) for value in obj]
+    return obj
+
+
+def adapt_decision_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
+    """Versioned boundary in front of evaluate_decision().
+
+    Finite floats become Decimal(str(float)). That text is a boundary
+    representation, not an original exact fact. Non-finite floats become
+    unknown. submit_allowed is copied and is not rewritten.
+    """
+    if not isinstance(candidate, dict):
+        raise TypeError("decision candidate must be an object")
+    notes: Dict[str, bool] = {}
+    converted = _convert_representation(candidate, notes)
+    source = converted.get("source")
+    if not isinstance(source, str) or source == "":
+        source = "SYNTHETIC"
+    return {
+        "boundary_version": DECISION_BOUNDARY_VERSION,
+        "representation": DECISION_REPRESENTATION,
+        "source": source,
+        "decision_key": converted.get("decision_key"),
+        "as_of": converted.get("as_of"),
+        "submit_allowed": converted.get("submit_allowed"),
+        "candidate": converted,
+    }
+
+
 def _declaration_key(source: Any, object_name: str, version_claim: str) -> str:
     payload = {
         "canonical_version": CANONICAL_VERSION,
@@ -448,7 +532,7 @@ def _truth(decision: Dict[str, Any], account: Dict[str, Any], market: Dict[str, 
             "equity": account.get("equity"),
         },
         "position_truth": {
-            "status": "UNKNOWN" if _position_unknown(account) else "KNOWN",
+            "status": "KNOWN" if _position_kind(account) in ("known", "flat") else "UNKNOWN",
             "version": account.get("position_version"),
         },
         "protection_truth": {
@@ -464,8 +548,12 @@ def _truth(decision: Dict[str, Any], account: Dict[str, Any], market: Dict[str, 
             "freshness": market.get("freshness"),
         },
         "governance": {
-            "kill": "ACTIVE" if account.get("kill") == "ACTIVE" else "CLEAR",
-            "incident": "INCIDENT_LOCKED" if account.get("incident") == "ACTIVE" else "CLEAR",
+            "kill": account.get("kill") if account.get("kill") in ("ACTIVE", "CLEAR") else "UNKNOWN",
+            "incident": (
+                "INCIDENT_LOCKED" if account.get("incident") == "ACTIVE"
+                else "CLEAR" if account.get("incident") == "CLEAR"
+                else "UNKNOWN"
+            ),
         },
     }
 
@@ -599,24 +687,31 @@ def _local_hits(
     if policy.get("parameter_status") != PARAMETER_STATUS:
         hits.append((3, "PARAMETER_STATUS"))
 
-    if "policy_hash" in policy:
+    if "policy_hash" not in policy or _blank(policy.get("policy_hash")):
+        hits.append((3, "POLICY_INCOMPLETE"))
+    else:
         try:
-            computed = _content_hash(_policy_body(policy))
+            computed = policy_content_hash(policy)
         except (NumericFault, TypeError):
             computed = None
         if computed is None or policy.get("policy_hash") != computed:
             hits.append((1, "INPUT_IDENTITY_CONFLICT"))
 
-    if account.get("kill") == "ACTIVE":
-        hits.append((5, "KILL_ACTIVE"))
-    if account.get("incident") == "ACTIVE":
-        hits.append((5, "INCIDENT_ACTIVE"))
+    if decision.get("submit_allowed") is not False:
+        hits.append((2, "SUBMIT_NOT_FALSE"))
 
-    status = str(account.get("status") or "")
-    if status.upper() == "STALE":
-        hits.append((6, "ACCOUNT_STALE"))
-    elif status.upper() in ("", "UNKNOWN", "UNAVAILABLE"):
+    for field, active_code in (("kill", "KILL_ACTIVE"), ("incident", "INCIDENT_ACTIVE")):
+        if field not in account or account.get(field) not in ("CLEAR", "ACTIVE"):
+            hits.append((6, "GOVERNANCE_UNKNOWN"))
+        elif account.get(field) == "ACTIVE":
+            hits.append((5, active_code))
+
+    if "status" not in account or _blank(account.get("status")) or account.get("status") in ("UNKNOWN", "UNAVAILABLE"):
         hits.append((6, "ACCOUNT_UNKNOWN"))
+    elif account.get("status") == "STALE":
+        hits.append((6, "ACCOUNT_STALE"))
+    elif account.get("status") != "KNOWN":
+        hits.append((6, "ACCOUNT_STATUS_INVALID"))
     fresh = str(market.get("freshness") or "").lower()
     if fresh == "stale":
         hits.append((6, "MARKET_STALE"))
@@ -631,15 +726,25 @@ def _local_hits(
     if "spread" not in market or _blank(market.get("spread")):
         hits.append((6, "SPREAD_UNKNOWN"))
 
-    evaluation = _parse_ts(evaluation_at)
-    stamps = {
-        "decision": _parse_ts(decision.get("as_of")),
-        "account": _parse_ts(account.get("as_of")),
-        "market": _parse_ts(market.get("as_of")),
+    evaluation, evaluation_ok = _strict_timestamp(evaluation_at)
+    required = {
+        "decision": decision.get("as_of"),
+        "account": account.get("as_of"),
+        "market": market.get("as_of"),
     }
-    if evaluation is not None:
-        for moment in stamps.values():
-            if moment is not None and moment > evaluation:
+    parsed: Dict[str, datetime] = {}
+    stamps_ok = True
+    for name, raw in required.items():
+        moment, ok = _strict_timestamp(raw)
+        if not ok or moment is None:
+            stamps_ok = False
+        else:
+            parsed[name] = moment
+    if not stamps_ok or not evaluation_ok or evaluation is None:
+        hits.append((6, "TIMESTAMP_INVALID"))
+    elif len(parsed) == 3:
+        for moment in parsed.values():
+            if moment > evaluation:
                 hits.append((6, "FUTURE_TIMESTAMP"))
                 break
         limits = {
@@ -647,39 +752,49 @@ def _local_hits(
             "account": policy.get("sla_account_sec"),
             "market": policy.get("sla_market_sec"),
         }
-        for name, moment in stamps.items():
+        for name, moment in parsed.items():
             limit = limits[name]
-            if moment is None or _blank(limit):
-                continue
+            if _blank(limit):
+                hits.append((6, "SLA_EXCEEDED"))
+                break
             try:
                 seconds = _as_decimal(limit)
             except NumericFault:
-                continue
+                hits.append((6, "SLA_EXCEEDED"))
+                break
             delta = Decimal(str((evaluation - moment).total_seconds()))
             if delta > seconds:
                 hits.append((6, "SLA_EXCEEDED"))
                 break
         skew_limit = policy.get("skew_limit_sec")
-        moments = [item for item in stamps.values() if item is not None]
-        if not _blank(skew_limit) and len(moments) == 3:
+        if _blank(skew_limit):
+            hits.append((6, "SKEW_EXCEEDED"))
+        else:
             try:
                 limit_seconds = _as_decimal(skew_limit)
             except NumericFault:
                 limit_seconds = None
-            if limit_seconds is not None:
-                gaps = []
-                for left, right in ((0, 1), (0, 2), (1, 2)):
-                    gaps.append(abs((moments[left] - moments[right]).total_seconds()))
+            if limit_seconds is None:
+                hits.append((6, "SKEW_EXCEEDED"))
+            else:
+                moments = [parsed["decision"], parsed["account"], parsed["market"]]
+                gaps = [
+                    abs((moments[left] - moments[right]).total_seconds())
+                    for left, right in ((0, 1), (0, 2), (1, 2))
+                ]
                 if Decimal(str(max(gaps))) > limit_seconds:
                     hits.append((6, "SKEW_EXCEEDED"))
 
-    if _position_unknown(account):
+    kind = _position_kind(account)
+    if kind == "malformed":
+        hits.append((7, "POSITION_MALFORMED"))
+    elif kind == "unknown":
         hits.append((7, "POSITION_UNKNOWN"))
     new_risk = _is_new_risk_action(decision)
     label = _existing_label(account)
     if new_risk and account.get("proposed_protection_state") != "ACTIVE_CONFIRMED":
         hits.append((8, "PROTECTION_UNMET"))
-    if new_risk and not _position_unknown(account) and not _verifiable_flat(account) and label != "ACTIVE_CONFIRMED":
+    if new_risk and kind == "known" and label != "ACTIVE_CONFIRMED":
         hits.append((8, "EXISTING_POSITION_UNPROTECTED"))
     return hits
 
@@ -696,6 +811,8 @@ def _record(
     plan: Optional[Dict[str, Any]],
     plan_key: str,
     defensive: bool,
+    decision_boundary: str = "caller-supplied-v1",
+    decision_representation: str = "caller-decimal-v1",
 ) -> Dict[str, Any]:
     requested, allowed = _vectors(plan, decision)
     if state not in ("PASS", "REDUCED"):
@@ -706,8 +823,12 @@ def _record(
         btc_plan = "ADJUDICATED"
     else:
         btc_plan = "BLOCKED"
-    adjusted_target = _freeze(plan["risk_adjusted_target"]) if plan and "risk_adjusted_target" in plan else _freeze(decision.get("target_state") or {})
-    adjusted_delta = _freeze(plan["risk_adjusted_delta"]) if plan and "risk_adjusted_delta" in plan else _freeze(decision.get("delta_proposal") or {})
+    if state in ("PASS", "REDUCED") and plan and "risk_adjusted_target" in plan and "risk_adjusted_delta" in plan:
+        adjusted_target = _freeze(plan["risk_adjusted_target"])
+        adjusted_delta = _freeze(plan["risk_adjusted_delta"])
+    else:
+        adjusted_target = {"status": "UNAVAILABLE"}
+        adjusted_delta = {"status": "UNAVAILABLE"}
     return {
         "account_authority": "NOT_ESTABLISHED",
         "based_on_decision_key": decision.get("decision_key"),
@@ -715,6 +836,8 @@ def _record(
         "canonical_version": CANONICAL_VERSION,
         "claimed_account_source": account.get("source"),
         "claimed_market_source": market.get("source"),
+        "decision_boundary": decision_boundary,
+        "decision_representation": decision_representation,
         "defensive_intent_preserved": bool(defensive),
         "defensive_quantity": "UNAVAILABLE",
         "evaluation_at": evaluation_at,
@@ -884,6 +1007,8 @@ def _force_block(record: Dict[str, Any], code: str) -> Dict[str, Any]:
     record["reasons"] = list(blockers)
     record["risk_state"] = "BLOCK_NEW_RISK"
     record["new_risk_allowed"] = False
+    record["risk_adjusted_delta"] = {"status": "UNAVAILABLE"}
+    record["risk_adjusted_target"] = {"status": "UNAVAILABLE"}
     if isinstance(record.get("new_risk"), dict):
         record["new_risk"]["allowed"] = Decimal("0")
     fence = record.get("identity_fence") or {}
@@ -891,6 +1016,36 @@ def _force_block(record: Dict[str, Any], code: str) -> Dict[str, Any]:
         fence["btc_overlay_plan"] = "BLOCKED"
         record["identity_fence"] = fence
     return record
+
+
+def _output_consistent(record: Dict[str, Any]) -> bool:
+    state = record.get("risk_state")
+    new_risk = record.get("new_risk") or {}
+    try:
+        allowed = _as_decimal(new_risk.get("allowed"))
+        requested = _as_decimal(new_risk.get("requested"))
+    except NumericFault:
+        return False
+    delta = record.get("risk_adjusted_delta")
+    target = record.get("risk_adjusted_target")
+    if not isinstance(delta, dict) or not isinstance(target, dict):
+        return False
+    if allowed > requested:
+        return False
+    if state in ("PASS", "REDUCED"):
+        return (
+            record.get("new_risk_allowed") is True
+            and delta.get("status") != "UNAVAILABLE"
+            and target.get("status") != "UNAVAILABLE"
+        )
+    return (
+        record.get("new_risk_allowed") is False
+        and allowed == 0
+        and delta.get("status") == "UNAVAILABLE"
+        and target.get("status") == "UNAVAILABLE"
+        and "btc_overlay" not in delta
+        and "btc_overlay" not in target
+    )
 
 
 def adjudicate_runtime(
@@ -909,20 +1064,39 @@ def adjudicate_runtime(
         raise CallerTransactionOpen(
             "caller connection has an open transaction; refusing before any write"
         )
-    if decision.get("submit_allowed") not in (False,):
-        decision = dict(decision)
-        decision["submit_allowed"] = False
+    identity_decision = decision
+    working = decision
+    boundary_version = "caller-supplied-v1"
+    boundary_representation = "caller-decimal-v1"
+    extra_hits: List[Tuple[int, str]] = []
+    if isinstance(decision, dict) and "boundary_version" in decision:
+        candidate = decision.get("candidate")
+        valid_boundary = (
+            decision.get("boundary_version") == DECISION_BOUNDARY_VERSION
+            and decision.get("representation") == DECISION_REPRESENTATION
+            and isinstance(candidate, dict)
+        )
+        if not valid_boundary:
+            extra_hits.append((2, "BOUNDARY_INVALID"))
+            working = candidate if isinstance(candidate, dict) else decision
+        else:
+            working = candidate
+            boundary_version = DECISION_BOUNDARY_VERSION
+            boundary_representation = DECISION_REPRESENTATION
+        identity_decision = decision
+        if decision.get("submit_allowed") is not False:
+            extra_hits.append((2, "SUBMIT_NOT_FALSE"))
 
     evaluator = risk_evaluator or evaluate_risk
-    defensive = _is_defensive_candidate(decision)
-    new_risk = _is_new_risk_action(decision)
-    hits = _local_hits(decision, account, market, policy, evaluation_at)
+    defensive = _is_defensive_candidate(working)
+    new_risk = _is_new_risk_action(working)
+    hits = extra_hits + _local_hits(working, account, market, policy, evaluation_at)
     plan = None
     writable_inputs = not any(row <= 4 or row == 0 for row, _ in hits)
     if writable_inputs:
         policy_for = _floatify(_policy_body(policy))
-        decision_for = _floatify(decision)
-        truth = _floatify(_truth(decision, account, market, evaluation_at))
+        decision_for = _floatify(working)
+        truth = _floatify(_truth(working, account, market, evaluation_at))
         plan = evaluator(decision_for, truth, policy_for)
         violations = assert_risk_monotonicity(plan)
         if violations:
@@ -934,7 +1108,7 @@ def adjudicate_runtime(
     specs: List[Dict[str, str]] = []
     if not any(row <= 2 or row == 0 for row, _ in hits):
         try:
-            specs, hashes = _bindings_for(decision, account, market, policy)
+            specs, hashes = _bindings_for(identity_decision, account, market, policy)
             sla_rule = policy.get("sla_rule_id")
             if isinstance(sla_rule, str) and sla_rule:
                 plan_key = _risk_plan_key(hashes, evaluation_at, sla_rule)
@@ -944,7 +1118,7 @@ def adjudicate_runtime(
             state, should_write = _decide(hits, defensive, new_risk, plan)
 
     record = _record(
-        decision=decision,
+        decision=working,
         account=account,
         market=market,
         policy=policy,
@@ -954,7 +1128,12 @@ def adjudicate_runtime(
         plan=plan,
         plan_key=plan_key,
         defensive=defensive,
+        decision_boundary=boundary_version,
+        decision_representation=boundary_representation,
     )
+    if not _output_consistent(record):
+        record = _force_block(record, "OUTPUT_INCONSISTENT")
+        return _pack(record, present=False, wrote=False, idempotent=False)
     if not should_write or not plan_key:
         if not should_write and record["risk_state"] == "UNKNOWN":
             return _pack(record, present=False, wrote=False, idempotent=False)

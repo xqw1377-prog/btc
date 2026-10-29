@@ -105,6 +105,9 @@ def _policy(**overrides):
         "skew_limit_sec": Decimal("3600"),
     }
     base.update(overrides)
+    if "policy_hash" not in base:
+        from aurora.risk_adjudicator import policy_content_hash
+        base["policy_hash"] = policy_content_hash(base)
     return base
 
 
@@ -945,6 +948,14 @@ class R31AcceptanceTests(unittest.TestCase):
         return json.loads(proc.stdout)
 
     def _install_probes(self):
+        from aurora.execution_engine import ExecutionEngine
+        from aurora.execution_engine_v2 import ExecutionEngineV2
+        from aurora.kernel.binance_exchange import BinanceExchange
+        from aurora.ops_controlled_requal import WireTee
+        from aurora.portfolio_brain_v2 import PortfolioBrainV2
+        from aurora.production_main import BinanceBroker
+        import aurora.risk_gate as risk_gate
+
         self._counts = {
             "futures_create_order": 0,
             "create_order": 0,
@@ -953,25 +964,42 @@ class R31AcceptanceTests(unittest.TestCase):
             "send": 0,
         }
         counts = self._counts
+
+        def _blocked(counter):
+            def _call(*_args, **_kwargs):
+                counts[counter] += 1
+                raise ProbeBlocked(counter)
+            return _call
+
         self._orig_send = socket.socket.send
+        self._orig_sendall = socket.socket.sendall
         self._orig_connect = socket.socket.connect
+        self._orig_create_connection = socket.create_connection
+        socket.socket.send = _blocked("send")
+        socket.socket.sendall = _blocked("send")
+        socket.socket.connect = _blocked("send")
+        socket.create_connection = _blocked("send")
 
-        def _send(sock, data, *args, **kwargs):
-            counts["send"] += 1
-            return self._orig_send(sock, data, *args, **kwargs)
-
-        def _connect(sock, *args, **kwargs):
-            counts["send"] += 1
-            return self._orig_connect(sock, *args, **kwargs)
-
-        socket.socket.send = _send
-        socket.socket.connect = _connect
-
-        import aurora.risk_gate as risk_gate
-        import aurora.portfolio_brain_v2 as brain
+        self._wire = WireTee
+        self._broker = BinanceBroker
+        self._exchange = BinanceExchange
+        self._engine = ExecutionEngine
+        self._engine2 = ExecutionEngineV2
+        self._brain_cls = PortfolioBrainV2
+        self._orig_futures = WireTee.futures_create_order
+        self._orig_create = BinanceBroker.create_order
+        self._orig_submit = BinanceExchange.submit_order
+        self._orig_place = ExecutionEngine.place_order
+        self._orig_place_retry = ExecutionEngineV2._place_order_with_retry
+        self._orig_process = PortfolioBrainV2.process
+        WireTee.futures_create_order = _blocked("futures_create_order")
+        BinanceBroker.create_order = _blocked("create_order")
+        BinanceExchange.submit_order = _blocked("futures_create_order")
+        ExecutionEngine.place_order = _blocked("futures_create_order")
+        ExecutionEngineV2._place_order_with_retry = _blocked("futures_create_order")
+        PortfolioBrainV2.process = _blocked("brain")
 
         self._risk_gate = risk_gate
-        self._brain = brain
         self._orig_gate = {}
         for name in dir(risk_gate.RiskGate):
             if name.startswith("_"):
@@ -979,37 +1007,22 @@ class R31AcceptanceTests(unittest.TestCase):
             attr = getattr(risk_gate.RiskGate, name)
             if callable(attr):
                 self._orig_gate[name] = attr
-
-                def _wrapped(*args, _name=name, _attr=attr, **kwargs):
-                    counts["risk_gate"] += 1
-                    return _attr(*args, **kwargs)
-
-                setattr(risk_gate.RiskGate, name, _wrapped)
-        self._orig_process = brain.PortfolioBrainV2.process
-
-        def _process(*args, **kwargs):
-            counts["brain"] += 1
-            return self._orig_process(*args, **kwargs)
-
-        brain.PortfolioBrainV2.process = _process
-
-        def _decide(*args, **kwargs):
-            counts["brain"] += 1
-            counts["futures_create_order"] += 1
-            counts["create_order"] += 1
-
-        brain.PortfolioBrainV2.decide = _decide
-        self._decide = _decide
+                setattr(risk_gate.RiskGate, name, _blocked("risk_gate"))
         return counts
 
     def _restore_probes(self):
         socket.socket.send = self._orig_send
+        socket.socket.sendall = self._orig_sendall
         socket.socket.connect = self._orig_connect
+        socket.create_connection = self._orig_create_connection
+        self._wire.futures_create_order = self._orig_futures
+        self._broker.create_order = self._orig_create
+        self._exchange.submit_order = self._orig_submit
+        self._engine.place_order = self._orig_place
+        self._engine2._place_order_with_retry = self._orig_place_retry
+        self._brain_cls.process = self._orig_process
         for name, attr in self._orig_gate.items():
             setattr(self._risk_gate.RiskGate, name, attr)
-        self._brain.PortfolioBrainV2.process = self._orig_process
-        if hasattr(self._brain.PortfolioBrainV2, "decide"):
-            delattr(self._brain.PortfolioBrainV2, "decide")
 
 
 class ProbeBlocked(RuntimeError):
