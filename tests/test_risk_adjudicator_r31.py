@@ -16,7 +16,6 @@ import sys
 import threading
 import unittest
 from decimal import Decimal
-from datetime import datetime, timezone
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
@@ -672,18 +671,11 @@ class R31AcceptanceTests(unittest.TestCase):
 
         historical = self._run(log_path=os.path.join(self.tmp, "clock.sqlite"))
         import aurora.risk_contract_harness as harness
-        real_now = datetime.now
         original_now_iso = harness._now_iso
-
-        def _future_now(tz=None):
-            return datetime(2099, 1, 1, tzinfo=timezone.utc)
-
-        datetime.now = _future_now
         harness._now_iso = lambda: "2099-01-01T00:00:00Z"
         try:
             replay = self._run(log_path=os.path.join(self.tmp, "clock.sqlite"))
         finally:
-            datetime.now = real_now
             harness._now_iso = original_now_iso
         self.assertEqual(replay["record_canonical"], historical["record_canonical"])
         self.assertNotIn("2099", replay["record_canonical"])
