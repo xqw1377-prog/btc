@@ -124,6 +124,12 @@ def _sanitize(value: Any, path: str, found: List[Dict[str, str]]) -> Any:
     return value
 
 
+def _span(later: datetime, earlier: datetime) -> Fraction:
+    delta = later - earlier
+    micros = (delta.days * 86400 + delta.seconds) * 1000000 + delta.microseconds
+    return Fraction(micros, 1000000)
+
+
 def _parse_time(value: Any) -> Optional[datetime]:
     if not isinstance(value, str) or not value:
         return None
@@ -197,6 +203,8 @@ def _parse_q(value: Any, policy: Dict[str, Any]) -> Q:
         text = value.strip()
     else:
         raise _Stop("PRECISION_INSUFFICIENT")
+    if len(text) > 4096 or len(text) > policy["max_significant_digits"] + 8:
+        raise _Stop("NUMERIC_LIMIT")
     if text.lower() in _NON_FINITE_TEXT:
         raise _Stop("NON_FINITE")
     match = _NUMBER.match(text)
@@ -207,6 +215,8 @@ def _parse_q(value: Any, policy: Dict[str, Any]) -> Q:
     digits = (whole or "") + frac
     if digits == "":
         raise _Stop("PRECISION_INSUFFICIENT")
+    if len(digits) > policy["max_significant_digits"] or len(digits) > 4096:
+        raise _Stop("NUMERIC_LIMIT")
     exp = 0
     if exp_token is not None:
         if len(exp_token.lstrip("+-")) > 6:
@@ -223,18 +233,15 @@ def _parse_q(value: Any, policy: Dict[str, Any]) -> Q:
         scale = len(frac)
     if scale > policy["max_input_scale"]:
         raise _Stop("PRECISION_INSUFFICIENT")
-    coeff = int(significant)
+    try:
+        coeff = int(significant)
+    except ValueError:
+        raise _Stop("NUMERIC_LIMIT")
     if text[0] == "-":
         coeff = -coeff
     if significant == "0":
         coeff = 0
-    shift = len(digits) - len(significant) if significant != "0" else 0
-    # significant dropped leading zeros; exponent already counts the decimal place.
-    # Rebuild coeff from the full digit string so trailing zeros stay in the value.
-    full = int(digits)
-    if text[0] == "-":
-        full = -full
-    return Q(full, exp)
+    return Q(coeff, exp)
 
 
 def _add(left: Q, right: Q, policy: Dict[str, Any]) -> Q:
@@ -366,14 +373,62 @@ def _evidence_covers(manifest: Dict[str, Any]) -> bool:
     return True
 
 
-def _window(manifest: Any, scope: Dict[str, Any], event_type: str) -> Dict[str, Any]:
-    if manifest is None:
-        return {"status": "UNKNOWN", "total": None, "events": [], "lineage": None}
-    if not isinstance(manifest, dict):
+def _event_problem(
+    event: Any,
+    event_type: str,
+    start: Optional[datetime],
+    end: Optional[datetime],
+    evaluation: Optional[datetime],
+    policy: Optional[Dict[str, Any]],
+) -> Optional[str]:
+    if not isinstance(event, dict):
+        return "INVALID"
+    if event.get("event_type") != event_type:
+        return "INVALID"
+    stable_id = event.get("stable_id")
+    asset = event.get("asset")
+    if not isinstance(stable_id, str) or not stable_id.strip():
+        return "INVALID"
+    if not isinstance(asset, str) or not asset.strip():
+        return "INVALID"
+    if policy is None:
+        return "INVALID"
+    try:
+        _parse_q(event.get("amount"), policy)
+    except _Stop as exc:
+        return exc.code
+    moment = _parse_time(event.get("event_time"))
+    if moment is None:
+        return "TIMESTAMP_INVALID"
+    if evaluation is not None and moment > evaluation:
+        return "FUTURE_TIMESTAMP"
+    if start is None or end is None or not (start <= moment < end):
+        return "INVALID"
+    return None
+
+
+def _window(
+    manifest: Any,
+    scope: Dict[str, Any],
+    event_type: str,
+    evaluation: Optional[datetime],
+    policy: Optional[Dict[str, Any]],
+    blockers: List[str],
+) -> Dict[str, Any]:
+    if manifest is None or not isinstance(manifest, dict):
         return {"status": "UNKNOWN", "total": None, "events": [], "lineage": None}
     events = manifest.get("events")
     if not isinstance(events, list):
         events = []
+    max_rows = None if policy is None else policy.get("max_event_rows")
+    if isinstance(max_rows, int) and len(events) > max_rows:
+        blockers.append("RESOURCE_LIMIT")
+        return {
+            "status": "INCOMPLETE",
+            "total": None,
+            "events": [],
+            "lineage": copy.deepcopy(manifest.get("lineage")),
+        }
     view = {
         "status": "INCOMPLETE",
         "total": None,
@@ -391,9 +446,21 @@ def _window(manifest: Any, scope: Dict[str, Any], event_type: str) -> Dict[str, 
         and manifest.get("truncated") is False
     )
     start = _parse_time(manifest.get("window_from"))
+    end = _parse_time(manifest.get("window_to"))
     retained = _parse_time(manifest.get("retained_from"))
     covers = start is not None and retained is not None and retained <= start
     if not complete_shape or not covers:
+        view["status"] = "INCOMPLETE"
+        return view
+    if start is None or end is None:
+        blockers.append("TIMESTAMP_INVALID")
+        view["status"] = "INCOMPLETE"
+        return view
+    if start >= end:
+        view["status"] = "INCOMPLETE"
+        return view
+    if evaluation is not None and end > evaluation:
+        blockers.append("FUTURE_TIMESTAMP")
         view["status"] = "INCOMPLETE"
         return view
     if _event_conflicts(events, scope):
@@ -412,8 +479,44 @@ def _window(manifest: Any, scope: Dict[str, Any], event_type: str) -> Dict[str, 
         view["status"] = "UNKNOWN"
         view["total"] = None
         return view
+    invalid = False
+    seen: Dict[Tuple[Any, ...], str] = {}
+    amounts: List[Q] = []
+    asset = None
+    for event in events:
+        problem = _event_problem(event, event_type, start, end, evaluation, policy)
+        if problem == "INVALID":
+            invalid = True
+            continue
+        if problem:
+            blockers.append(problem)
+            invalid = True
+            continue
+        identity = (
+            scope.get("environment"),
+            scope.get("account_ref"),
+            scope.get("sub_account_ref"),
+            event.get("event_type"),
+            event.get("stable_id"),
+        )
+        body = canonical_dumps(event)
+        if identity in seen:
+            continue
+        seen[identity] = body
+        if asset is None:
+            asset = event.get("asset")
+        elif event.get("asset") != asset:
+            invalid = True
+            continue
+        amounts.append(_parse_q(event.get("amount"), policy))
+    if invalid or policy is None:
+        view["status"] = "INCOMPLETE"
+        return view
+    total = Q(0, 0)
+    for amount in amounts:
+        total = _add(total, amount, policy)
     view["status"] = "COMPLETE"
-    view["total"] = None
+    view["total"] = _q_text(total, policy)
     return view
 
 
@@ -461,9 +564,17 @@ def _index_quotes(quotes: Any, policy: Dict[str, Any], blockers: List[str]) -> D
     return found
 
 
-def _convert(amount: Q, asset: str, quotes: Dict[Tuple[str, str], Q], policy: Dict[str, Any]) -> Fraction:
+def _convert(
+    amount: Q,
+    asset: str,
+    quotes: Dict[Tuple[str, str], Q],
+    policy: Dict[str, Any],
+    pinned: bool,
+) -> Fraction:
     if asset == "BTC" or amount.is_zero():
         return _fraction(amount, policy)
+    if not pinned:
+        raise _Stop("QUOTE_UNPINNED")
     forward = quotes.get((asset, "BTC"))
     backward = quotes.get(("BTC", asset))
     if forward is not None and backward is not None:
@@ -720,6 +831,34 @@ def _proposal(binding_state: Any, content: Dict[str, Any], source: str, version:
     }
 
 
+def _text_ok(value: Any) -> bool:
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _lineage_ready(face: Any) -> bool:
+    return (
+        isinstance(face, dict)
+        and _text_ok(face.get("receipt_ref"))
+        and _text_ok(face.get("raw_response_hash"))
+    )
+
+
+def _anchors_ready(ledger: Any) -> bool:
+    if not isinstance(ledger, dict):
+        return False
+    anchors = ledger.get("opening_anchor")
+    if isinstance(anchors, dict):
+        anchors = [anchors]
+    if not isinstance(anchors, list) or not anchors:
+        return False
+    for anchor in anchors:
+        if not isinstance(anchor, dict):
+            return False
+        if not _text_ok(anchor.get("anchor_version")) or _parse_time(anchor.get("as_of")) is None:
+            return False
+    return True
+
+
 def _face_scope(face: Dict[str, Any], scope: Dict[str, Any], names: List[str]) -> bool:
     return (
         face.get("environment") == scope.get("environment")
@@ -733,8 +872,18 @@ def _face_scope(face: Dict[str, Any], scope: Dict[str, Any], names: List[str]) -
 def _sum_fractions(parts: List[Fraction], policy: Dict[str, Any]) -> Fraction:
     total = Fraction(0)
     for part in parts:
+        if (
+            _digit_len(part.numerator) > policy["max_intermediate_digits"]
+            or _digit_len(part.denominator) > policy["max_intermediate_digits"]
+        ):
+            raise _Stop("NUMERIC_LIMIT")
         total += part
-    _format_fraction(total, policy)
+        if (
+            _digit_len(total.numerator) > policy["max_intermediate_digits"]
+            or _digit_len(total.denominator) > policy["max_intermediate_digits"]
+        ):
+            raise _Stop("NUMERIC_LIMIT")
+        _format_fraction(total, policy)
     return total
 
 
@@ -777,9 +926,16 @@ def evaluate_account_truth(
         scope_s = {}
         blockers.append("ACCOUNT_IDENTITY_UNFIXED")
     source = scope_s.get("source_claim")
-    version = scope_s.get("version_claim") if isinstance(scope_s.get("version_claim"), str) else ""
+    version_raw = scope_s.get("version_claim")
+    if not isinstance(version_raw, str) or not version_raw.strip():
+        blockers.append("ACCOUNT_IDENTITY_UNFIXED")
+        version = ""
+    else:
+        version = version_raw
+    if not isinstance(scope_s.get("scope_version"), str) or not scope_s.get("scope_version").strip():
+        blockers.append("ACCOUNT_IDENTITY_UNFIXED")
     content = {
-        "arithmetic_policy_version": policy.get("arithmetic_policy_version") if isinstance(policy, dict) else None,
+        "policy": policy if isinstance(policy, dict) else None,
         "balances": balances_s,
         "collection_proofs": collection_proofs,
         "fee_manifest": fee_s,
@@ -834,7 +990,7 @@ def evaluate_account_truth(
         try:
             sla = _parse_q(loaded["sla_account_sec"], loaded)
             limit = _fraction(sla, loaded)
-            if Fraction(int((evaluated - as_of).total_seconds()), 1) > limit:
+            if _span(evaluated, as_of) > limit:
                 blockers.append("SLA_EXCEEDED")
         except _Stop as exc:
             blockers.append(exc.code)
@@ -877,6 +1033,9 @@ def evaluate_account_truth(
             if identity in seen:
                 blockers.append("DUPLICATE_ROW")
             seen.add(identity)
+            product = row.get("product")
+            if product not in ("SPOT", "USDS_M") or product not in set(names):
+                blockers.append("UNSUPPORTED_PRODUCT")
             if loaded is None:
                 continue
             try:
@@ -898,29 +1057,49 @@ def evaluate_account_truth(
             balance_rows.append(echoed)
 
     if loaded is not None and position_state == "FLAT":
-        nonzero = False
+        declared = set(names)
+        open_qty = False
         for row in position_rows:
+            product = row.get("product")
+            if product not in ("SPOT", "USDS_M") or product not in declared:
+                blockers.append("UNSUPPORTED_PRODUCT")
             try:
-                pnl = _pnl(row, loaded)
+                qty = _parse_q(row.get("qty"), loaded)
+                _pnl(row, loaded)
             except _Stop as exc:
                 blockers.append(exc.code)
                 position_state = "MALFORMED"
                 break
-            if not pnl.is_zero():
-                nonzero = True
+            if not qty.is_zero():
+                open_qty = True
         if position_state != "MALFORMED":
-            position_state = "KNOWN" if nonzero else "FLAT"
+            position_state = "KNOWN" if open_qty else "FLAT"
             _hedge(scope_s, position_rows, blockers)
 
     liability_rows: List[Tuple[str, Q]] = []
     echoed_liabilities: List[Dict[str, Any]] = []
-    if liabilities_s is None:
+    if liabilities_s is None or not isinstance(liabilities_s, list):
         blockers.append("BALANCE_INCOMPLETE")
-    elif isinstance(liabilities_s, list) and loaded is not None:
+    elif loaded is not None:
+        seen_debts = set()
         for row in liabilities_s:
             if not isinstance(row, dict):
                 blockers.append("BALANCE_INCOMPLETE")
                 continue
+            asset = row.get("asset")
+            if row.get("status") != "KNOWN" or not isinstance(asset, str) or not asset.strip():
+                blockers.append("BALANCE_INCOMPLETE")
+                continue
+            if "environment" in row and row.get("environment") != scope_s.get("environment"):
+                blockers.append("SCOPE_MISMATCH")
+                continue
+            if "account_ref" in row and row.get("account_ref") != scope_s.get("account_ref"):
+                blockers.append("SCOPE_MISMATCH")
+                continue
+            if asset in seen_debts:
+                blockers.append("DUPLICATE_ROW")
+                continue
+            seen_debts.add(asset)
             try:
                 amount = _parse_q(row.get("amount"), loaded)
             except _Stop as exc:
@@ -928,11 +1107,12 @@ def evaluate_account_truth(
                 continue
             if amount.is_negative():
                 blockers.append("SIGN_MISMATCH")
-            liability_rows.append((str(row.get("asset")), amount))
+                continue
+            liability_rows.append((asset, amount))
             echoed_liabilities.append({
-                "asset": row.get("asset"),
+                "asset": asset,
                 "amount": _q_text(amount, loaded),
-                "status": row.get("status", "KNOWN"),
+                "status": "KNOWN",
             })
     if loaded is not None:
         _transfers(scope_s, loaded, blockers)
@@ -952,15 +1132,17 @@ def evaluate_account_truth(
             if quote_time is None or scope_time is None:
                 blockers.append("TIMESTAMP_INVALID")
             else:
+                if evaluated is not None and quote_time > evaluated:
+                    blockers.append("FUTURE_TIMESTAMP")
                 try:
                     skew = _parse_q(loaded["skew_limit_sec"], loaded)
-                    if abs(Fraction(int((quote_time - scope_time).total_seconds()), 1)) > _fraction(skew, loaded):
+                    if abs(_span(quote_time, scope_time)) > _fraction(skew, loaded):
                         blockers.append("SKEW_EXCEEDED")
                 except _Stop as exc:
                     blockers.append(exc.code)
 
-    fee_view = _window(fee_s, scope_s, "FEE")
-    funding_view = _window(funding_s, scope_s, "FUNDING")
+    fee_view = _window(fee_s, scope_s, "FEE", evaluated, loaded, blockers)
+    funding_view = _window(funding_s, scope_s, "FUNDING", evaluated, loaded, blockers)
     if fee_view["status"] == "UNKNOWN":
         blockers.append("FEE_UNKNOWN")
     elif fee_view["status"] in ("INCOMPLETE", "PARTIAL_LATE"):
@@ -1006,6 +1188,11 @@ def evaluate_account_truth(
         "unrealized_pnl": None,
     }
     valuation: Optional[Fraction] = None
+    quote_pinned = (
+        isinstance(quotes_s, dict)
+        and isinstance(quotes_s.get("quote_version"), str)
+        and bool(quotes_s.get("quote_version").strip())
+    )
     if loaded is not None and position_state in ("FLAT", "KNOWN") and not any(
         code in blockers for code in (
             "NON_FINITE", "NUMERIC_LIMIT", "PRECISION_INSUFFICIENT", "NOTIONAL_REJECTED",
@@ -1019,7 +1206,7 @@ def evaluate_account_truth(
             futures_wallet: Dict[str, Q] = {}
             for row, total in parsed_balances:
                 if row.get("product") == "SPOT":
-                    spot_parts.append(_convert(total, str(row.get("asset")), quote_index, loaded))
+                    spot_parts.append(_convert(total, str(row.get("asset")), quote_index, loaded, quote_pinned))
                 elif row.get("product") == "USDS_M":
                     key = str(row.get("asset"))
                     futures_wallet[key] = total if key not in futures_wallet else _add(futures_wallet[key], total, loaded)
@@ -1036,15 +1223,15 @@ def evaluate_account_truth(
                     raise _Stop("BALANCE_INCOMPLETE")
                 equity[asset] = _add(equity[asset], pnl, loaded)
             wallet_btc = [
-                _convert(futures_wallet[asset], asset, quote_index, loaded)
+                _convert(futures_wallet[asset], asset, quote_index, loaded, quote_pinned)
                 for asset in futures_wallet
             ]
             pnl_btc = [
-                _convert(pnl_by[asset], asset, quote_index, loaded)
+                _convert(pnl_by[asset], asset, quote_index, loaded, quote_pinned)
                 for asset in pnl_by
             ]
             liability_btc_parts = [
-                _convert(amount, asset, quote_index, loaded)
+                _convert(amount, asset, quote_index, loaded, quote_pinned)
                 for asset, amount in liability_rows
             ]
             spot_total = _sum_fractions(spot_parts, loaded)
@@ -1077,6 +1264,8 @@ def evaluate_account_truth(
     if isinstance(venue_s, dict) and isinstance(ledger_s, dict) and loaded is not None:
         if not _face_scope(venue_s, scope_s, names) or not _face_scope(ledger_s, scope_s, names):
             blockers.append("SCOPE_MISMATCH")
+        if not _lineage_ready(venue_s) or not _lineage_ready(ledger_s) or not _anchors_ready(ledger_s):
+            independent = False
         if venue_s.get("receipt_ref") == ledger_s.get("receipt_ref") and venue_s.get("raw_response_hash") == ledger_s.get("raw_response_hash"):
             independent = False
         if ledger_s.get("copied_from") or ledger_s.get("pnl_source") in ("VENUE", "VALUATION", "ACCOUNT_SNAPSHOT"):
@@ -1086,7 +1275,7 @@ def evaluate_account_truth(
             reconciliation = "NOT_INDEPENDENT"
         try:
             venue_amount = _parse_q(venue_s.get("amount"), loaded)
-            venue_btc = _convert(venue_amount, str(venue_s.get("asset")), quote_index, loaded)
+            venue_btc = _convert(venue_amount, str(venue_s.get("asset")), quote_index, loaded, quote_pinned)
         except _Stop as exc:
             blockers.append(exc.code)
         if "ledger_positions" not in ledger_s or ledger_s.get("ledger_positions") is None:
@@ -1101,7 +1290,10 @@ def evaluate_account_truth(
                     amount = _parse_q(anchor.get("amount"), loaded)
                     asset = str(anchor.get("asset"))
                     cash[asset] = amount if asset not in cash else _add(cash[asset], amount, loaded)
-                for movement in ledger_s.get("movements") or []:
+                movements = ledger_s.get("movements") or []
+                if isinstance(movements, list) and len(movements) > loaded["max_event_rows"]:
+                    raise _Stop("RESOURCE_LIMIT")
+                for movement in movements:
                     amount = _parse_q(movement.get("amount"), loaded)
                     asset = str(movement.get("asset"))
                     cash[asset] = amount if asset not in cash else _add(cash[asset], amount, loaded)
@@ -1123,7 +1315,7 @@ def evaluate_account_truth(
                     extra = unrealized.get(asset, Q(0, 0))
                     debt = ledger_liabilities.get(asset, Q(0, 0))
                     mark[asset] = _add(_add(base, extra, loaded), Q(-debt.coeff, debt.exp), loaded)
-                parts = [_convert(mark[asset], asset, quote_index, loaded) for asset in mark]
+                parts = [_convert(mark[asset], asset, quote_index, loaded, quote_pinned) for asset in mark]
                 ledger_btc = _sum_fractions(parts, loaded)
                 ledger_view = {
                     "status": "KNOWN",

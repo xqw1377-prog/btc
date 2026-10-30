@@ -673,6 +673,7 @@ class P4AccountTruthTests(unittest.TestCase):
             "stable_id": "fee-1",
             "amount": "1",
             "asset": "BTC",
+            "event_time": "2026-10-29T12:00:00Z",
             "apply_to_nav": True,
         }]
         case["fee_manifest"]["zero_event_proof"] = None
@@ -755,8 +756,8 @@ class P4AccountTruthTests(unittest.TestCase):
         clash = _spot_case()
         clash["fee_manifest"]["zero_event_proof"] = None
         clash["fee_manifest"]["events"] = [
-            {"event_type": "FEE", "stable_id": "9", "amount": "1", "asset": "BTC"},
-            {"event_type": "FEE", "stable_id": "9", "amount": "2", "asset": "BTC"},
+            {"event_type": "FEE", "stable_id": "9", "amount": "1", "asset": "BTC", "event_time": "2026-10-29T12:00:00Z"},
+            {"event_type": "FEE", "stable_id": "9", "amount": "2", "asset": "BTC", "event_time": "2026-10-29T12:00:00Z"},
         ]
         snap = _run(clash)["snapshot"]
         self.assertIn("EVENT_IDENTITY_CONFLICT", snap["blockers"])
@@ -766,10 +767,10 @@ class P4AccountTruthTests(unittest.TestCase):
         cross["fee_manifest"]["zero_event_proof"] = None
         cross["funding_manifest"]["zero_event_proof"] = None
         cross["fee_manifest"]["events"] = [
-            {"event_type": "FEE", "stable_id": "9", "amount": "1", "asset": "BTC"},
+            {"event_type": "FEE", "stable_id": "9", "amount": "1", "asset": "BTC", "event_time": "2026-10-29T12:00:00Z"},
         ]
         cross["funding_manifest"]["events"] = [
-            {"event_type": "FUNDING", "stable_id": "9", "amount": "4", "asset": "BTC"},
+            {"event_type": "FUNDING", "stable_id": "9", "amount": "4", "asset": "BTC", "event_time": "2026-10-29T12:00:00Z"},
         ]
         cross_snap = _run(cross)["snapshot"]
         self.assertNotIn("EVENT_IDENTITY_CONFLICT", cross_snap["blockers"])
