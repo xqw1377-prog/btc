@@ -1,0 +1,96 @@
+commit: 87a956f3fb89ed38232e524f25a346dd5169a839
+clone: detached /tmp/p4-red
+module: absent
+AssertionError: 0
+ModuleNotFoundError: 41
+FileNotFoundError: 1
+note: missing module, not a semantic assertion failure. Not RUNTIME-PASS.
+
+.FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF                              [100%]
+=================================== FAILURES ===================================
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:575: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:584: FileNotFoundError: [Errno 2] No such file or directory: '/private/tmp/p4-red/aurora/account_truth.py'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+/private/tmp/p4-red/tests/test_account_truth_p4.py:190: ModuleNotFoundError: No module named 'aurora.account_truth'
+=========================== short test summary info ============================
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_01_missing_account_ref
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_02_same_version_conflict_does_not_replace_hash
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_03_new_version_appends_and_keeps_existing_set
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_04_missing_btc_row_is_not_zero
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_05_explicit_zero_stays_known_while_other_gaps_block
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_06_negative_wallet_balance
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_07_positions_missing
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_08_positions_garbage_is_not_flat
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_09_explicit_zero_qty_is_flat
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_10_hedge_legs_without_mode
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_11_fee_manifest_missing_is_not_zero
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_12_fee_page_not_finished
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_13_funding_missing_does_not_read_e0_zero
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_14_truncation_and_partial_late_stay_partial
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_15_quote_direction
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_16_unpinned_price_rejected
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_17_non_finite_is_not_washed_to_null
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_18_legal_null_quote_stays_null
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_19_bad_timestamps
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_20_future_timestamp
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_21_sla_and_skew
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_22_null_sla_is_incomplete_policy
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_23_one_face_unknown
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_24_mismatch_does_not_write_back
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_25_synthetic_cannot_become_authority
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_26_same_input_same_policy_same_bytes
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_27_static_scan
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_28_wallet_once_and_quote_orientations
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_29_settled_flows_are_not_applied_again
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_30_mixed_wallets_and_one_sided_transfer
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_31_set_proof_and_duplicates
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_32_self_reported_authority_is_not_established
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_33_window_states
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_34_event_identity_and_late_version
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_35_evaluation_time_does_not_hide_conflict
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_36_independence_and_mark_move_without_cash
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_37_tolerance_and_scope
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_38_numeric_limits_and_policy_identity
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_39_negative_pnl_negative_nav_and_bad_quote
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_btc_amount_is_identity
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_positive_full_valuation
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_at_spot_gross_liability_deducted_once
+42 failed, 1 passed in 0.47s
