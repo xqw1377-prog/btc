@@ -341,6 +341,9 @@ def _walk_nonfinite(obj: Any, found: List[str]) -> None:
     elif isinstance(obj, Decimal) and not obj.is_finite():
         found.append("NON_FINITE")
     elif isinstance(obj, dict):
+        token = obj.get("$aurora_non_finite")
+        if token in ("nan", "inf", "-inf") and set(obj) == {"$aurora_non_finite"}:
+            found.append("NON_FINITE")
         for value in obj.values():
             _walk_nonfinite(value, found)
     elif isinstance(obj, list):
@@ -453,17 +456,33 @@ def policy_content_hash(policy: Dict[str, Any]) -> str:
     return _content_hash(_policy_body(policy))
 
 
-def _convert_representation(obj: Any, notes: Dict[str, bool]) -> Any:
+def _non_finite_token(value: float) -> str:
+    if math.isnan(value):
+        return "nan"
+    if value > 0:
+        return "inf"
+    return "-inf"
+
+
+def _convert_representation(obj: Any, notes: Dict[str, Any], path: str = "") -> Any:
     if isinstance(obj, float):
-        notes["converted_float"] = True
         if not math.isfinite(obj):
-            notes["non_finite"] = True
-            return None
+            notes.setdefault("paths", []).append(path or "$")
+            return {"$aurora_non_finite": _non_finite_token(obj)}
+        notes["converted_float"] = True
         return Decimal(str(obj))
     if isinstance(obj, dict):
-        return {key: _convert_representation(value, notes) for key, value in obj.items()}
+        return {
+            key: _convert_representation(
+                value, notes, (path + "." + key) if path else str(key),
+            )
+            for key, value in obj.items()
+        }
     if isinstance(obj, list):
-        return [_convert_representation(value, notes) for value in obj]
+        return [
+            _convert_representation(value, notes, "%s[%d]" % (path or "$", index))
+            for index, value in enumerate(obj)
+        ]
     return obj
 
 
@@ -471,17 +490,19 @@ def adapt_decision_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
     """Versioned boundary in front of evaluate_decision().
 
     Finite floats become Decimal(str(float)). That text is a boundary
-    representation, not an original exact fact. Non-finite floats become
-    unknown. submit_allowed is copied and is not rewritten.
+    representation, not an original exact fact. Non-finite floats stay a
+    tagged value and are listed on non_finite_paths; they are not null.
+    submit_allowed is copied and is not rewritten. Outer key, source, time,
+    and submit flag are copied from the candidate and must keep matching it.
     """
     if not isinstance(candidate, dict):
         raise TypeError("decision candidate must be an object")
-    notes: Dict[str, bool] = {}
+    notes: Dict[str, Any] = {}
     converted = _convert_representation(candidate, notes)
     source = converted.get("source")
     if not isinstance(source, str) or source == "":
         source = "SYNTHETIC"
-    return {
+    wrapped = {
         "boundary_version": DECISION_BOUNDARY_VERSION,
         "representation": DECISION_REPRESENTATION,
         "source": source,
@@ -490,6 +511,27 @@ def adapt_decision_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
         "submit_allowed": converted.get("submit_allowed"),
         "candidate": converted,
     }
+    paths = notes.get("paths") or []
+    if paths:
+        wrapped["non_finite_paths"] = list(paths)
+    return wrapped
+
+
+def _boundary_declaration_mismatch(wrapper: Dict[str, Any], inner: Any) -> bool:
+    """Outer key, source, time, and submit flag are not a second declaration."""
+    if not isinstance(inner, dict):
+        return True
+    for field in ("decision_key", "source", "as_of", "submit_allowed"):
+        if field not in wrapper:
+            return True
+        outer = wrapper.get(field)
+        if field not in inner:
+            if field == "source" and outer == "SYNTHETIC":
+                continue
+            return True
+        if outer != inner.get(field):
+            return True
+    return False
 
 
 def _declaration_key(source: Any, object_name: str, version_claim: str) -> str:
@@ -1084,6 +1126,10 @@ def adjudicate_runtime(
             boundary_version = DECISION_BOUNDARY_VERSION
             boundary_representation = DECISION_REPRESENTATION
         identity_decision = decision
+        if decision.get("non_finite_paths"):
+            extra_hits.append((2, "NON_FINITE"))
+        if isinstance(candidate, dict) and _boundary_declaration_mismatch(decision, candidate):
+            extra_hits.append((2, "BOUNDARY_DECLARATION_MISMATCH"))
         if decision.get("submit_allowed") is not False:
             extra_hits.append((2, "SUBMIT_NOT_FALSE"))
 
