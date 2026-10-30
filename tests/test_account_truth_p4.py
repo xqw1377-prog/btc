@@ -1030,6 +1030,33 @@ class P4AccountTruthTests(unittest.TestCase):
         self.assertEqual(once_snap["fee_manifest"]["total"], "3")
         self.assertEqual(once_snap["btc_nav"], "1")
 
+    def test_p4_03b_window_shape_and_event_account(self):
+        garbage = _spot_case()
+        garbage["fee_manifest"]["events"] = "garbage"
+        garbage_snap = _run(garbage)["snapshot"]
+        self.assertNotEqual(garbage_snap["fee_manifest"]["status"], "COMPLETE")
+        self.assertNotEqual(garbage_snap["fee_manifest"]["total"], "0")
+        self.assertFalse(garbage_snap["calculation_ok"])
+
+        pages = _spot_case()
+        pages["fee_manifest"]["pages_fetched"] = None
+        pages["fee_manifest"]["pages_declared"] = None
+        pages_snap = _run(pages)["snapshot"]
+        self.assertNotEqual(pages_snap["fee_manifest"]["status"], "COMPLETE")
+        self.assertFalse(pages_snap["calculation_ok"])
+
+        foreign = _spot_case()
+        foreign["fee_manifest"]["zero_event_proof"] = None
+        event = _fee_event(amount="2")
+        event["environment"] = "MAINNET"
+        event["account_ref"] = "other-acct"
+        event["sub_account_ref"] = "other-sub"
+        foreign["fee_manifest"]["events"] = [event]
+        foreign_snap = _run(foreign)["snapshot"]
+        self.assertNotEqual(foreign_snap["fee_manifest"]["status"], "COMPLETE")
+        self.assertNotEqual(foreign_snap["fee_manifest"]["total"], "2")
+        self.assertFalse(foreign_snap["calculation_ok"])
+
     def test_p4_04_time_and_quote_rules_keep_full_precision(self):
         unversioned = self._usdt_nav_case(_usdt_pair())
         unversioned["quotes"].pop("quote_version")
@@ -1056,6 +1083,13 @@ class P4AccountTruthTests(unittest.TestCase):
         sla["evaluation_at"] = "2026-10-30T00:30:00.900000Z"
         self.assertIn("SLA_EXCEEDED", _run(sla)["snapshot"]["blockers"])
         self.assertFalse(_run(sla)["snapshot"]["calculation_ok"])
+
+    def test_p4_04b_used_quote_requires_time(self):
+        naked = self._usdt_nav_case(_usdt_pair())
+        naked["quotes"].pop("as_of", None)
+        snap = _run(naked)["snapshot"]
+        self.assertFalse(snap["calculation_ok"])
+        self.assertIsNone(snap["btc_nav"])
 
     def test_p4_05_policy_body_enters_binding_identity(self):
         first_case = _spot_case()
@@ -1124,6 +1158,39 @@ class P4AccountTruthTests(unittest.TestCase):
             self.fail("unhandled %s" % type(exc).__name__)
         self.assertIn("NUMERIC_LIMIT", padded_snap["blockers"])
         self.assertFalse(padded_snap["calculation_ok"])
+
+    def test_p4_07b_limits_before_copy_and_event_sum(self):
+        summed = _spot_case()
+        summed["policy"]["max_intermediate_digits"] = 3
+        summed["fee_manifest"]["zero_event_proof"] = None
+        summed["fee_manifest"]["events"] = [
+            _fee_event(stable_id="a", amount="999"),
+            _fee_event(stable_id="b", amount="999"),
+        ]
+        try:
+            summed_snap = _run(summed)["snapshot"]
+        except Exception as exc:
+            self.fail("unhandled %s" % type(exc).__name__)
+        self.assertIn("NUMERIC_LIMIT", summed_snap["blockers"])
+        self.assertIsNone(summed_snap["btc_nav"])
+        self.assertFalse(summed_snap["calculation_ok"])
+        self.assertEqual(summed["fee_manifest"]["events"][0]["amount"], "999")
+
+        crowded = _spot_case()
+        crowded["policy"]["max_balance_rows"] = 1
+        extra = _btc_row("1")
+        extra.pop("free")
+        extra.pop("locked")
+        extra["total"] = ("0" * 5000) + "1"
+        crowded["balances"] = [_btc_row("1"), extra]
+        try:
+            crowded_snap = _run(crowded)["snapshot"]
+        except Exception as exc:
+            self.fail("unhandled %s" % type(exc).__name__)
+        self.assertIn("RESOURCE_LIMIT", crowded_snap["blockers"])
+        self.assertNotIn("NUMERIC_LIMIT", crowded_snap["blockers"])
+        self.assertFalse(crowded_snap["calculation_ok"])
+        self.assertEqual(len(crowded["balances"]), 2)
 
     def _authority_closed(self, snap):
         self.assertEqual(snap["reality_authority"], "NOT_ESTABLISHED")
