@@ -1,8 +1,8 @@
 # P4 权威账户真相 — 纯文档方案
 
-Status: `CHANGES-REQUIRED / IMPLEMENTATION NOT AUTHORIZED`  
+Status: `PASS / CLOSED · IMPLEMENTATION AUTHORIZED / OFFLINE PURE FUNCTION · RUNTIME NOT YET VERIFIED`  
 Date: `2026-10-30`  
-修订: `四处残留已窄修，待复审。本修订不是开工令，也不把方案改判为通过。`
+修订: `方案 ab2e872 通过。开工范围仅离线纯函数与 AT-1～39。本登记不是运行时验收，也不建立现实账户权威。`
 
 ```text
 本文件 = 会计恒等式、证据对象、阻断清单
@@ -10,8 +10,9 @@ Date: `2026-10-30`
 本文件 ≠ 账户权威已经建立
 本文件 ≠ 执行资格
 
-P4 ACCOUNT TRUTH PLAN    = CHANGES-REQUIRED（四处残留已窄修，待复审）
-P4 IMPLEMENTATION        = NOT AUTHORIZED
+P4 PLAN                  = PASS / CLOSED
+P4 IMPLEMENTATION        = AUTHORIZED / OFFLINE PURE FUNCTION
+P4 RUNTIME               = NOT YET VERIFIED
 P3-R3.1                  = CLOSED / RUNTIME-PASS / READ-ONLY
 EXECUTION ELIGIBILITY    = DENIED
 LIVE                     = NO-GO
@@ -29,13 +30,18 @@ P3-R4 EXECUTION          = FORBIDDEN / HOLD
 事故副本演练             = 仍未独立验证
 ```
 
-开发授权格式（未签发）：
+开发授权（已签发，2026-10-30）：
 
 ```text
-「批准 P4 权威账户真相只读开工」
+批准 P4 账户真相的离线纯函数实现
+固定方案 ab2e872417e43b4665cd16b7a4873f826974f5fc
 ```
 
-在这句出现之前，不新增账户真相模块，不把快照接进 `adjudicate_runtime`，不读真实账户，不打开交易所连接，不迁移 `state/kernel_ledger.db`。
+该句只允许 `evaluate_account_truth()`、纯数据校验、计价辅助函数，以及 AT-1～39。绑定历史由调用方注入。只使用合成夹具。
+
+同步口径：BTC 金额换成 BTC 是单位恒等；现货分项用尚未扣除单列负债的资产余额，负债只在最终负债项扣一次。
+
+不把快照接进 `adjudicate_runtime`，不读真实账户，不打开交易所连接，不迁移 `state/kernel_ledger.db`。计算通过对账通过时，`reality_authority`、`account_authority` 仍是 `NOT_ESTABLISHED`，`new_risk_usable` 仍是 false。
 
 R3.1 关闭只说明只读裁决链成立。它不提供账户权威，也不提供下单资格。
 
@@ -535,7 +541,7 @@ AT-26 使用记录中的 `evaluation_at`、钉住报价和 `arithmetic_policy_ve
 
 ## 13. 明确不做
 
-- 不实现本文件中的函数，不新增测试文件来冒充开工。
+- 不把本函数接到裁决器、费用消费方、funding 或真实账户。AT-1～39 只覆盖离线纯函数。
 - 不修改 `aurora/risk_adjudicator.py`。
 - 不修改 E2/E1，不重开 S1/S2/S3。
 - 不接费用消费方，不接 funding，不读真实账户。
@@ -544,15 +550,16 @@ AT-26 使用记录中的 `evaluation_at`、钉住报价和 `arithmetic_policy_ve
 - 不实现 P3-R3.2，不实现 P3-R4。
 - 不解除 kill，不签发执行或部署许可。
 
-若以后出现开工句，那一句只允许夹具上的纯函数和 §12 的测试。真实账户只读、隔离绑定层落地、账本迁移、消费方接线、裁决器接线、测试网写入，各自还要另签。
+开工句已经签发，并且只覆盖夹具上的纯函数和 §12 的测试。真实账户只读、隔离绑定层落地、账本迁移、消费方接线、裁决器接线、测试网写入，各自还要另签。
 
 ---
 
 ## 14. 台账
 
 ```text
-P4 ACCOUNT TRUTH PLAN    = CHANGES-REQUIRED（四处残留已窄修，待复审）
-P4 IMPLEMENTATION        = NOT AUTHORIZED
+P4 PLAN                  = PASS / CLOSED
+P4 IMPLEMENTATION        = AUTHORIZED / OFFLINE PURE FUNCTION
+P4 RUNTIME               = NOT YET VERIFIED
 P3-R3.1                  = CLOSED / RUNTIME-PASS / READ-ONLY
 S1 / S2 / S3             = CLOSED / OFFLINE PASS
 真实账户／接线／迁移     = 未授权
