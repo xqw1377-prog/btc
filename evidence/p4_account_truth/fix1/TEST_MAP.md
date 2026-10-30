@@ -5,7 +5,9 @@
 语义红：`c2a026c033b16667db7da9ba786a62b9db47f689`  
 语义修复：`b6494188eedf02c65654a70604c9053f25ef576d`
 
-这是开发方克隆复跑。P4 RUNTIME 仍是 CHANGES-REQUIRED，待独立复审，不是 RUNTIME-PASS。
+这是开发方克隆复跑。P4 RUNTIME 仍是 CHANGES-REQUIRED，待独立复审。
+
+03／04／07 的后续残留证据在 `../fix2/`。
 
 | 项 | 测试 | 红（c2a026c） | 绿（b649418） |
 |---|---|---|---|

@@ -1,0 +1,16 @@
+commit: afa441923b8e6c1ff84cd98c22c7f908abf4fc8a
+clone: detached /tmp/p4-res-green
+ledger: absent
+e2_diff_bytes_vs_ab2e872: 0
+e1_diff_bytes_vs_ab2e872: 0
+risk_adjudicator_diff_bytes_vs_ab2e872: 0
+note: developer fresh clone after the P4-03/04/07 residual fixes. Not an independent review. Not RUNTIME-PASS.
+
+===== specialist unittest =====
+Ran 53 tests OK
+
+===== full pytest =====
+SKIPPED [1] tests/test_fill_migration_s1.py:93: incident ledger absent
+1023 passed, 1 skipped, 1 warning in 14.99s
+
+1023 = 上一轮克隆 1020 + 本轮 3 项残留反例。不与账本在场的工作树计数合并，也不与独立复验的 subtest 计数合并。

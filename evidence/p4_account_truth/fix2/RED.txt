@@ -1,0 +1,13 @@
+commit: 9843ca4a47fbfba69aefbc8965a96fd5fce4f871
+base: b6494188eedf02c65654a70604c9053f25ef576d
+clone: detached /tmp/p4-res-red
+ledger: absent
+note: semantic assertion failures for the P4-03/04/07 residuals. Not RUNTIME-PASS.
+
+AssertionError: 'COMPLETE' == 'COMPLETE'
+AssertionError: True is not false
+AssertionError: unhandled _Stop
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_p4_03b_window_shape_and_event_account
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_p4_04b_used_quote_requires_time
+FAILED tests/test_account_truth_p4.py::P4AccountTruthTests::test_p4_07b_limits_before_copy_and_event_sum
+3 failed, 50 passed in 0.38s
