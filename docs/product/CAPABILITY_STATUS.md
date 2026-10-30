@@ -78,7 +78,7 @@ EXECUTION BOUNDARY            FROZEN      6b2cc7c
 EXECUTE_AUTHORIZED            FALSE
 EXECUTION AUTHORIZATION       NOT ISSUED
 REAL WRITE PATH               DENIED
-NEXT STAGE                    P3-R3.1 RISK ADJUDICATOR（PLAN PASS · RUNTIME CHANGES-REQUIRED · 适配边界已提交待复验 · 不签 RUNTIME-PASS · 不接旧 RiskGate）
+NEXT STAGE                    无已授权下一刀（P3-R3.1 CLOSED / RUNTIME-PASS / READ-ONLY · P3-R3.2 HOLD · P3-R4 FORBIDDEN / HOLD · 不接旧 RiskGate）
 P2-PRE DECISION HARNESS       CLOSED · PASS（T1–T10 · 见 P2_PRE_DECISION_BRAIN_HARNESS.md）
 AURORA PRODUCT NORTH STAR V2  APPROVED
   P0  NORTH STAR DOC          docs/product/AURORA_NORTH_STAR.md
@@ -115,9 +115,23 @@ AURORA PRODUCT NORTH STAR V2  APPROVED
   P3 READ-ONLY DECISION LOOP  COMPLETE（≠ P3 COMPLETE · RiskGate 仍 HOLD）
   P3-R3.0 RISK CONTRACT       CONTRACT-PASS（R3-1–R3-16 · 见 P3_R3_RISK_CONTRACT_HARNESS.md）
   RISK SEMANTICS              FROZEN（RISK MONOTONICITY · 只减不增）
-  P3-R3.1 RISK ADJUDICATOR    PLAN PASS / CLOSED @745e4e0
-                                RUNTIME CHANGES-REQUIRED（适配边界两项已提交，待独立复验，不签 RUNTIME-PASS）
-                                FIX SUBMITTED / READ-ONLY @90aee87（开发者 detached worktree ≠ 独立复验）
+  P3-R3.1 RISK ADJUDICATOR    CLOSED / RUNTIME-PASS / READ-ONLY @90aee87
+                                方案 745e4e0 PASS / CLOSED。证据入口 b145e4c。
+                                独立复验：专项 29 passed；全套 970 passed / 1 skipped
+                                （S1 incident ledger absent），另有 97 subtests passed。
+                                E2/E1 相对方案基线零改动。工作树 CLEAN、diff 检查 PASS。
+                                证据来自独立 detached worktree。开发方 968/1、970/1、971/0
+                                分开登记，不并入这次独立复验。
+                                R31-05a/05b 关闭：非有限值阻断且不落盘，删路径清单仍由标记拦住，
+                                合法 null 保持原样；外层声明篡改被拒绝，同版本异内容仍冲突，
+                                合法新版本成功且旧裁决字节不变。
+                                EXECUTION ELIGIBILITY = DENIED。
+                                事故副本演练仍未独立验证，不据此授权真实账本迁移。
+                                账户真源、费用消费方、funding 接线未授权。
+                                R3.2 / P3-R4 HOLD / NOT AUTHORIZED。
+                                LIVE / TESTNET WRITE = NO-GO / DENIED。
+                                TRADING AUTHORITY UNCHANGED。
+                                本关闭不连续放行接线、部署或交易。
   P3-R3.2 RISK OBSERVATORY     HOLD
   P3-R3 RISKGATE ADAPTER      HOLD（旧 risk_gate 非 authority）
   P3-R4 EXECUTION ADAPTER     FORBIDDEN / HOLD
