@@ -199,6 +199,16 @@ def _btc_usdt_pair(price="100000"):
     return {"base_asset": "BTC", "quote_asset": "USDT", "price": price}
 
 
+def _fee_event(stable_id="fee-1", amount="1", asset="BTC", when="2026-10-29T12:00:00Z"):
+    return {
+        "event_type": "FEE",
+        "stable_id": stable_id,
+        "amount": amount,
+        "asset": asset,
+        "event_time": when,
+    }
+
+
 class P4AccountTruthTests(unittest.TestCase):
     def test_at_00_baseline_hashes_do_not_need_the_module(self):
         for rel, expect in (
@@ -922,6 +932,197 @@ class P4AccountTruthTests(unittest.TestCase):
             with self.subTest(price=price):
                 bad = self._usdt_nav_case(_usdt_pair(price))
                 self.assertIn("QUOTE_INVALID", _run(bad)["snapshot"]["blockers"])
+
+    def test_p4_01_quantity_not_pnl_decides_flat(self):
+        zero = self._futures_flat_pnl()
+        snap = _run(zero)["snapshot"]
+        self.assertEqual(snap["positions"], "KNOWN")
+        self.assertEqual(snap["btc_nav"], "0.01")
+        self.assertTrue(snap["calculation_ok"])
+
+        offset = self._futures_case()
+        offset["scope"]["products"][0]["position_mode"] = "HEDGE"
+        legs = [
+            self._position(mark_price="110000"),
+            self._position(side="SHORT", mark_price="110000"),
+        ]
+        offset["positions"] = legs
+        offset["ledger_reconstruction"]["ledger_positions"] = [
+            self._position(mark_price="110000"),
+            self._position(side="SHORT", mark_price="110000"),
+        ]
+        proof = offset["scope"]["set_completeness"]
+        proof["required_positions"] = ["USDS_M|BTCUSDT|LONG", "USDS_M|BTCUSDT|SHORT"]
+        proof["observed_positions"] = ["USDS_M|BTCUSDT|LONG", "USDS_M|BTCUSDT|SHORT"]
+        off = _run(offset)["snapshot"]
+        self.assertEqual(off["positions"], "KNOWN")
+        self.assertEqual(off["btc_nav_trace"]["unrealized_pnl_settle"]["USDT"], "0")
+        self.assertEqual(off["btc_nav"], "0.01")
+        self.assertTrue(off["calculation_ok"])
+
+    def test_p4_02_liabilities_and_scope_are_validated(self):
+        garbage = _spot_case()
+        garbage["liabilities"] = "garbage"
+        garbage_snap = _run(garbage)["snapshot"]
+        self.assertFalse(garbage_snap["calculation_ok"])
+        self.assertIsNone(garbage_snap["btc_nav"])
+
+        unknown = _spot_case()
+        unknown["liabilities"] = [{"asset": "USDT", "amount": "1", "status": "UNKNOWN"}]
+        unknown_snap = _run(unknown)["snapshot"]
+        self.assertFalse(unknown_snap["calculation_ok"])
+        self.assertIsNone(unknown_snap["btc_nav"])
+
+        foreign = _spot_case("0")
+        foreign["balances"] = [{
+            "product": "COIN_M",
+            "wallet": "COIN_M",
+            "asset": "BTC",
+            "free": "1",
+            "locked": "0",
+            "total": "1",
+            "status": "KNOWN",
+        }]
+        proof = foreign["scope"]["set_completeness"]
+        proof["required_assets"] = ["COIN_M|COIN_M|BTC"]
+        proof["observed_assets"] = ["COIN_M|COIN_M|BTC"]
+        foreign["venue_reported_equity"]["amount"] = "0"
+        foreign["ledger_reconstruction"]["opening_anchor"] = [
+            {"amount": "0", "asset": "BTC", "as_of": ASOF, "anchor_version": "anchor-btc"},
+        ]
+        foreign_snap = _run(foreign)["snapshot"]
+        self.assertIn("UNSUPPORTED_PRODUCT", foreign_snap["blockers"])
+        self.assertIsNone(foreign_snap["btc_nav"])
+
+    def test_p4_03_complete_window_validates_events_and_totals(self):
+        missing_id = _spot_case()
+        missing_id["fee_manifest"]["zero_event_proof"] = None
+        missing_id["fee_manifest"]["events"] = [{
+            "event_type": "FEE",
+            "amount": "1",
+            "asset": "BTC",
+            "event_time": "2026-10-29T12:00:00Z",
+        }]
+        missing_snap = _run(missing_id)["snapshot"]
+        self.assertNotEqual(missing_snap["fee_manifest"]["status"], "COMPLETE")
+        self.assertFalse(missing_snap["calculation_ok"])
+
+        garbage_amount = _spot_case()
+        garbage_amount["fee_manifest"]["zero_event_proof"] = None
+        garbage_amount["fee_manifest"]["events"] = [_fee_event(amount="garbage")]
+        garbage_snap = _run(garbage_amount)["snapshot"]
+        self.assertNotEqual(garbage_snap["fee_manifest"]["status"], "COMPLETE")
+        self.assertFalse(garbage_snap["calculation_ok"])
+
+        future_event = _spot_case()
+        future_event["fee_manifest"]["zero_event_proof"] = None
+        future_event["fee_manifest"]["events"] = [_fee_event(when="2099-01-01T00:00:00Z")]
+        future_snap = _run(future_event)["snapshot"]
+        self.assertNotEqual(future_snap["fee_manifest"]["status"], "COMPLETE")
+        self.assertFalse(future_snap["calculation_ok"])
+
+        once = _spot_case()
+        once["fee_manifest"]["zero_event_proof"] = None
+        once["fee_manifest"]["events"] = [_fee_event(amount="3"), _fee_event(amount="3")]
+        once_snap = _run(once)["snapshot"]
+        self.assertEqual(once_snap["fee_manifest"]["status"], "COMPLETE")
+        self.assertEqual(once_snap["fee_manifest"]["total"], "3")
+        self.assertEqual(once_snap["btc_nav"], "1")
+
+    def test_p4_04_time_and_quote_rules_keep_full_precision(self):
+        unversioned = self._usdt_nav_case(_usdt_pair())
+        unversioned["quotes"].pop("quote_version")
+        self.assertFalse(_run(unversioned)["snapshot"]["calculation_ok"])
+
+        ahead = _spot_case()
+        ahead["quotes"]["as_of"] = "2026-10-30T00:40:00Z"
+        self.assertIn("FUTURE_TIMESTAMP", _run(ahead)["snapshot"]["blockers"])
+
+        garbage_end = _spot_case()
+        garbage_end["funding_manifest"]["window_to"] = "garbage"
+        garbage_snap = _run(garbage_end)["snapshot"]
+        self.assertNotEqual(garbage_snap["funding_manifest"]["status"], "COMPLETE")
+        self.assertFalse(garbage_snap["calculation_ok"])
+
+        future_end = _spot_case()
+        future_end["funding_manifest"]["window_to"] = "2099-01-01T00:00:00Z"
+        future_snap = _run(future_end)["snapshot"]
+        self.assertNotEqual(future_snap["funding_manifest"]["status"], "COMPLETE")
+        self.assertFalse(future_snap["calculation_ok"])
+
+        sla = _spot_case()
+        sla["policy"]["sla_account_sec"] = "1800"
+        sla["evaluation_at"] = "2026-10-30T00:30:00.900000Z"
+        self.assertIn("SLA_EXCEEDED", _run(sla)["snapshot"]["blockers"])
+        self.assertFalse(_run(sla)["snapshot"]["calculation_ok"])
+
+    def test_p4_05_policy_body_enters_binding_identity(self):
+        first_case = _spot_case()
+        first_case["policy"]["reconcile_tolerance_btc"] = "0.2"
+        first_case["venue_reported_equity"]["amount"] = "1.1"
+        first = _run(first_case)
+        self.assertTrue(first["snapshot"]["calculation_ok"])
+        binding = first["binding_proposal"]["proposed_binding"]
+        changed = _spot_case()
+        changed["policy"]["reconcile_tolerance_btc"] = "0"
+        changed["venue_reported_equity"]["amount"] = "1.1"
+        changed["binding_state"] = {"bindings": [copy.deepcopy(binding)]}
+        out = _run(changed)
+        self.assertEqual(out["binding_proposal"]["action"], "CONFLICT")
+        self.assertNotEqual(out["binding_proposal"]["content_hash"], binding["content_hash"])
+
+        fresh = _spot_case()
+        fresh["scope"]["version_claim"] = "v2"
+        fresh["policy"]["arithmetic_policy_version"] = "arith-v2"
+        fresh["policy"]["reconcile_tolerance_btc"] = "0"
+        fresh["venue_reported_equity"]["amount"] = "1.1"
+        fresh["binding_state"] = {"bindings": [copy.deepcopy(binding)]}
+        self.assertEqual(_run(fresh)["binding_proposal"]["action"], "APPEND")
+
+        no_version = _spot_case()
+        no_version["scope"].pop("version_claim")
+        self.assertFalse(_run(no_version)["snapshot"]["calculation_ok"])
+        no_scope = _spot_case()
+        no_scope["scope"].pop("scope_version")
+        self.assertFalse(_run(no_scope)["snapshot"]["calculation_ok"])
+
+    def test_p4_06_missing_lineage_is_not_a_match(self):
+        venue = _spot_case()
+        venue["venue_reported_equity"].pop("receipt_ref")
+        venue["venue_reported_equity"].pop("raw_response_hash")
+        venue_snap = _run(venue)["snapshot"]
+        self.assertNotEqual(venue_snap["reconciliation"], "MATCH")
+        self.assertFalse(venue_snap["calculation_ok"])
+
+        anchor = _spot_case()
+        anchor["ledger_reconstruction"]["opening_anchor"][0].pop("anchor_version")
+        anchor["ledger_reconstruction"]["opening_anchor"][0].pop("as_of")
+        anchor_snap = _run(anchor)["snapshot"]
+        self.assertNotEqual(anchor_snap["reconciliation"], "MATCH")
+        self.assertFalse(anchor_snap["calculation_ok"])
+
+    def test_p4_07_limits_apply_before_parse(self):
+        crowded = _spot_case()
+        crowded["policy"]["max_event_rows"] = 1
+        crowded["fee_manifest"]["zero_event_proof"] = None
+        crowded["fee_manifest"]["events"] = [
+            _fee_event(stable_id="a"),
+            _fee_event(stable_id="b", amount="2"),
+        ]
+        crowded_snap = _run(crowded)["snapshot"]
+        self.assertIn("RESOURCE_LIMIT", crowded_snap["blockers"])
+        self.assertFalse(crowded_snap["calculation_ok"])
+
+        padded = _spot_case()
+        padded["balances"][0].pop("free")
+        padded["balances"][0].pop("locked")
+        padded["balances"][0]["total"] = ("0" * 5000) + "1"
+        try:
+            padded_snap = _run(padded)["snapshot"]
+        except (ValueError, OverflowError) as exc:
+            self.fail("unhandled %s" % type(exc).__name__)
+        self.assertIn("NUMERIC_LIMIT", padded_snap["blockers"])
+        self.assertFalse(padded_snap["calculation_ok"])
 
     def _authority_closed(self, snap):
         self.assertEqual(snap["reality_authority"], "NOT_ESTABLISHED")
