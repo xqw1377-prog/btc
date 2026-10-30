@@ -2,7 +2,7 @@
 
 Status: `CHANGES-REQUIRED / IMPLEMENTATION NOT AUTHORIZED`  
 Date: `2026-10-30`  
-修订: `P4-P1～P7 已写入本候选，待复审。本修订不是开工令，也不把方案改判为通过。`
+修订: `四处残留已窄修，待复审。本修订不是开工令，也不把方案改判为通过。`
 
 ```text
 本文件 = 会计恒等式、证据对象、阻断清单
@@ -10,7 +10,7 @@ Date: `2026-10-30`
 本文件 ≠ 账户权威已经建立
 本文件 ≠ 执行资格
 
-P4 ACCOUNT TRUTH PLAN    = CHANGES-REQUIRED
+P4 ACCOUNT TRUTH PLAN    = CHANGES-REQUIRED（四处残留已窄修，待复审）
 P4 IMPLEMENTATION        = NOT AUTHORIZED
 P3-R3.1                  = CLOSED / RUNTIME-PASS / READ-ONLY
 EXECUTION ELIGIBILITY    = DENIED
@@ -226,16 +226,22 @@ settlement_asset
 `contract_multiplier` 缺席，或不是精确的 `1`：`UNSUPPORTED_CONTRACT`。方向由 `side` 决定，多头为 `+1`，空头为 `-1`。
 
 ```text
-unrealized_pnl_settle =
+unrealized_pnl_settle(一条持仓) =
     direction * qty * contract_multiplier * (mark_price - entry_price)
 
+wallet_balance_settle(钱包, 结算资产) =
+    该钱包该资产的唯一 total
+
 futures_equity_settle =
-    wallet_balance_settle + unrealized_pnl_settle
+    wallet_balance_settle
+  + 该钱包范围内每一条持仓的 unrealized_pnl_settle 之和
 ```
 
-`wallet_balance_settle` 是该结算资产在 USDⓈ-M 钱包中的余额，不含名义本金。`includes_settled_flows` 必须为 true：已结算手续费、funding 和已实现盈亏已经在钱包余额里。缺席或为 false：`WALLET_FLOW_BASIS_UNKNOWN`。事件账只用于核对和重建，不再加进或扣出净值。
+同一钱包、同一结算资产的余额只进入一次。每条持仓只贡献自己的未实现盈亏。按持仓条数重复加上钱包余额：`DOUBLE_COUNT`。
 
-冻结例子：期货钱包 `1000 USDT`，`0.1 BTC` 多头，开仓价与标记价都是 `100000 USDT`。未实现盈亏为 `0`，期货权益为 `1000 USDT`。净值路径里不出现额外的 `0.1 BTC`。
+`includes_settled_flows` 必须为 true：已结算手续费、funding 和已实现盈亏已经在钱包余额里。缺席或为 false：`WALLET_FLOW_BASIS_UNKNOWN`。事件账只用于核对和重建，不再加进或扣出净值。
+
+冻结例子：期货钱包 `1000 USDT`，`0.1 BTC` 多头，开仓价与标记价都是 `100000 USDT`。未实现盈亏为 `0`，期货权益为 `1000 USDT`。同一钱包再加一笔零盈亏持仓，权益仍是 `1000 USDT`。净值路径里不出现额外的 `0.1 BTC`。
 
 空头在标记价高于开仓价时，未实现盈亏为负；标记价低于开仓价时为正。负的未实现盈亏是盈亏项，不是非法负余额。`futures_equity_settle` 可以为负，然后按 §7 换成 BTC；结果为负时保持负数。
 
@@ -284,32 +290,48 @@ lineage              receipt_ref + raw_response_hash
 | `retained_from` 晚于 `window_from` | `INCOMPLETE`（历史被截断） |
 | 事件列表为空，且 `zero_event_proof` 覆盖同一过滤器和同一分页终点 | `COMPLETE`，合计为已知 `0` |
 | 事件列表为空，但没有零事件证明 | `UNKNOWN`，合计不是 `0` |
-| 身份齐全、正文一致、分页结束、保留范围覆盖窗口 | `COMPLETE` |
-| 迟到事件 | 新的窗口版本；旧绑定正文不变 |
+| 身份齐全、正文一致、分页结束、保留范围覆盖窗口，且没有未消化的迟到 | `COMPLETE` |
+| 已知迟到 | 原完整性声明失效。新版本保持 `PARTIAL_LATE`，判定为 `INCOMPLETE`。旧绑定正文不变 |
+| 同一 `window_from`、`window_to`、同一 `query_filter` 上，新的完整性证据重新查全 | 这个新版本才可以是 `COMPLETE` |
 
-`UNKNOWN` 与 `INCOMPLETE` 都使 `btc_nav` 为 `null`。S3 关闭和 funding 模块存在，都不把窗口标成 `COMPLETE`。
+分页结束或时间过去，都不会把 `PARTIAL_LATE` 变成 `COMPLETE`。`UNKNOWN` 与 `INCOMPLETE` 都使 `btc_nav` 为 `null`。S3 关闭和 funding 模块存在，都不把窗口标成 `COMPLETE`。
 
 ---
 
 ## 7. BTC NAV
 
-单位是 BTC。报价来自本次输入的 `quote_version`，函数内部不另取价。
+单位是 BTC。报价来自本次输入的 `quote_version`，函数内部不另取价。每一口报价都是三元组，不靠“BTC 报价”这个名称决定乘还是除：
 
 ```text
-spot_equity_settle 按各资产换成 BTC 后相加
-futures_equity_btc = futures_equity_settle / 该结算资产的 BTC 报价
-liability_btc      按同一组报价换成 BTC
+base_asset
+quote_asset
+price            1 个 base_asset 等于 price 个 quote_asset；必须 > 0 且有限
+```
+
+换成 BTC 时只走这一条规则，现货、负债、期货权益和三面对账共用：
+
+- 存在 `base=资产, quote=BTC`：`金额 × price`。
+- 只存在 `base=BTC, quote=资产`：`金额 / price`。除法须通过 §9 的精确性检查。
+- 两个方向都在，且互不为精确倒数：`QUOTE_INCONSISTENT`。
+- 两个方向都不在：`QUOTE_UNPINNED`。
+
+```text
+spot_equity_btc      各现货净资产按上式换成 BTC 后相加
+futures_equity_btc   futures_equity_settle 按上式换成 BTC
+liability_btc        各负债按上式换成 BTC
 
 btc_nav = spot_equity_btc + futures_equity_btc - liability_btc
 ```
 
-`futures_equity_btc` 用的是钱包余额加未实现盈亏，不是 `qty * mark_price`。名义本金出现在净值分项里：`NOTIONAL_REJECTED`。
+冻结例子：`base=USDT, quote=BTC, price=0.00001` 时，`1000 USDT × 0.00001 = 0.01 BTC`。同一经济含义写成 `base=BTC, quote=USDT, price=100000` 时，`1000 / 100000 = 0.01 BTC`。把 `100000` 当作 USDT→BTC 的价格去乘，得到的不是 `0.01 BTC`，不得发布。
 
-非 BTC 数量换成 BTC 时，使用该资产钉住的正向有限报价。已知非零数量缺少报价：`QUOTE_UNPINNED`。已知为零的数量不需要报价。数量未知时，报价存在也不足以发布净值。
+`futures_equity_btc` 用的是按钱包唯一聚合的余额，加上该范围全部持仓的未实现盈亏，不是 `qty * mark_price`。名义本金出现在净值分项里：`NOTIONAL_REJECTED`。
+
+已知非零数量缺少可用报价：`QUOTE_UNPINNED`。已知为零的数量不需要报价。数量未知时，报价存在也不足以发布净值。
 
 报价必须严格大于 `0` 且有限。`0` 或负数：`QUOTE_INVALID`。非有限：`NON_FINITE`，标记保留，不先变成 `null` 再发布。
 
-下列情况整份 `btc_nav` 为 `null`，不发布部分和：组件未知、过期、畸形、集合不完整、重复行、划转不平、费用或 funding 窗口未完成、对账不可用或不独立、精度不足。
+下列情况整份 `btc_nav` 为 `null`，不发布部分和：组件未知、过期、畸形、集合不完整、重复行、划转不平、费用或 funding 窗口未完成、对账不可用或不独立、报价方向不一致、精度不足、数值超限。
 
 已结算费用、funding、已实现盈亏只留在钱包余额里。事件合计进入账本重建和对账，不进入上面的加法。
 
@@ -323,19 +345,25 @@ btc_nav = spot_equity_btc + futures_equity_btc - liability_btc
 |---|---|---|
 | 计价面 | §7 由余额、未实现盈亏、负债和钉住报价算出 | 这些组件的内容哈希 |
 | 交易所权益面 | `venue_reported_equity`：金额、资产、`as_of`、范围 | 自己的 `receipt_ref` 与 `raw_response_hash` |
-| 账本面 | `opening_anchor` 加 `movements` 的重建 | 锚点版本，以及每笔变动自己的事件身份 |
+| 账本面 | 现金重建，加上用独立持仓成本及钉住标记价重算的未实现盈亏 | 锚点版本、变动事件身份、账本自己的持仓／成本依据 |
 
-账本面：
+账本面分成两层：
 
 ```text
-opening_anchor    金额、资产、as_of、anchor_version
-movements         带 §6 事件身份的有符号变动
-reconstructed     = opening_anchor + 变动之和
+opening_anchor       金额、资产、as_of、anchor_version
+movements            带 §6 事件身份的现金或已结算变动
+cash_reconstructed   = opening_anchor + movements
+
+ledger_positions     账本自己的数量、方向、开仓价、乘数、结算资产
+unrealized_ledger    用 §5 的盈亏公式和本次钉住标记价重算
+mark_equity          = cash_reconstructed + unrealized_ledger
 ```
 
-锚点必须独立于账户快照。账本面的血缘若等于计价面或交易所权益面的血缘，判定为 `RECONCILE_NOT_INDEPENDENT`。把账户快照抄进账本面，同样是不独立。三面共用一个派生结果，不能算对账相符。
+对账使用 `mark_equity`，不使用只含现金的重建。没有成交或现金流水时，标记价变化仍改变 `unrealized_ledger`，从而改变 `mark_equity`。账本缺少自己的持仓或成本依据：`LEDGER_MARK_BASIS_ABSENT`，这一面未知。
 
-三面都已知且相互独立时，先用同一组钉住报价换成 BTC，再比较：
+未实现盈亏必须在账本面上重算。抄交易所报告的盈亏，或抄计价面的盈亏来补齐：`RECONCILE_NOT_INDEPENDENT`。锚点必须独立于账户快照。账本面的血缘若等于计价面或交易所权益面的血缘，同样不独立。三面共用一个派生结果，不能算对账相符。
+
+三面都已知且相互独立时，先用 §7 的同一报价规则换成 BTC，再比较：
 
 ```text
 max(三面) - min(三面) <= reconcile_tolerance_btc
@@ -353,16 +381,28 @@ max(三面) - min(三面) <= reconcile_tolerance_btc
 
 ```text
 arithmetic_policy_version
-max_input_scale          非负整数
-max_result_scale         非负整数
-max_balance_rows         正整数
-max_position_rows        正整数
-max_event_rows           正整数
+max_input_scale            非负整数，小数位数
+max_result_scale           非负整数，小数位数
+max_significant_digits     正整数
+exponent_min               整数
+exponent_max               整数
+max_intermediate_digits    正整数
+max_balance_rows           正整数
+max_position_rows          正整数
+max_event_rows             正整数
 ```
 
 任一缺失或 `null`：`POLICY_INCOMPLETE`。超过行数上限：`RESOURCE_LIMIT`。
 
-输入小数位多于 `max_input_scale`：`PRECISION_INSUFFICIENT`。乘法和除法的结果必须在 `max_result_scale` 位上精确落下，余数不为零则拒绝，不舍入后发布。加法只加这些已经精确的项。因此循环小数和放不下的长尾都使 `btc_nav` 为 `null`。同一政策重放，字节相同；换政策版本就是另一份身份。
+运算前先看系数与指数，不把超限数字展开后再捕获：
+
+- 有效位数多于 `max_significant_digits`，或指数超出 `[exponent_min, exponent_max]`：`NUMERIC_LIMIT`。`1e1000000` 这类整数因此被挡住，即使它没有小数位。
+- 输入小数位多于 `max_input_scale`：`PRECISION_INSUFFICIENT`。
+- 乘法在相乘之前检查：两侧有效位数之和，以及指数之和，任一超过中间上限或指数范围，就以 `NUMERIC_LIMIT` 拒绝。
+- 加法与求和使用政策给定的精度上下文，不使用 `Decimal` 的默认上下文。对齐小数位后的位数或进位超过 `max_intermediate_digits`：`NUMERIC_LIMIT`。
+- 溢出、除零、非法运算映射为 `NUMERIC_LIMIT` 或 `PRECISION_INSUFFICIENT`，不发布成一个数。
+
+无法在 `max_result_scale` 上精确落下的乘除，包括循环小数，仍是 `PRECISION_INSUFFICIENT`。这条拒绝不放宽。同一政策重放，字节相同；换政策版本就是另一份身份。
 
 ---
 
@@ -376,7 +416,7 @@ max_event_rows           正整数
 
 | 注入状态 | 提案 |
 |---|---|
-| 该声明键不存在 | `APPEND`，并带回旧绑定原文 |
+| 该声明键不存在 | `APPEND`：返回拟新增绑定，已有绑定集合保持不变。这个键本身没有旧绑定正文 |
 | 键存在且内容哈希相同 | `REPLAY` |
 | 键存在且内容哈希不同 | `CONFLICT`，阻断 `INPUT_IDENTITY_CONFLICT` |
 
@@ -412,7 +452,7 @@ order_intent            = ABSENT
 | `SET_INCOMPLETE` | 没有集合相等证明 |
 | `DUPLICATE_ROW` | 资产或持仓身份重复 |
 | `BALANCE_INCOMPLETE` | 缺行，或 free/locked 只出现一半 |
-| `DOUBLE_COUNT` | free 与 total 同加，或已入钱包的流水再次扣加 |
+| `DOUBLE_COUNT` | free 与 total 同加、已入钱包的流水再次扣加，或同一钱包余额按持仓重复计入 |
 | `TRANSFER_SCOPE_UNBALANCED` | 范围内划转净额不为 `0` |
 | `SIGN_MISMATCH` | 余额为负，或负债行为负 |
 | `NON_FINITE` | NaN、±Infinity，或非有限十进制 |
@@ -430,7 +470,10 @@ order_intent            = ABSENT
 | `AUTHORITY_NOT_PROVABLE` | 自报权威，但本阶段不能建立现实权威 |
 | `NAV_PARTIAL_REJECTED` | 用残缺组件或未钉住价格发布净值 |
 | `RECONCILE_UNAVAILABLE` | 对账有一面未知 |
-| `RECONCILE_NOT_INDEPENDENT` | 三面血缘不独立 |
+| `RECONCILE_NOT_INDEPENDENT` | 三面血缘不独立，或账本盈亏抄自交易所／计价面 |
+| `LEDGER_MARK_BASIS_ABSENT` | 账本面没有自己的持仓或成本依据 |
+| `QUOTE_INCONSISTENT` | 两个报价方向都在，且不是精确倒数 |
+| `NUMERIC_LIMIT` | 有效位数、指数或中间结果在运算前超限 |
 | `RECONCILE_MISMATCH` | `max - min` 严格大于容差 |
 | `SCOPE_MISMATCH` | 三面的账户、范围或计价时点不一致 |
 | `TOLERANCE_INVALID` | 容差缺失、非有限或为负 |
@@ -459,8 +502,8 @@ order_intent            = ABSENT
 | AT-11 | 费用清单缺失 | `FEE_UNKNOWN`；合计不是 `0` |
 | AT-12 | 费用窗口分页未结束 | `FEE_INCOMPLETE` |
 | AT-13 | funding 清单缺失 | `FUNDING_UNKNOWN`；不读 E0 默认 `0` |
-| AT-14 | funding 保留范围截断 | `FUNDING_INCOMPLETE` |
-| AT-15 | 非零 ETH 没有钉住的 BTC 报价 | `QUOTE_UNPINNED`；`btc_nav=null` |
+| AT-14 | 保留范围截断；已知迟到使原 `COMPLETE` 失效；仅分页结束或时间过去 | 截断与迟到都是 `INCOMPLETE`，新版本保持 `PARTIAL_LATE`。分页结束或时间过去不足以变成 `COMPLETE`。只有同一窗口、同一过滤范围的新查全证据才可以 |
+| AT-15 | 非零 ETH 没有报价三元组。`base=USDT, quote=BTC, price=0.00001` 转换 `1000 USDT`。反向 `base=BTC, quote=USDT, price=100000`。把 `100000` 乘到 USDT 上 | 无报价为 `QUOTE_UNPINNED`。前两口都得 `0.01 BTC`。倒置乘积不得发布为 `0.01 BTC` |
 | AT-16 | 用钱包数量乘未钉住价格 | `NAV_PARTIAL_REJECTED` |
 | AT-17 | 组件中放入 NaN 或 ±Infinity | `NON_FINITE`；不先变成 `null` 再发布 |
 | AT-18 | 合法 `null` 报价 | 保持 `null`；代码不是 `NON_FINITE` |
@@ -473,17 +516,17 @@ order_intent            = ABSENT
 | AT-25 | `SYNTHETIC` 夹具要求权威 | `account_authority=NOT_ESTABLISHED`；`new_risk_usable=false` |
 | AT-26 | 同一输入与同一算术政策重放 | 快照字节相同 |
 | AT-27 | 静态扫描 | 无交易链导入，无真实账本路径，无 `datetime.now` / `time.time` |
-| AT-28 | 钱包 `1000 USDT`，`0.1 BTC` 多头，开仓价等于标记价 `100000` | 未实现盈亏 `0`；权益 `1000 USDT`；不加 `0.1 BTC`。空头方向相反 |
+| AT-28 | 钱包 `1000 USDT`，`0.1 BTC` 多头，开仓价等于标记价 `100000`；同钱包第二笔零盈亏持仓；正向报价、反向报价、以及把反向价格乘回去 | 未实现盈亏 `0`；权益仍是 `1000 USDT`，不重复本金，不加 `0.1 BTC`。空头方向相反。两口合法报价都得 `0.01 BTC`；倒置乘积不得发布为 `0.01 BTC` |
 | AT-29 | 手续费和 funding 已在钱包余额中，事件账再加一次 | `DOUBLE_COUNT`；净值不重复扣加 |
 | AT-30 | 现货与合约钱包混加，或划转两侧只记入账 | `DOUBLE_COUNT` 或 `TRANSFER_SCOPE_UNBALANCED` |
 | AT-31 | 无集合证明，或资产／持仓行重复 | `SET_INCOMPLETE` 或 `DUPLICATE_ROW`；不发布净值 |
 | AT-32 | 全部输入自报 `AUTHORITATIVE`，证明缺失或与绑定不符 | `AUTHORITY_NOT_PROVABLE` 或 `COLLECTION_PROOF_INVALID`；权威不成立 |
 | AT-33 | 分页失败、历史截断、有零事件证明的空窗口、清单缺失 | 分别为 `INCOMPLETE`、`INCOMPLETE`、已知零的 `COMPLETE`、`UNKNOWN` |
-| AT-34 | 同事件身份异正文；不同 `event_type` 的相同 `stable_id`；迟到事件 | 冲突；两条都保留；新窗口版本且旧正文不变 |
+| AT-34 | 同事件身份异正文；不同 `event_type` 的相同 `stable_id`；已知迟到 | 冲突；两条都保留。新版本为 `PARTIAL_LATE`，旧正文不变，且不因时间过去变为 `COMPLETE` |
 | AT-35 | 同版本异内容只改 `evaluation_at`；绑定状态未注入 | 仍是 `CONFLICT`；缺注入时为 `BINDING_STATE_ABSENT`，不暗中写状态 |
-| AT-36 | 三面血缘相同，或账本面抄账户快照 | `RECONCILE_NOT_INDEPENDENT` |
+| AT-36 | 三面血缘相同；账本抄账户快照或抄交易所盈亏；无现金流水但标记价变化 | 前两者 `RECONCILE_NOT_INDEPENDENT`。账本用自己的成本和钉住标记价重算后，盯市权益随标记价变化 |
 | AT-37 | 差等于容差；差大于容差；负容差；账户或时点不一致 | 相符；`MISMATCH`；`TOLERANCE_INVALID`；`SCOPE_MISMATCH` |
-| AT-38 | `1/3` 一类循环小数；输入超过 `max_input_scale`；更换算术政策 | `PRECISION_INSUFFICIENT`；超标拒绝；字节随政策版本变化 |
+| AT-38 | `1/3`；超过 `max_input_scale`；`1e1000000` 与极小负指数；求和进位超限；乘法中间位数超限；更换算术政策 | 循环小数为 `PRECISION_INSUFFICIENT`。位数、指数和中间结果在运算前为 `NUMERIC_LIMIT`。字节随政策版本变化 |
 | AT-39 | 负未实现盈亏；精确算出的负净权益；报价为 `0` 或负数 | 盈亏保持负数且不是 `SIGN_MISMATCH`；净权益保持负数；`QUOTE_INVALID` |
 
 AT-26 使用记录中的 `evaluation_at`、钉住报价和 `arithmetic_policy_version`。更换墙钟不改变字节。
@@ -508,7 +551,7 @@ AT-26 使用记录中的 `evaluation_at`、钉住报价和 `arithmetic_policy_ve
 ## 14. 台账
 
 ```text
-P4 ACCOUNT TRUTH PLAN    = CHANGES-REQUIRED
+P4 ACCOUNT TRUTH PLAN    = CHANGES-REQUIRED（四处残留已窄修，待复审）
 P4 IMPLEMENTATION        = NOT AUTHORIZED
 P3-R3.1                  = CLOSED / RUNTIME-PASS / READ-ONLY
 S1 / S2 / S3             = CLOSED / OFFLINE PASS
