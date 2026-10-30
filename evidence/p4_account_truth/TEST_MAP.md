@@ -2,7 +2,7 @@
 
 固定方案：`ab2e872417e43b4665cd16b7a4873f826974f5fc`  
 红测试：`87a956f3fb89ed38232e524f25a346dd5169a839`  
-实现：`9a312ad`（完整哈希以 `git rev-parse` 为准）
+实现：`9a312ad009f3ddb4662cf377fd6b310c017a1cce`
 
 这是开发方克隆复跑，不是独立复验，也不是 RUNTIME-PASS。
 
