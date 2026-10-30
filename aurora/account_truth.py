@@ -362,7 +362,7 @@ def _evidence_covers(manifest: Dict[str, Any]) -> bool:
         return False
     if not _same_filter(evidence.get("query_filter"), manifest.get("query_filter")):
         return False
-    if evidence.get("pages_fetched") != evidence.get("pages_declared"):
+    if not _pages_settled(evidence.get("pages_fetched"), evidence.get("pages_declared")):
         return False
     if evidence.get("page_end_token") is not None or evidence.get("truncated") is not False:
         return False
@@ -373,6 +373,16 @@ def _evidence_covers(manifest: Dict[str, Any]) -> bool:
     return True
 
 
+def _pages_settled(fetched: Any, declared: Any) -> bool:
+    if isinstance(fetched, bool) or isinstance(declared, bool):
+        return False
+    if not isinstance(fetched, int) or not isinstance(declared, int):
+        return False
+    if fetched < 1 or declared < 1:
+        return False
+    return fetched == declared
+
+
 def _event_problem(
     event: Any,
     event_type: str,
@@ -380,11 +390,15 @@ def _event_problem(
     end: Optional[datetime],
     evaluation: Optional[datetime],
     policy: Optional[Dict[str, Any]],
+    scope: Dict[str, Any],
 ) -> Optional[str]:
     if not isinstance(event, dict):
         return "INVALID"
     if event.get("event_type") != event_type:
         return "INVALID"
+    for field in ("environment", "account_ref", "sub_account_ref"):
+        if field in event and event.get(field) != scope.get(field):
+            return "INVALID"
     stable_id = event.get("stable_id")
     asset = event.get("asset")
     if not isinstance(stable_id, str) or not stable_id.strip():
@@ -417,9 +431,14 @@ def _window(
 ) -> Dict[str, Any]:
     if manifest is None or not isinstance(manifest, dict):
         return {"status": "UNKNOWN", "total": None, "events": [], "lineage": None}
+    if "events" not in manifest or not isinstance(manifest.get("events"), list):
+        return {
+            "status": "INCOMPLETE",
+            "total": None,
+            "events": [],
+            "lineage": copy.deepcopy(manifest.get("lineage")),
+        }
     events = manifest.get("events")
-    if not isinstance(events, list):
-        events = []
     max_rows = None if policy is None else policy.get("max_event_rows")
     if isinstance(max_rows, int) and len(events) > max_rows:
         blockers.append("RESOURCE_LIMIT")
@@ -441,7 +460,7 @@ def _window(
     expected = _expect_filter(scope, event_type)
     complete_shape = (
         _same_filter(manifest.get("query_filter"), expected)
-        and manifest.get("pages_fetched") == manifest.get("pages_declared")
+        and _pages_settled(manifest.get("pages_fetched"), manifest.get("pages_declared"))
         and manifest.get("page_end_token") is None
         and manifest.get("truncated") is False
     )
@@ -484,7 +503,7 @@ def _window(
     amounts: List[Q] = []
     asset = None
     for event in events:
-        problem = _event_problem(event, event_type, start, end, evaluation, policy)
+        problem = _event_problem(event, event_type, start, end, evaluation, policy, scope)
         if problem == "INVALID":
             invalid = True
             continue
@@ -512,11 +531,17 @@ def _window(
     if invalid or policy is None:
         view["status"] = "INCOMPLETE"
         return view
-    total = Q(0, 0)
-    for amount in amounts:
-        total = _add(total, amount, policy)
+    try:
+        total = Q(0, 0)
+        for amount in amounts:
+            total = _add(total, amount, policy)
+        view["total"] = _q_text(total, policy)
+    except _Stop as exc:
+        blockers.append(exc.code)
+        view["status"] = "INCOMPLETE"
+        view["total"] = None
+        return view
     view["status"] = "COMPLETE"
-    view["total"] = _q_text(total, policy)
     return view
 
 
@@ -590,6 +615,50 @@ def _convert(
         _format_fraction(quotient, policy)
         return quotient
     raise _Stop("QUOTE_UNPINNED")
+
+
+def _needs_external_quote(
+    parsed_balances: List[Tuple[Dict[str, Any], Q]],
+    liability_rows: List[Tuple[str, Q]],
+    position_rows: List[Dict[str, Any]],
+    venue: Any,
+    ledger: Any,
+    policy: Dict[str, Any],
+) -> bool:
+    for row, total in parsed_balances:
+        if str(row.get("asset")) != "BTC" and not total.is_zero():
+            return True
+    for asset, amount in liability_rows:
+        if str(asset) != "BTC" and not amount.is_zero():
+            return True
+    for row in position_rows:
+        if not isinstance(row, dict) or str(row.get("settlement_asset")) == "BTC":
+            continue
+        try:
+            pnl = _pnl(row, policy)
+        except _Stop:
+            continue
+        if not pnl.is_zero():
+            return True
+    candidates: List[Any] = []
+    if isinstance(venue, dict):
+        candidates.append(venue)
+    if isinstance(ledger, dict):
+        anchors = ledger.get("opening_anchor") or []
+        if isinstance(anchors, dict):
+            candidates.append(anchors)
+        elif isinstance(anchors, list):
+            candidates.extend(anchors)
+    for row in candidates:
+        if not isinstance(row, dict) or str(row.get("asset")) == "BTC":
+            continue
+        try:
+            amount = _parse_q(row.get("amount"), policy)
+        except _Stop:
+            continue
+        if not amount.is_zero():
+            return True
+    return False
 
 
 def _balance_total(row: Dict[str, Any], policy: Dict[str, Any], blockers: List[str]) -> Optional[Q]:
@@ -894,7 +963,7 @@ def _rows_text(amounts: Dict[str, Q], policy: Dict[str, Any]) -> List[Dict[str, 
     ]
 
 
-def evaluate_account_truth(
+def _evaluate_account_truth(
     scope: Any,
     balances: Any,
     liabilities: Any,
@@ -911,15 +980,43 @@ def evaluate_account_truth(
 ) -> Dict[str, Any]:
     blockers: List[str] = []
     non_finite: List[Dict[str, str]] = []
+    loaded = None
+    try:
+        loaded = _load_policy(policy)
+    except _Stop as exc:
+        blockers.append(exc.code)
+
+    def _cap_list(value: Any, limit: Any) -> Any:
+        if loaded is None or not isinstance(value, list) or not isinstance(limit, int):
+            return value
+        if len(value) > limit:
+            blockers.append("RESOURCE_LIMIT")
+            return None
+        return value
+
+    def _cap_key(mapping: Any, key: str, limit: Any) -> Any:
+        if loaded is None or not isinstance(mapping, dict) or not isinstance(limit, int):
+            return mapping
+        rows = mapping.get(key)
+        if isinstance(rows, list) and len(rows) > limit:
+            blockers.append("RESOURCE_LIMIT")
+            trimmed = dict(mapping)
+            trimmed[key] = None
+            return trimmed
+        return mapping
+
+    balance_limit = None if loaded is None else loaded["max_balance_rows"]
+    position_limit = None if loaded is None else loaded["max_position_rows"]
+    event_limit = None if loaded is None else loaded["max_event_rows"]
     scope_s = _sanitize(scope, "scope", non_finite)
-    balances_s = _sanitize(balances, "balances", non_finite)
-    liabilities_s = _sanitize(liabilities, "liabilities", non_finite)
-    positions_s = _sanitize(positions, "positions", non_finite)
+    balances_s = _sanitize(_cap_list(balances, balance_limit), "balances", non_finite)
+    liabilities_s = _sanitize(_cap_list(liabilities, balance_limit), "liabilities", non_finite)
+    positions_s = _sanitize(_cap_list(positions, position_limit), "positions", non_finite)
     quotes_s = _sanitize(quotes, "quotes", non_finite)
     venue_s = _sanitize(venue_reported_equity, "venue_reported_equity", non_finite)
-    ledger_s = _sanitize(ledger_reconstruction, "ledger_reconstruction", non_finite)
-    fee_s = _sanitize(fee_manifest, "fee_manifest", non_finite)
-    funding_s = _sanitize(funding_manifest, "funding_manifest", non_finite)
+    ledger_s = _sanitize(_cap_key(ledger_reconstruction, "movements", event_limit), "ledger_reconstruction", non_finite)
+    fee_s = _sanitize(_cap_key(fee_manifest, "events", event_limit), "fee_manifest", non_finite)
+    funding_s = _sanitize(_cap_key(funding_manifest, "events", event_limit), "funding_manifest", non_finite)
     if non_finite:
         blockers.append("NON_FINITE")
     if not isinstance(scope_s, dict):
@@ -953,11 +1050,6 @@ def evaluate_account_truth(
     if proposal["action"] == "CONFLICT":
         blockers.append("INPUT_IDENTITY_CONFLICT")
 
-    loaded = None
-    try:
-        loaded = _load_policy(policy)
-    except _Stop as exc:
-        blockers.append(exc.code)
     if loaded is not None:
         for name in ("sla_account_sec", "skew_limit_sec"):
             if loaded[name] is None:
@@ -1050,7 +1142,12 @@ def evaluate_account_truth(
                 "status": "KNOWN",
             }
             if total is not None:
-                echoed["total"] = _q_text(total, loaded)
+                try:
+                    echoed["total"] = _q_text(total, loaded)
+                except _Stop as exc:
+                    blockers.append(exc.code)
+                    total = None
+            if total is not None:
                 parsed_balances.append((row, total))
             elif "total" in row and not isinstance(row.get("total"), dict):
                 echoed["total"] = row.get("total")
@@ -1108,14 +1205,22 @@ def evaluate_account_truth(
             if amount.is_negative():
                 blockers.append("SIGN_MISMATCH")
                 continue
+            try:
+                amount_text = _q_text(amount, loaded)
+            except _Stop as exc:
+                blockers.append(exc.code)
+                continue
             liability_rows.append((asset, amount))
             echoed_liabilities.append({
                 "asset": asset,
-                "amount": _q_text(amount, loaded),
+                "amount": amount_text,
                 "status": "KNOWN",
             })
     if loaded is not None:
-        _transfers(scope_s, loaded, blockers)
+        try:
+            _transfers(scope_s, loaded, blockers)
+        except _Stop as exc:
+            blockers.append(exc.code)
         _set_proof(
             scope_s,
             _ids_assets([row for row, _total in parsed_balances]),
@@ -1126,7 +1231,13 @@ def evaluate_account_truth(
     quote_index: Dict[Tuple[str, str], Q] = {}
     if loaded is not None:
         quote_index = _index_quotes(quotes_s, loaded, blockers)
-        if isinstance(quotes_s, dict) and quotes_s.get("as_of") is not None:
+        needs_clock = _needs_external_quote(
+            parsed_balances, liability_rows, position_rows, venue_s, ledger_s, loaded,
+        )
+        quote_time_present = isinstance(quotes_s, dict) and quotes_s.get("as_of") is not None
+        if needs_clock and not quote_time_present:
+            blockers.append("TIMESTAMP_INVALID")
+        if quote_time_present:
             quote_time = _parse_time(quotes_s.get("as_of"))
             scope_time = _parse_time(scope_s.get("as_of"))
             if quote_time is None or scope_time is None:
@@ -1412,3 +1523,86 @@ def evaluate_account_truth(
         "non_finite": non_finite,
     }
     return {"snapshot": snapshot, "binding_proposal": proposal}
+
+
+def _closed_result(code: str, evaluation_at: Any) -> Dict[str, Any]:
+    proposal = {
+        "action": "REFUSED",
+        "declaration_key": None,
+        "content_hash": None,
+        "proposed_binding": None,
+        "existing_bindings": [],
+        "prior_content_hash": None,
+    }
+    snapshot = {
+        "calculation_ok": False,
+        "account_authority": "NOT_ESTABLISHED",
+        "new_risk_usable": False,
+        "reality_authority": "NOT_ESTABLISHED",
+        "btc_nav": None,
+        "btc_nav_unit": None,
+        "btc_nav_trace": None,
+        "arithmetic_policy_version": None,
+        "balances": None,
+        "liabilities": None,
+        "positions": "UNKNOWN",
+        "fee_manifest": {"status": "UNKNOWN", "total": None, "events": [], "lineage": None},
+        "funding_manifest": {"status": "UNKNOWN", "total": None, "events": [], "lineage": None},
+        "set_completeness": None,
+        "venue_reported_equity": None,
+        "ledger_reconstruction": {
+            "status": "UNKNOWN",
+            "mark_equity": None,
+            "cash_reconstructed": None,
+            "unrealized_pnl": None,
+        },
+        "reconciliation": "UNAVAILABLE",
+        "binding_proposal": "REFUSED",
+        "blockers": [code],
+        "source_claim": None,
+        "as_of": None,
+        "evaluation_at": evaluation_at,
+        "scope_version": None,
+        "canonical_version": CANONICAL_VERSION,
+        "hash_alg": HASH_ALG,
+        "order_intent": "ABSENT",
+        "execution_eligibility": "DENIED",
+        "quotes": None,
+        "non_finite": [],
+    }
+    return {"snapshot": snapshot, "binding_proposal": proposal}
+
+
+def evaluate_account_truth(
+    scope: Any,
+    balances: Any,
+    liabilities: Any,
+    positions: Any,
+    fee_manifest: Any,
+    funding_manifest: Any,
+    quotes: Any,
+    venue_reported_equity: Any,
+    ledger_reconstruction: Any,
+    binding_state: Any,
+    collection_proofs: Any,
+    policy: Any,
+    evaluation_at: Any,
+) -> Dict[str, Any]:
+    try:
+        return _evaluate_account_truth(
+            scope,
+            balances,
+            liabilities,
+            positions,
+            fee_manifest,
+            funding_manifest,
+            quotes,
+            venue_reported_equity,
+            ledger_reconstruction,
+            binding_state,
+            collection_proofs,
+            policy,
+            evaluation_at,
+        )
+    except _Stop as exc:
+        return _closed_result(exc.code, evaluation_at)

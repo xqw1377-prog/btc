@@ -259,6 +259,7 @@ class P4AccountTruthTests(unittest.TestCase):
         case["scope"]["set_completeness"]["required_assets"] = ["SPOT|SPOT|USDT"]
         case["scope"]["set_completeness"]["observed_assets"] = ["SPOT|SPOT|USDT"]
         case["quotes"]["pairs"] = [_usdt_pair()]
+        case["quotes"]["as_of"] = ASOF
         case["venue_reported_equity"]["amount"] = "0.009"
         case["ledger_reconstruction"]["opening_anchor"] = [
             {"amount": "1000", "asset": "USDT", "as_of": ASOF, "anchor_version": "anchor-usdt"},
@@ -1230,7 +1231,7 @@ class P4AccountTruthTests(unittest.TestCase):
             "positions": [self._position()],
             "fee_manifest": _manifest("FEE"),
             "funding_manifest": _manifest("FUNDING"),
-            "quotes": {"quote_version": "q-v1", "pairs": [_usdt_pair()]},
+            "quotes": {"quote_version": "q-v1", "as_of": ASOF, "pairs": [_usdt_pair()]},
             "venue_reported_equity": _face("0.01", names),
             "ledger_reconstruction": _ledger(
                 [{"amount": "1000", "asset": "USDT", "as_of": ASOF, "anchor_version": "anchor-usdt"}],
@@ -1258,6 +1259,7 @@ class P4AccountTruthTests(unittest.TestCase):
         case["scope"]["set_completeness"]["required_assets"] = ["SPOT|SPOT|USDT"]
         case["scope"]["set_completeness"]["observed_assets"] = ["SPOT|SPOT|USDT"]
         case["quotes"]["pairs"] = [pair]
+        case["quotes"]["as_of"] = ASOF
         if pair["base_asset"] == "USDT" and pair["price"] == "0.00001" and total == "1000":
             nav = "0.01"
         elif pair["base_asset"] == "BTC" and pair["price"] == "100000" and total == "1000":
@@ -1299,7 +1301,7 @@ class P4AccountTruthTests(unittest.TestCase):
             "positions": [position],
             "fee_manifest": _manifest("FEE"),
             "funding_manifest": _manifest("FUNDING"),
-            "quotes": {"quote_version": "q-v1", "pairs": [_usdt_pair()]},
+            "quotes": {"quote_version": "q-v1", "as_of": ASOF, "pairs": [_usdt_pair()]},
             "venue_reported_equity": _face("0.519", names),
             "ledger_reconstruction": _ledger(
                 [
