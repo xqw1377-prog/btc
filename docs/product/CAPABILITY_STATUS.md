@@ -78,7 +78,7 @@ EXECUTION BOUNDARY            FROZEN      6b2cc7c
 EXECUTE_AUTHORIZED            FALSE
 EXECUTION AUTHORIZATION       NOT ISSUED
 REAL WRITE PATH               DENIED
-NEXT STAGE                    无已授权下一刀（P3-R3.1 CLOSED / RUNTIME-PASS / READ-ONLY · P3-R3.2 HOLD · P3-R4 FORBIDDEN / HOLD · 不接旧 RiskGate）
+NEXT STAGE                    无已授权下一刀（P4 账户真相方案候选待评审 · 实现未授权 · P3-R3.2 HOLD · P3-R4 FORBIDDEN / HOLD）
 P2-PRE DECISION HARNESS       CLOSED · PASS（T1–T10 · 见 P2_PRE_DECISION_BRAIN_HARNESS.md）
 AURORA PRODUCT NORTH STAR V2  APPROVED
   P0  NORTH STAR DOC          docs/product/AURORA_NORTH_STAR.md
@@ -142,7 +142,7 @@ AURORA PRODUCT NORTH STAR V2  APPROVED
       tests/test_decision_brain_contract_v1_1.py = T1–T10 ACCEPTANCE AUTHORITY
       portfolio_brain_v2        LEGACY · NOT P3（禁止升级接入）
   P3 → RISK / EXECUTION       HOLD
-  P4  BTC NAV / ACCOUNT       HOLD
+  P4  BTC NAV / ACCOUNT       HOLD（方案候选 P4_ACCOUNT_TRUTH_PLAN.md · 实现未授权 · 不读真实账户）
   P5  E3 OOS                  CLOSED-OFFLINE（≠ LIVE）
 OBSERVATORY / TRANSPORT（严格 — 观察 ≠ 策略能力）
   OBSERVATORY-V1 TRANSPORT    CONNECTED（只读 WS · observatory-v1）
