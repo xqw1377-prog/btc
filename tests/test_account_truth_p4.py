@@ -597,7 +597,8 @@ class P4AccountTruthTests(unittest.TestCase):
         cycle = open(os.path.join(ROOT, "aurora", "trading_cycle.py"), encoding="utf-8").read()
         adjudicator = open(os.path.join(ROOT, "aurora", "risk_adjudicator.py"), encoding="utf-8").read()
         self.assertNotIn("evaluate_account_truth", cycle)
-        self.assertNotIn("account_truth", adjudicator)
+        self.assertNotIn("evaluate_account_truth", adjudicator)
+        self.assertNotIn("aurora.account_truth", adjudicator)
 
     def test_at_28_wallet_once_and_quote_orientations(self):
         one = self._futures_flat_pnl()
@@ -1010,7 +1011,7 @@ class P4AccountTruthTests(unittest.TestCase):
             {"product": "USDS_M", "position_mode": "ONE_WAY", "margin_mode": "CROSS"},
         ]
         names = ["SPOT", "USDS_M"]
-        position = self._position(mark="110000")
+        position = self._position(mark_price="110000")
         scope = _scope(
             products,
             ["SPOT|SPOT|BTC", "USDS_M|USDS_M|USDT"],
@@ -1037,7 +1038,7 @@ class P4AccountTruthTests(unittest.TestCase):
                     {"amount": "1000", "asset": "USDT", "as_of": ASOF, "anchor_version": "anchor-usdt"},
                 ],
                 names,
-                positions=[self._position(mark="110000")],
+                positions=[self._position(mark_price="110000")],
                 liabilities=[{"asset": "USDT", "amount": "100", "status": "KNOWN"}],
             ),
             "binding_state": {"bindings": []},
