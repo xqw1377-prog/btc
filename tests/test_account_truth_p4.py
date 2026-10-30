@@ -631,6 +631,7 @@ class P4AccountTruthTests(unittest.TestCase):
         inverse = self._futures_flat_pnl(pair=_btc_usdt_pair("100000"))
         self.assertEqual(_run(inverse)["snapshot"]["btc_nav"], "0.01")
         flipped = self._futures_flat_pnl(pair=_usdt_pair("100000"))
+        flipped["venue_reported_equity"]["amount"] = "100000000"
         self.assertEqual(_run(flipped)["snapshot"]["btc_nav"], "100000000")
 
         long_up = self._futures_flat_pnl()
