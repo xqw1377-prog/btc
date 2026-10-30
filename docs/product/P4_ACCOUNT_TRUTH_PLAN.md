@@ -1,6 +1,6 @@
 # P4 权威账户真相 — 纯文档方案
 
-Status: `PASS / CLOSED · IMPLEMENTATION AUTHORIZED / OFFLINE PURE FUNCTION · RUNTIME NOT YET VERIFIED`  
+Status: `PASS / CLOSED · IMPLEMENTATION AUTHORIZED / OFFLINE PURE FUNCTION · RUNTIME CHANGES-REQUIRED`  
 Date: `2026-10-30`  
 修订: `方案 ab2e872 通过。开工范围仅离线纯函数与 AT-1～39。本登记不是运行时验收，也不建立现实账户权威。`
 
@@ -12,7 +12,7 @@ Date: `2026-10-30`
 
 P4 PLAN                  = PASS / CLOSED
 P4 IMPLEMENTATION        = AUTHORIZED / OFFLINE PURE FUNCTION
-P4 RUNTIME               = NOT YET VERIFIED
+P4 RUNTIME               = CHANGES-REQUIRED
 P3-R3.1                  = CLOSED / RUNTIME-PASS / READ-ONLY
 EXECUTION ELIGIBILITY    = DENIED
 LIVE                     = NO-GO
@@ -559,7 +559,7 @@ AT-26 使用记录中的 `evaluation_at`、钉住报价和 `arithmetic_policy_ve
 ```text
 P4 PLAN                  = PASS / CLOSED
 P4 IMPLEMENTATION        = AUTHORIZED / OFFLINE PURE FUNCTION
-P4 RUNTIME               = NOT YET VERIFIED
+P4 RUNTIME               = CHANGES-REQUIRED
 P3-R3.1                  = CLOSED / RUNTIME-PASS / READ-ONLY
 S1 / S2 / S3             = CLOSED / OFFLINE PASS
 真实账户／接线／迁移     = 未授权

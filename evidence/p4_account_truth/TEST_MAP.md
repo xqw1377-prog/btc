@@ -6,6 +6,8 @@
 
 这是开发方克隆复跑，不是独立复验，也不是 RUNTIME-PASS。
 
+七项语义反例的红／绿证据在 `fix1/`，不改写上面的模块缺失记录。
+
 | 运行 | 载体 | 结果 |
 |---|---|---|
 | 红 | 全新克隆，detached `87a956f`，模块不存在 | 1 passed，42 failed。`AssertionError` 0。`ModuleNotFoundError` 41。`FileNotFoundError` 1（静态扫描） |

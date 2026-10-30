@@ -1,0 +1,19 @@
+commit: b6494188eedf02c65654a70604c9053f25ef576d
+clone: detached /tmp/p4-sem-green
+ledger: absent
+e2_diff_bytes_vs_ab2e872: 0
+e1_diff_bytes_vs_ab2e872: 0
+risk_adjudicator_diff_bytes_vs_ab2e872: 0
+note: developer fresh clone after the seven semantic fixes. Not an independent review. Not RUNTIME-PASS.
+
+===== specialist unittest =====
+Ran 50 tests OK
+
+===== specialist pytest =====
+50 passed
+
+===== full pytest =====
+SKIPPED [1] tests/test_fill_migration_s1.py:93: incident ledger absent
+1020 passed, 1 skipped, 1 warning in 14.97s
+
+1020 = 先前克隆 1013 + 本轮 7 项语义反例。不与账本在场的工作树计数合并，也不与独立复验的 subtest 计数合并。
